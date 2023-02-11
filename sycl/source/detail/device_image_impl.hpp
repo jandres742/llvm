@@ -117,7 +117,8 @@ public:
               strcmp(Target, __SYCL_PI_DEVICE_BINARY_TARGET_SPIRV32) == 0);
     };
     return (MContext.get_backend() == backend::opencl ||
-            MContext.get_backend() == backend::ext_oneapi_level_zero) &&
+            MContext.get_backend() == backend::ext_oneapi_level_zero ||
+            MContext.get_backend() == backend::ext_oneapi_unified_runtime) &&
            IsJITSPIRVTarget(MBinImage->getRawData().DeviceTargetSpec);
   }
 

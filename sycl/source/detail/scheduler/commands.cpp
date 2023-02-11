@@ -1372,6 +1372,8 @@ bool UnMapMemObject::producesPiEvent() const {
   // so the execution of kernel B starts only on step 4. This workaround
   // restores the old behavior in this case until this is resolved.
   return MQueue->getPlugin().getBackend() != backend::ext_oneapi_level_zero ||
+         MQueue->getPlugin().getBackend() !=
+             backend::ext_oneapi_unified_runtime ||
          MEvent->getHandleRef() != nullptr;
 }
 
@@ -1477,6 +1479,8 @@ bool MemCpyCommand::producesPiEvent() const {
   // restores the old behavior in this case until this is resolved.
   return MQueue->is_host() ||
          MQueue->getPlugin().getBackend() != backend::ext_oneapi_level_zero ||
+         MQueue->getPlugin().getBackend() !=
+             backend::ext_oneapi_unified_runtime ||
          MEvent->getHandleRef() != nullptr;
 }
 
