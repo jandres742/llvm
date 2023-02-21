@@ -7885,6 +7885,60 @@ pi_result piTearDown(void *PluginParameter) {
   return PI_SUCCESS;
 }
 
+// Buffer constructor
+_pi_buffer::_pi_buffer(pi_context Context, size_t Size, char *HostPtr,
+            bool ImportedHostPtr = false)
+    : _pi_mem(Context), Size(Size), SubBuffer{nullptr, 0} {
+
+  // We treat integrated devices (physical memory shared with the CPU)
+  // differently from discrete devices (those with distinct memories).
+  // For integrated devices, allocating the buffer in the host memory
+  // enables automatic access from the device, and makes copying
+  // unnecessary in the map/unmap operations. This improves performance.
+  OnHost = Context->Devices.size() == 1 &&
+            Context->Devices[0]->ZeDeviceProperties->flags &
+                ZE_DEVICE_PROPERTY_FLAG_INTEGRATED;
+
+  // Fill the host allocation data.
+  if (HostPtr) {
+    MapHostPtr = HostPtr;
+    // If this host ptr is imported to USM then use this as a host
+    // allocation for this buffer.
+    if (ImportedHostPtr) {
+      Allocations[nullptr].ZeHandle = HostPtr;
+      Allocations[nullptr].Valid = true;
+      Allocations[nullptr].ReleaseAction = _pi_buffer::allocation_t::unimport;
+    }
+  }
+
+  // This initialization does not end up with any valid allocation yet.
+  LastDeviceWithValidAllocation = nullptr;
+}
+
+// Interop-buffer constructor
+_pi_buffer::_pi_buffer(pi_context Context, size_t Size, pi_device Device,
+            char *ZeMemHandle, bool OwnZeMemHandle)
+    : _pi_mem(Context), Size(Size), SubBuffer{nullptr, 0} {
+
+  // Device == nullptr means host allocation
+  Allocations[Device].ZeHandle = ZeMemHandle;
+  Allocations[Device].Valid = true;
+  Allocations[Device].ReleaseAction =
+      OwnZeMemHandle ? allocation_t::free_native : allocation_t::keep;
+
+  // Check if this buffer can always stay on host
+  OnHost = false;
+  if (!Device) { // Host allocation
+    if (Context->Devices.size() == 1 &&
+        Context->Devices[0]->ZeDeviceProperties->flags &
+            ZE_DEVICE_PROPERTY_FLAG_INTEGRATED) {
+      OnHost = true;
+      MapHostPtr = ZeMemHandle; // map to this allocation
+    }
+  }
+  LastDeviceWithValidAllocation = Device;
+}
+
 pi_result _pi_buffer::getZeHandlePtr(char **&ZeHandlePtr,
                                      access_mode_t AccessMode,
                                      pi_device Device) {
