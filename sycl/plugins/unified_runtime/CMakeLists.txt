@@ -77,6 +77,8 @@ add_sycl_plugin(unified_runtime
     "pi2ur.cpp"
     "ur/ur.hpp"
     "ur/ur.cpp"
+    "ur/usm_allocator_config.cpp"
+    "ur/usm_allocator_config.hpp"
     "ur/adapters/level_zero/ur_level_zero.hpp"
     "ur/adapters/level_zero/ur_level_zero_common.hpp"
     "ur/adapters/level_zero/ur_level_zero_context.hpp"

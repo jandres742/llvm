@@ -21,6 +21,8 @@
 #include <ze_api.h>
 #include <zes_api.h>
 
+#include "ur/usm_allocator_config.hpp"
+
 // Map Level Zero runtime error code to UR error code.
 ur_result_t ze2urResult(ze_result_t ZeResult);
 
@@ -48,3 +50,5 @@ struct MemAllocRecord : _pi_object {
   // asked to not transfer the ownership to SYCL RT.
   bool OwnZeMemHandle;
 };
+
+extern usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;

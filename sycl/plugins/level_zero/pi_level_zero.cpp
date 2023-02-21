@@ -98,8 +98,6 @@ static const bool IndirectAccessTrackingEnabled = [] {
          nullptr;
 }();
 
-static usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
-
 // Map from L0 to PI result.
 static inline pi_result mapError(ze_result_t Result) {
   return ur2piResult(ze2urResult(Result));

@@ -51,6 +51,7 @@
 #include <pi2ur.hpp>
 #include <ur/adapters/level_zero/ur_level_zero.hpp>
 #include <ur/usm_allocator.hpp>
+#include "ur/usm_allocator_config.hpp"
 
 template <class To, class From> To pi_cast(From Value) {
   // TODO: see if more sanity checks are possible.
@@ -79,6 +80,8 @@ struct _pi_platform : public _ur_platform_handle_t {
   std::list<pi_context> Contexts;
   pi_shared_mutex ContextsMutex;
 };
+
+extern usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
 
 // Implements memory allocation via L0 RT for USM allocator interface.
 class USMMemoryAllocBase : public SystemMemory {

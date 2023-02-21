@@ -50,3 +50,6 @@ ur_result_t ze2urResult(ze_result_t ZeResult) {
   }
   return It->second;
 }
+
+
+usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
