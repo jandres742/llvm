@@ -277,24 +277,6 @@ struct _pi_context : _ur_context_handle_t {
   // and return the pool to the cache if there are no unreleased events.
   pi_result decrementUnreleasedEventsInPool(pi_event Event);
 
-  // Store USM allocator context(internal allocator structures)
-  // for USM shared and device allocations. There is 1 allocator context
-  // per each pair of (context, device) per each memory type.
-  std::unordered_map<ze_device_handle_t, USMAllocContext>
-      DeviceMemAllocContexts;
-  std::unordered_map<ze_device_handle_t, USMAllocContext>
-      SharedMemAllocContexts;
-  std::unordered_map<ze_device_handle_t, USMAllocContext>
-      SharedReadOnlyMemAllocContexts;
-
-  // Since L0 native runtime does not distinguisg "shared device_read_only"
-  // vs regular "shared" allocations, we have keep track of it to use
-  // proper USMAllocContext when freeing allocations.
-  std::unordered_set<void *> SharedReadOnlyAllocs;
-
-  // Store the host allocator context. It does not depend on any device.
-  std::unique_ptr<USMAllocContext> HostMemAllocContext;
-
   // We need to store all memory allocations in the context because there could
   // be kernels with indirect access. Kernels with indirect access start to
   // reference all existing memory allocations at the time when they are

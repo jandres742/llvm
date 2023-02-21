@@ -13,6 +13,7 @@
 #include <stdarg.h>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <sycl/detail/pi.h>
@@ -22,6 +23,7 @@
 #include <zes_api.h>
 
 #include "ur_level_zero_common.hpp"
+#include <ur/usm_allocator.hpp>
 
 struct _ur_context_handle_t : _pi_object {
   _ur_context_handle_t(ze_context_handle_t ZeContext,
@@ -82,4 +84,23 @@ struct _ur_context_handle_t : _pi_object {
       ZeComputeCommandListCache;
   std::unordered_map<ze_device_handle_t, std::list<ze_command_list_handle_t>>
       ZeCopyCommandListCache;
+
+  // Store USM allocator context(internal allocator structures)
+  // for USM shared and device allocations. There is 1 allocator context
+  // per each pair of (context, device) per each memory type.
+  std::unordered_map<ze_device_handle_t, USMAllocContext>
+      DeviceMemAllocContexts;
+  std::unordered_map<ze_device_handle_t, USMAllocContext>
+      SharedMemAllocContexts;
+  std::unordered_map<ze_device_handle_t, USMAllocContext>
+      SharedReadOnlyMemAllocContexts;
+
+  // Since L0 native runtime does not distinguisg "shared device_read_only"
+  // vs regular "shared" allocations, we have keep track of it to use
+  // proper USMAllocContext when freeing allocations.
+  std::unordered_set<void *> SharedReadOnlyAllocs;
+
+  // Store the host allocator context. It does not depend on any device.
+  std::unique_ptr<USMAllocContext> HostMemAllocContext;
+
 };
