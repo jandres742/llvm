@@ -70,6 +70,19 @@ __SYCL_EXPORT pi_result piextDeviceSelectBinary(pi_device, pi_device_binary *,
   return PI_ERROR_INVALID_BINARY;
 }
 
+__SYCL_EXPORT pi_result piContextCreate(const pi_context_properties *Properties,
+                          pi_uint32 NumDevices, const pi_device *Devices,
+                          void (*PFnNotify)(const char *ErrInfo,
+                                            const void *PrivateInfo, size_t CB,
+                                            void *UserData),
+                          void *UserData, pi_context *RetContext) {
+  printf("%s %d\n", __FILE__, __LINE__);
+  return pi2ur::piContextCreate(Properties,
+                          NumDevices, Devices,
+                          PFnNotify,
+                          UserData, RetContext);
+}
+
 // This interface is not in Unified Runtime currently
 __SYCL_EXPORT pi_result piTearDown(void *) { return PI_SUCCESS; }
 
@@ -107,6 +120,9 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piDeviceGetInfo)
   _PI_API(piDevicePartition)
   _PI_API(piextDeviceSelectBinary)
+
+  _PI_API(piContextCreate)
+
   _PI_API(piTearDown)
 
   return PI_SUCCESS;
