@@ -58,14 +58,14 @@ ur_result_t ze2urResult(ze_result_t ZeResult);
 // Record for a memory allocation. This structure is used to keep information
 // for each memory allocation.
 struct MemAllocRecord : _pi_object {
-  MemAllocRecord(pi_context Context, bool OwnZeMemHandle = true)
+  MemAllocRecord(ur_context_handle_t Context, bool OwnZeMemHandle = true)
       : Context(Context), OwnZeMemHandle(OwnZeMemHandle) {}
   // Currently kernel can reference memory allocations from different contexts
   // and we need to know the context of a memory allocation when we release it
   // in piKernelRelease.
   // TODO: this should go away when memory isolation issue is fixed in the Level
   // Zero runtime.
-  pi_context Context;
+  ur_context_handle_t Context;
 
   // Indicates if we own the native memory handle or it came from interop that
   // asked to not transfer the ownership to SYCL RT.
@@ -73,3 +73,4 @@ struct MemAllocRecord : _pi_object {
 };
 
 extern usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
+

@@ -653,3 +653,153 @@ UR_APIEXPORT ur_result_t UR_APICALL urUSMGetMemAllocInfo(
   zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
+
+
+
+ur_result_t USMFreeImpl(ur_context_handle_t Context, void *Ptr,
+                             bool OwnZeMemHandle) {
+  if (OwnZeMemHandle)
+    ZE2UR_CALL(zeMemFree, (Context->ZeContext, Ptr));
+  return UR_RESULT_SUCCESS;
+}
+
+void *USMMemoryAllocBase::allocate(size_t Size) {
+  void *Ptr = nullptr;
+
+  auto Res = allocateImpl(&Ptr, Size, sizeof(void *));
+  if (Res != UR_RESULT_SUCCESS) {
+    throw UsmAllocationException(Res);
+  }
+
+  return Ptr;
+}
+
+void *USMMemoryAllocBase::allocate(size_t Size, size_t Alignment) {
+  void *Ptr = nullptr;
+
+  auto Res = allocateImpl(&Ptr, Size, Alignment);
+  if (Res != UR_RESULT_SUCCESS) {
+    throw UsmAllocationException(Res);
+  }
+  return Ptr;
+}
+
+void USMMemoryAllocBase::deallocate(void *Ptr, bool OwnZeMemHandle) {
+  auto Res = USMFreeImpl(Context, Ptr, OwnZeMemHandle);
+  if (Res != UR_RESULT_SUCCESS) {
+    throw UsmAllocationException(Res);
+  }
+}
+
+ur_result_t USMSharedMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
+                                             uint32_t Alignment) {
+  return USMSharedAllocImpl(ResultPtr, Context, Device, nullptr, Size,
+                            Alignment);
+}
+
+ur_result_t USMSharedReadOnlyMemoryAlloc::allocateImpl(void **ResultPtr,
+                                                     size_t Size,
+                                                     uint32_t Alignment) {
+  pi_usm_mem_properties Props[] = {PI_MEM_ALLOC_FLAGS,
+                                   PI_MEM_ALLOC_DEVICE_READ_ONLY, 0};
+  return USMSharedAllocImpl(ResultPtr, Context, Device, Props, Size, Alignment);
+}
+
+ur_result_t USMDeviceMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
+                                             uint32_t Alignment) {
+  return USMDeviceAllocImpl(ResultPtr, Context, Device, nullptr, Size,
+                            Alignment);
+}
+
+ur_result_t USMHostMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
+                                           uint32_t Alignment) {
+  return USMHostAllocImpl(ResultPtr, Context, nullptr, Size, Alignment);
+}
+
+ur_result_t USMDeviceAllocImpl(void **ResultPtr, ur_context_handle_t Context,
+                                    ur_device_handle_t Device,
+                                    pi_usm_mem_properties *Properties,
+                                    size_t Size, uint32_t Alignment) {
+  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+
+  // Check that incorrect bits are not set in the properties.
+  // PI_ASSERT(!Properties || *Properties == 0 ||
+  //               (*Properties == PI_MEM_ALLOC_FLAGS && *(Properties + 2) == 0),
+  //           PI_ERROR_INVALID_VALUE);
+
+  // TODO: translate PI properties to Level Zero flags
+  ZeStruct<ze_device_mem_alloc_desc_t> ZeDesc;
+  ZeDesc.flags = 0;
+  ZeDesc.ordinal = 0;
+
+  ZeStruct<ze_relaxed_allocation_limits_exp_desc_t> RelaxedDesc;
+  if (Size > Device->ZeDeviceProperties->maxMemAllocSize) {
+    // Tell Level-Zero to accept Size > maxMemAllocSize
+    RelaxedDesc.flags = ZE_RELAXED_ALLOCATION_LIMITS_EXP_FLAG_MAX_SIZE;
+    ZeDesc.pNext = &RelaxedDesc;
+  }
+
+  ZE2UR_CALL(zeMemAllocDevice, (Context->ZeContext, &ZeDesc, Size, Alignment,
+                             Device->ZeDevice, ResultPtr));
+
+  // PI_ASSERT(Alignment == 0 ||
+  //               reinterpret_cast<std::uintptr_t>(*ResultPtr) % Alignment == 0,
+  //           PI_ERROR_INVALID_VALUE);
+
+  return UR_RESULT_SUCCESS;
+}
+
+ur_result_t USMSharedAllocImpl(void **ResultPtr, ur_context_handle_t Context,
+                                    ur_device_handle_t Device, pi_usm_mem_properties *,
+                                    size_t Size, uint32_t Alignment) {
+  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+
+  // TODO: translate PI properties to Level Zero flags
+  ZeStruct<ze_host_mem_alloc_desc_t> ZeHostDesc;
+  ZeHostDesc.flags = 0;
+  ZeStruct<ze_device_mem_alloc_desc_t> ZeDevDesc;
+  ZeDevDesc.flags = 0;
+  ZeDevDesc.ordinal = 0;
+
+  ZeStruct<ze_relaxed_allocation_limits_exp_desc_t> RelaxedDesc;
+  if (Size > Device->ZeDeviceProperties->maxMemAllocSize) {
+    // Tell Level-Zero to accept Size > maxMemAllocSize
+    RelaxedDesc.flags = ZE_RELAXED_ALLOCATION_LIMITS_EXP_FLAG_MAX_SIZE;
+    ZeDevDesc.pNext = &RelaxedDesc;
+  }
+
+  ZE2UR_CALL(zeMemAllocShared, (Context->ZeContext, &ZeDevDesc, &ZeHostDesc, Size,
+                             Alignment, Device->ZeDevice, ResultPtr));
+
+  // PI_ASSERT(Alignment == 0 ||
+  //               reinterpret_cast<std::uintptr_t>(*ResultPtr) % Alignment == 0,
+  //           PI_ERROR_INVALID_VALUE);
+
+  // TODO: Handle PI_MEM_ALLOC_DEVICE_READ_ONLY.
+  return UR_RESULT_SUCCESS;
+}
+
+ur_result_t USMHostAllocImpl(void **ResultPtr, ur_context_handle_t Context,
+                                  pi_usm_mem_properties *Properties,
+                                  size_t Size, uint32_t Alignment) {
+  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+
+  // Check that incorrect bits are not set in the properties.
+  // PI_ASSERT(!Properties || *Properties == 0 ||
+  //               (*Properties == PI_MEM_ALLOC_FLAGS && *(Properties + 2) == 0),
+  //           PI_ERROR_INVALID_VALUE);
+
+  // TODO: translate PI properties to Level Zero flags
+  ZeStruct<ze_host_mem_alloc_desc_t> ZeHostDesc;
+  ZeHostDesc.flags = 0;
+  ZE2UR_CALL(zeMemAllocHost,
+          (Context->ZeContext, &ZeHostDesc, Size, Alignment, ResultPtr));
+
+  // PI_ASSERT(Alignment == 0 ||
+  //               reinterpret_cast<std::uintptr_t>(*ResultPtr) % Alignment == 0,
+  //           PI_ERROR_INVALID_VALUE);
+
+  return UR_RESULT_SUCCESS;
+}

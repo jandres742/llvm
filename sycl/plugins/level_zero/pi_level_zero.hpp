@@ -83,67 +83,6 @@ struct _pi_platform : public _ur_platform_handle_t {
 
 extern usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
 
-// Implements memory allocation via L0 RT for USM allocator interface.
-class USMMemoryAllocBase : public SystemMemory {
-protected:
-  pi_context Context;
-  pi_device Device;
-  // Internal allocation routine which must be implemented for each allocation
-  // type
-  virtual pi_result allocateImpl(void **ResultPtr, size_t Size,
-                                 pi_uint32 Alignment) = 0;
-
-public:
-  USMMemoryAllocBase(pi_context Ctx, pi_device Dev)
-      : Context{Ctx}, Device{Dev} {}
-  void *allocate(size_t Size) override final;
-  void *allocate(size_t Size, size_t Alignment) override final;
-  void deallocate(void *Ptr, bool OwnZeMemHandle) override final;
-};
-
-// Allocation routines for shared memory type
-class USMSharedMemoryAlloc : public USMMemoryAllocBase {
-protected:
-  pi_result allocateImpl(void **ResultPtr, size_t Size,
-                         pi_uint32 Alignment) override;
-
-public:
-  USMSharedMemoryAlloc(pi_context Ctx, pi_device Dev)
-      : USMMemoryAllocBase(Ctx, Dev) {}
-};
-
-// Allocation routines for shared memory type that is only modified from host.
-class USMSharedReadOnlyMemoryAlloc : public USMMemoryAllocBase {
-protected:
-  pi_result allocateImpl(void **ResultPtr, size_t Size,
-                         pi_uint32 Alignment) override;
-
-public:
-  USMSharedReadOnlyMemoryAlloc(pi_context Ctx, pi_device Dev)
-      : USMMemoryAllocBase(Ctx, Dev) {}
-};
-
-// Allocation routines for device memory type
-class USMDeviceMemoryAlloc : public USMMemoryAllocBase {
-protected:
-  pi_result allocateImpl(void **ResultPtr, size_t Size,
-                         pi_uint32 Alignment) override;
-
-public:
-  USMDeviceMemoryAlloc(pi_context Ctx, pi_device Dev)
-      : USMMemoryAllocBase(Ctx, Dev) {}
-};
-
-// Allocation routines for host memory type
-class USMHostMemoryAlloc : public USMMemoryAllocBase {
-protected:
-  pi_result allocateImpl(void **ResultPtr, size_t Size,
-                         pi_uint32 Alignment) override;
-
-public:
-  USMHostMemoryAlloc(pi_context Ctx) : USMMemoryAllocBase(Ctx, nullptr) {}
-};
-
 enum EventsScope {
   // All events are created host-visible.
   AllHostVisible,
