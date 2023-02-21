@@ -145,15 +145,12 @@ struct _pi_context : _ur_context_handle_t {
               const pi_device *Devs, bool OwnZeContext)
       : _ur_context_handle_t(ZeContext,
                              reinterpret_cast<uint32_t>(NumDevices),
-                             Devs,
+                             reinterpret_cast<ur_device_handle_t *>(const_cast<pi_device *>(Devs)),
                              OwnZeContext){
     SingleRootDevice = getRootDevice();
     // NOTE: one must additionally call initialize() to complete
     // PI context creation.
   }
-
-  // Initialize the PI context.
-  pi_result initialize();
 
   // Finalize the PI context
   pi_result finalize();
@@ -209,14 +206,6 @@ struct _pi_context : _ur_context_handle_t {
   void addEventToContextCache(pi_event);
 
 private:
-  // If context contains one device then return this device.
-  // If context contains sub-devices of the same device, then return this parent
-  // device. Return nullptr if context consists of several devices which are not
-  // sub-devices of the same device. We call returned device the root device of
-  // a context.
-  // TODO: get rid of this when contexts with multiple devices are supported for
-  // images.
-  pi_device getRootDevice() const;
 
   auto getZeEventPoolCache(bool HostVisible, bool WithProfiling) {
     if (HostVisible)

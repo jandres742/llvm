@@ -28,7 +28,7 @@
 struct _ur_context_handle_t : _pi_object {
   _ur_context_handle_t(ze_context_handle_t ZeContext,
                        uint32_t NumDevices,
-                       const pi_device *Devs,
+                       const ur_device_handle_t *Devs,
                        bool OwnZeContext) :
     ZeContext{ZeContext}, Devices{Devs, Devs + NumDevices}, OwnZeContext{OwnZeContext} {}
 
@@ -41,11 +41,11 @@ struct _ur_context_handle_t : _pi_object {
     // Keep the PI devices this PI context was created for.
   // This field is only set at _pi_context creation time, and cannot change.
   // Therefore it can be accessed without holding a lock on this _pi_context.
-  const std::vector<pi_device> Devices;
+  const std::vector<ur_device_handle_t> Devices;
 
     // Indicates if we own the ZeContext or it came from interop that
   // asked to not transfer the ownership to SYCL RT.
-  bool OwnZeContext;
+  bool OwnZeContext = false;
 
   // Immediate Level Zero command list for the device in this context, to be
   // used for initializations. To be created as:
@@ -70,7 +70,7 @@ struct _ur_context_handle_t : _pi_object {
   // to save this device.
   // This field is only set at _pi_context creation time, and cannot change.
   // Therefore it can be accessed without holding a lock on this _pi_context.
-  pi_device SingleRootDevice = nullptr;
+  ur_device_handle_t SingleRootDevice = nullptr;
 
   // Cache of all currently available/completed command/copy lists.
   // Note that command-list can only be re-used on the same device.
@@ -149,5 +149,16 @@ struct _ur_context_handle_t : _pi_object {
   // Caches for events.
   std::vector<std::list<pi_event>> EventCaches{4};
 
+  // Initialize the PI context.
+  ur_result_t initialize();
+
+  // If context contains one device then return this device.
+  // If context contains sub-devices of the same device, then return this parent
+  // device. Return nullptr if context consists of several devices which are not
+  // sub-devices of the same device. We call returned device the root device of
+  // a context.
+  // TODO: get rid of this when contexts with multiple devices are supported for
+  // images.
+  ur_device_handle_t getRootDevice() const;
 
 };
