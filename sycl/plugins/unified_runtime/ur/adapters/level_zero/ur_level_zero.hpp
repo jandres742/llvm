@@ -32,27 +32,6 @@
 #include "ur_level_zero_queue.hpp"
 #include "ur_level_zero_sampler.hpp"
 
-// Returns the ze_structure_type_t to use in .stype of a structured descriptor.
-// Intentionally not defined; will give an error if no proper specialization
-template <class T> ze_structure_type_t getZeStructureType();
-template <class T> zes_structure_type_t getZesStructureType();
-
-// The helpers to properly default initialize Level-Zero descriptor and
-// properties structures.
-template <class T> struct ZeStruct : public T {
-  ZeStruct() : T{} { // zero initializes base struct
-    this->stype = getZeStructureType<T>();
-    this->pNext = nullptr;
-  }
-};
-
-template <class T> struct ZesStruct : public T {
-  ZesStruct() : T{} { // zero initializes base struct
-    this->stype = getZesStructureType<T>();
-    this->pNext = nullptr;
-  }
-};
-
 // Controls Level Zero calls serialization to w/a Level Zero driver being not MT
 // ready. Recognized values (can be used as a bit mask):
 enum {

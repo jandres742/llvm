@@ -23,6 +23,27 @@
 
 #include "ur/usm_allocator_config.hpp"
 
+// Returns the ze_structure_type_t to use in .stype of a structured descriptor.
+// Intentionally not defined; will give an error if no proper specialization
+template <class T> ze_structure_type_t getZeStructureType();
+template <class T> zes_structure_type_t getZesStructureType();
+
+// The helpers to properly default initialize Level-Zero descriptor and
+// properties structures.
+template <class T> struct ZeStruct : public T {
+  ZeStruct() : T{} { // zero initializes base struct
+    this->stype = getZeStructureType<T>();
+    this->pNext = nullptr;
+  }
+};
+
+template <class T> struct ZesStruct : public T {
+  ZesStruct() : T{} { // zero initializes base struct
+    this->stype = getZesStructureType<T>();
+    this->pNext = nullptr;
+  }
+};
+
 // Map Level Zero runtime error code to UR error code.
 ur_result_t ze2urResult(ze_result_t ZeResult);
 
