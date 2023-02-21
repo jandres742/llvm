@@ -103,6 +103,13 @@ struct _ur_context_handle_t : _pi_object {
   // Store the host allocator context. It does not depend on any device.
   std::unique_ptr<USMAllocContext> HostMemAllocContext;
 
+  // We need to store all memory allocations in the context because there could
+  // be kernels with indirect access. Kernels with indirect access start to
+  // reference all existing memory allocations at the time when they are
+  // submitted to the device. Referenced memory allocations can be released only
+  // when kernel has finished execution.
+  std::unordered_map<void *, MemAllocRecord> MemAllocs;
+
   // Following member variables are used to manage assignment of events
   // to event pools.
   //

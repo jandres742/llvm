@@ -65,23 +65,6 @@ template <> uint32_t inline pi_cast(uint64_t Value) {
   return CastedValue;
 }
 
-// Record for a memory allocation. This structure is used to keep information
-// for each memory allocation.
-struct MemAllocRecord : _pi_object {
-  MemAllocRecord(pi_context Context, bool OwnZeMemHandle = true)
-      : Context(Context), OwnZeMemHandle(OwnZeMemHandle) {}
-  // Currently kernel can reference memory allocations from different contexts
-  // and we need to know the context of a memory allocation when we release it
-  // in piKernelRelease.
-  // TODO: this should go away when memory isolation issue is fixed in the Level
-  // Zero runtime.
-  pi_context Context;
-
-  // Indicates if we own the native memory handle or it came from interop that
-  // asked to not transfer the ownership to SYCL RT.
-  bool OwnZeMemHandle;
-};
-
 // Define the types that are opaque in pi.h in a manner suitabale for Level Zero
 // plugin
 
@@ -276,13 +259,6 @@ struct _pi_context : _ur_context_handle_t {
   // Decrement number of events living in the pool upon event destroy
   // and return the pool to the cache if there are no unreleased events.
   pi_result decrementUnreleasedEventsInPool(pi_event Event);
-
-  // We need to store all memory allocations in the context because there could
-  // be kernels with indirect access. Kernels with indirect access start to
-  // reference all existing memory allocations at the time when they are
-  // submitted to the device. Referenced memory allocations can be released only
-  // when kernel has finished execution.
-  std::unordered_map<void *, MemAllocRecord> MemAllocs;
 
   // Get pi_event from cache.
   pi_event getEventFromContextCache(bool HostVisible, bool WithProfiling);
