@@ -2265,6 +2265,7 @@ pi_result piContextCreate(const pi_context_properties *Properties,
   (void)Properties;
   (void)PFnNotify;
   (void)UserData;
+  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
   PI_ASSERT(NumDevices, PI_ERROR_INVALID_VALUE);
   PI_ASSERT(Devices, PI_ERROR_INVALID_DEVICE);
   PI_ASSERT(RetContext, PI_ERROR_INVALID_VALUE);

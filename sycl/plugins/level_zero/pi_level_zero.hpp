@@ -221,9 +221,8 @@ struct _pi_context : _ur_context_handle_t {
       : _ur_context_handle_t(ZeContext,
                              reinterpret_cast<uint32_t>(NumDevices),
                              Devs,
-                             OwnZeContext),
-        SingleRootDevice(getRootDevice()),
-        ZeCommandListInit{nullptr} {
+                             OwnZeContext){
+    SingleRootDevice = getRootDevice();
     // NOTE: one must additionally call initialize() to complete
     // PI context creation.
   }
@@ -240,43 +239,6 @@ struct _pi_context : _ur_context_handle_t {
   // Checks if Device is covered by this context.
   // For that the Device or its root devices need to be in the context.
   bool isValidDevice(pi_device Device) const;
-
-  // If context contains one device or sub-devices of the same device, we want
-  // to save this device.
-  // This field is only set at _pi_context creation time, and cannot change.
-  // Therefore it can be accessed without holding a lock on this _pi_context.
-  const pi_device SingleRootDevice = nullptr;
-
-  // Immediate Level Zero command list for the device in this context, to be
-  // used for initializations. To be created as:
-  // - Immediate command list: So any command appended to it is immediately
-  //   offloaded to the device.
-  // - Synchronous: So implicit synchronization is made inside the level-zero
-  //   driver.
-  // There will be a list of immediate command lists (for each device) when
-  // support of the multiple devices per context will be added.
-  ze_command_list_handle_t ZeCommandListInit;
-
-  // Mutex for the immediate command list. Per the Level Zero spec memory copy
-  // operations submitted to an immediate command list are not allowed to be
-  // called from simultaneous threads.
-  pi_mutex ImmediateCommandListMutex;
-
-  // Mutex Lock for the Command List Cache. This lock is used to control both
-  // compute and copy command list caches.
-  pi_mutex ZeCommandListCacheMutex;
-  // Cache of all currently available/completed command/copy lists.
-  // Note that command-list can only be re-used on the same device.
-  //
-  // TODO: explore if we should use root-device for creating command-lists
-  // as spec says that in that case any sub-device can re-use it: "The
-  // application must only use the command list for the device, or its
-  // sub-devices, which was provided during creation."
-  //
-  std::unordered_map<ze_device_handle_t, std::list<ze_command_list_handle_t>>
-      ZeComputeCommandListCache;
-  std::unordered_map<ze_device_handle_t, std::list<ze_command_list_handle_t>>
-      ZeCopyCommandListCache;
 
   // Retrieves a command list for executing on this device along with
   // a fence to be used in tracking the execution of this command list.

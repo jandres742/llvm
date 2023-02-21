@@ -24,6 +24,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextCreate(
   ur_platform_handle_t Platform = phDevices[0]->Platform;
   ZeStruct<ze_context_desc_t> ContextDesc {};
 
+  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
+
   ze_context_handle_t ZeContext {};
   ZE2UR_CALL(zeContextCreate, (Platform->ZeDriver, &ContextDesc, &ZeContext));
   try {
