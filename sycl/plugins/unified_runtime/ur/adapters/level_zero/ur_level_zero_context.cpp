@@ -21,8 +21,24 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextCreate(
     ur_context_handle_t
         *phContext ///< [out] pointer to handle of context object created
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  ur_platform_handle_t Platform = phDevices[0]->Platform;
+  ZeStruct<ze_context_desc_t> ContextDesc {};
+
+  ze_context_handle_t ZeContext {};
+  ZE2UR_CALL(zeContextCreate, (Platform->ZeDriver, &ContextDesc, &ZeContext));
+  try {
+    ur_context_handle_t_ *Context = new ur_context_handle_t_(ZeContext,
+                                                             DeviceCount,
+                                                             reinterpret_cast<const pi_device *>(const_cast<const ur_device_handle_t *>(phDevices)),
+                                                             true);
+    *phContext = Context;
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextRetain(

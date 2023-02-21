@@ -215,11 +215,14 @@ using pi_command_list_map_t =
 // The iterator pointing to a specific command-list in use.
 using pi_command_list_ptr_t = pi_command_list_map_t::iterator;
 
-struct _pi_context : _pi_object {
+struct _pi_context : _ur_context_handle_t {
   _pi_context(ze_context_handle_t ZeContext, pi_uint32 NumDevices,
               const pi_device *Devs, bool OwnZeContext)
-      : ZeContext{ZeContext}, OwnZeContext{OwnZeContext},
-        Devices{Devs, Devs + NumDevices}, SingleRootDevice(getRootDevice()),
+      : _ur_context_handle_t(ZeContext,
+                             reinterpret_cast<uint32_t>(NumDevices),
+                             Devs,
+                             OwnZeContext),
+        SingleRootDevice(getRootDevice()),
         ZeCommandListInit{nullptr} {
     // NOTE: one must additionally call initialize() to complete
     // PI context creation.
@@ -233,21 +236,6 @@ struct _pi_context : _pi_object {
 
   // Return the Platform, which is the same for all devices in the context
   pi_platform getPlatform() const;
-
-  // A L0 context handle is primarily used during creation and management of
-  // resources that may be used by multiple devices.
-  // This field is only set at _pi_context creation time, and cannot change.
-  // Therefore it can be accessed without holding a lock on this _pi_context.
-  const ze_context_handle_t ZeContext;
-
-  // Indicates if we own the ZeContext or it came from interop that
-  // asked to not transfer the ownership to SYCL RT.
-  bool OwnZeContext;
-
-  // Keep the PI devices this PI context was created for.
-  // This field is only set at _pi_context creation time, and cannot change.
-  // Therefore it can be accessed without holding a lock on this _pi_context.
-  const std::vector<pi_device> Devices;
 
   // Checks if Device is covered by this context.
   // For that the Device or its root devices need to be in the context.
