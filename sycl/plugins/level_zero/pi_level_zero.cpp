@@ -756,10 +756,14 @@ _pi_queue::_pi_queue(std::vector<ze_command_queue_handle_t> &ComputeQueues,
                      std::vector<ze_command_queue_handle_t> &CopyQueues,
                      pi_context Context, pi_device Device,
                      bool OwnZeCommandQueue,
-                     pi_queue_properties PiQueueProperties,
+                     pi_queue_properties Properties,
                      int ForceComputeIndex)
-    : Context{Context}, Device{Device}, OwnZeCommandQueue{OwnZeCommandQueue},
-      Properties(PiQueueProperties) {
+    : _ur_queue_handle_t(ComputeQueues,
+                     CopyQueues,
+                     Context, Device,
+                     OwnZeCommandQueue,
+                     Properties,
+                     ForceComputeIndex) {
 
   // Compute group initialization.
   // First, see if the queue's device allows for round-robin or it is
@@ -1718,6 +1722,7 @@ static const bool FilterEventWaitList = [] {
   const bool RetVal = Ret ? std::stoi(Ret) : 1;
   return RetVal;
 }();
+
 
 pi_result _pi_ze_event_list_t::createAndRetainPiZeEventList(
     pi_uint32 EventListLength, const pi_event *EventList, pi_queue CurQueue,

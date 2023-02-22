@@ -89,3 +89,16 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueFlush(
   zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
+
+
+_ur_queue_handle_t::_ur_queue_handle_t(std::vector<ze_command_queue_handle_t> &ComputeQueues,
+                                       std::vector<ze_command_queue_handle_t> &CopyQueues,
+                                       pi_context Context,
+                                       pi_device Device,
+                                       bool OwnZeCommandQueue,
+                                      pi_queue_properties Properties,
+                                      int ForceComputeIndex): Context{Context},
+                                                              Device{Device},
+                                                              OwnZeCommandQueue{OwnZeCommandQueue},
+                                                              Properties(Properties) {
+}
