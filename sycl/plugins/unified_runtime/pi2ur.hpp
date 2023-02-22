@@ -274,6 +274,8 @@ inline pi_result piPlatformGetInfo(pi_platform platform,
   return PI_SUCCESS;
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Device
 inline pi_result piDevicesGet(pi_platform Platform, pi_device_type DeviceType,
                               pi_uint32 NumEntries, pi_device *Devices,
                               pi_uint32 *NumDevices) {
@@ -549,6 +551,8 @@ inline pi_result piDevicePartition(
                                   NumSubDevices));
   return PI_SUCCESS;
 }
+// Device
+///////////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////////////////////////////////////////////////////
 // Context
@@ -596,6 +600,41 @@ inline pi_result piContextRelease(pi_context Context) {
   return PI_SUCCESS;
 }
 // Context
+///////////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////////
+// Queue
+inline pi_result piQueueCreate(pi_context Context, pi_device Device,
+                        pi_queue_properties Flags, pi_queue *Queue) {
+  printf("%s %d\n", __FILE__, __LINE__);
+
+  ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
+  ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
+  ur_queue_property_t props {};
+  ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
+  HANDLE_ERRORS(urQueueCreate(hContext, 
+                              hDevice,
+                              &props,
+                              phQueue));
+  return PI_SUCCESS;
+}
+
+inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
+                           pi_queue_properties *Properties, pi_queue *Queue) {
+  printf("%s %d\n", __FILE__, __LINE__);
+
+  ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
+  ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
+  ur_queue_property_t props {};
+  ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
+  HANDLE_ERRORS(urQueueCreate(hContext, 
+                              hDevice,
+                              &props,
+                              phQueue));
+  return PI_SUCCESS;
+}
+
+// Queue
 ///////////////////////////////////////////////////////////////////////////////
 
 } // namespace pi2ur
