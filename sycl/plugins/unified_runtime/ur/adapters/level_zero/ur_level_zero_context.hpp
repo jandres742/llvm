@@ -103,4 +103,44 @@ struct _ur_context_handle_t : _pi_object {
   // Store the host allocator context. It does not depend on any device.
   std::unique_ptr<USMAllocContext> HostMemAllocContext;
 
+  // Following member variables are used to manage assignment of events
+  // to event pools.
+  //
+  // TODO: Create pi_event_pool class to encapsulate working with pools.
+  // This will avoid needing the use of maps below, and cleanup the
+  // pi_context overall.
+  //
+
+  // The cache of event pools from where new events are allocated from.
+  // The head event pool is where the next event would be added to if there
+  // is still some room there. If there is no room in the head then
+  // the following event pool is taken (guranteed to be empty) and made the
+  // head. In case there is no next pool, a new pool is created and made the
+  // head.
+  //
+  // Cache of event pools to which host-visible events are added to.
+  std::vector<std::list<ze_event_pool_handle_t>> ZeEventPoolCache{4};
+
+  // This map will be used to determine if a pool is full or not
+  // by storing number of empty slots available in the pool.
+  std::unordered_map<ze_event_pool_handle_t, pi_uint32>
+      NumEventsAvailableInEventPool;
+  // This map will be used to determine number of unreleased events in the pool.
+  // We use separate maps for number of event slots available in the pool from
+  // the number of events unreleased in the pool.
+  // This will help when we try to make the code thread-safe.
+  std::unordered_map<ze_event_pool_handle_t, pi_uint32>
+      NumEventsUnreleasedInEventPool;
+
+  // Mutex to control operations on event pool caches and the helper maps
+  // holding the current pool usage counts.
+  pi_mutex ZeEventPoolCacheMutex;
+
+  // Mutex to control operations on event caches.
+  pi_mutex EventCacheMutex;
+
+  // Caches for events.
+  std::vector<std::list<pi_event>> EventCaches{4};
+
+
 };
