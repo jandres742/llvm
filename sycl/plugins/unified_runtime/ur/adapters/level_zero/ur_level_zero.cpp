@@ -44,14 +44,6 @@ bool setEnvVar(const char *name, const char *value) {
   return true;
 }
 
-// Trace a call to Level-Zero RT
-#define ZE_CALL(ZeName, ZeArgs)                                                \
-  {                                                                            \
-    ze_result_t ZeResult = ZeName ZeArgs;                                      \
-    if (auto Result = ZeCall().doCall(ZeResult, #ZeName, #ZeArgs, true))       \
-      return ze2urResult(Result);                                              \
-  }
-
 // This will count the calls to Level-Zero
 std::map<const char *, int> *ZeCallCount = nullptr;
 
@@ -237,7 +229,7 @@ static const bool ExposeCSliceInAffinityPartitioning = [] {
 ur_result_t _ur_platform_handle_t::initialize() {
   // Cache driver properties
   ZeStruct<ze_driver_properties_t> ZeDriverProperties;
-  ZE_CALL(zeDriverGetProperties, (ZeDriver, &ZeDriverProperties));
+  ZE2UR_CALL(zeDriverGetProperties, (ZeDriver, &ZeDriverProperties));
   uint32_t DriverVersion = ZeDriverProperties.driverVersion;
   // Intel Level-Zero GPU driver stores version as:
   // | 31 - 24 | 23 - 16 | 15 - 0 |
@@ -247,17 +239,17 @@ ur_result_t _ur_platform_handle_t::initialize() {
   auto VersionBuild = std::to_string(DriverVersion & 0x0000FFFF);
   ZeDriverVersion = VersionMajor + "." + VersionMinor + "." + VersionBuild;
 
-  ZE_CALL(zeDriverGetApiVersion, (ZeDriver, &ZeApiVersion));
+  ZE2UR_CALL(zeDriverGetApiVersion, (ZeDriver, &ZeApiVersion));
   ZeDriverApiVersion = std::to_string(ZE_MAJOR_VERSION(ZeApiVersion)) + "." +
                        std::to_string(ZE_MINOR_VERSION(ZeApiVersion));
 
   // Cache driver extension properties
   uint32_t Count = 0;
-  ZE_CALL(zeDriverGetExtensionProperties, (ZeDriver, &Count, nullptr));
+  ZE2UR_CALL(zeDriverGetExtensionProperties, (ZeDriver, &Count, nullptr));
 
   std::vector<ze_driver_extension_properties_t> ZeExtensions(Count);
 
-  ZE_CALL(zeDriverGetExtensionProperties,
+  ZE2UR_CALL(zeDriverGetExtensionProperties,
           (ZeDriver, &Count, ZeExtensions.data()));
 
   for (auto &extension : ZeExtensions) {
@@ -359,14 +351,14 @@ UR_APIEXPORT ur_result_t UR_APICALL urPlatformGet(
       // Level Zero does not have concept of Platforms, but Level Zero driver is
       // the closest match.
       uint32_t ZeDriverCount = 0;
-      ZE_CALL(zeDriverGet, (&ZeDriverCount, nullptr));
+      ZE2UR_CALL(zeDriverGet, (&ZeDriverCount, nullptr));
       if (ZeDriverCount == 0) {
         PiPlatformCachePopulated = true;
       } else {
         std::vector<ze_driver_handle_t> ZeDrivers;
         ZeDrivers.resize(ZeDriverCount);
 
-        ZE_CALL(zeDriverGet, (&ZeDriverCount, ZeDrivers.data()));
+        ZE2UR_CALL(zeDriverGet, (&ZeDriverCount, ZeDrivers.data()));
         for (uint32_t I = 0; I < ZeDriverCount; ++I) {
           auto Platform = new ur_platform_handle_t_(ZeDrivers[I]);
           // Save a copy in the cache for future uses.
@@ -1053,7 +1045,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
       return UR_RESULT_ERROR_INVALID_VALUE;
     }
     ZesStruct<zes_pci_properties_t> ZeDevicePciProperties;
-    ZE_CALL(zesDevicePciGetProperties, (ZeDevice, &ZeDevicePciProperties));
+    ZE2UR_CALL(zesDevicePciGetProperties, (ZeDevice, &ZeDevicePciProperties));
     constexpr size_t AddressBufferSize = 13;
     char AddressBuffer[AddressBufferSize];
     std::snprintf(AddressBuffer, AddressBufferSize, "%04x:%02x:%02x.%01x",
@@ -1074,14 +1066,14 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
     // Currently this is only the one enumerated with ordinal 0.
     uint64_t FreeMemory = 0;
     uint32_t MemCount = 0;
-    ZE_CALL(zesDeviceEnumMemoryModules, (ZeDevice, &MemCount, nullptr));
+    ZE2UR_CALL(zesDeviceEnumMemoryModules, (ZeDevice, &MemCount, nullptr));
     if (MemCount != 0) {
       std::vector<zes_mem_handle_t> ZesMemHandles(MemCount);
-      ZE_CALL(zesDeviceEnumMemoryModules,
+      ZE2UR_CALL(zesDeviceEnumMemoryModules,
               (ZeDevice, &MemCount, ZesMemHandles.data()));
       for (auto &ZesMemHandle : ZesMemHandles) {
         ZesStruct<zes_mem_properties_t> ZesMemProperties;
-        ZE_CALL(zesMemoryGetProperties, (ZesMemHandle, &ZesMemProperties));
+        ZE2UR_CALL(zesMemoryGetProperties, (ZesMemHandle, &ZesMemProperties));
         // For root-device report memory from all memory modules since that
         // is what totally available in the default implicit scaling mode.
         // For sub-devices only report memory local to them.
@@ -1089,7 +1081,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
                                           ZesMemProperties.subdeviceId) {
 
           ZesStruct<zes_mem_state_t> ZesMemState;
-          ZE_CALL(zesMemoryGetState, (ZesMemHandle, &ZesMemState));
+          ZE2UR_CALL(zesMemoryGetState, (ZesMemHandle, &ZesMemState));
           FreeMemory += ZesMemState.free;
         }
       }
@@ -1259,7 +1251,7 @@ _ur_device_handle_t::useImmediateCommandLists() {
 ur_result_t _ur_device_handle_t::initialize(int SubSubDeviceOrdinal,
                                             int SubSubDeviceIndex) {
   uint32_t numQueueGroups = 0;
-  ZE_CALL(zeDeviceGetCommandQueueGroupProperties,
+  ZE2UR_CALL(zeDeviceGetCommandQueueGroupProperties,
           (ZeDevice, &numQueueGroups, nullptr));
   if (numQueueGroups == 0) {
     return UR_RESULT_ERROR_UNKNOWN;
@@ -1267,7 +1259,7 @@ ur_result_t _ur_device_handle_t::initialize(int SubSubDeviceOrdinal,
   zePrint("NOTE: Number of queue groups = %d\n", numQueueGroups);
   std::vector<ZeStruct<ze_command_queue_group_properties_t>>
       QueueGroupProperties(numQueueGroups);
-  ZE_CALL(zeDeviceGetCommandQueueGroupProperties,
+  ZE2UR_CALL(zeDeviceGetCommandQueueGroupProperties,
           (ZeDevice, &numQueueGroups, QueueGroupProperties.data()));
 
   // Initialize ordinal and compute queue group properties
@@ -1440,11 +1432,11 @@ ur_result_t _ur_platform_handle_t::populateDeviceCacheIfNeeded() {
   }
 
   uint32_t ZeDeviceCount = 0;
-  ZE_CALL(zeDeviceGet, (ZeDriver, &ZeDeviceCount, nullptr));
+  ZE2UR_CALL(zeDeviceGet, (ZeDriver, &ZeDeviceCount, nullptr));
 
   try {
     std::vector<ze_device_handle_t> ZeDevices(ZeDeviceCount);
-    ZE_CALL(zeDeviceGet, (ZeDriver, &ZeDeviceCount, ZeDevices.data()));
+    ZE2UR_CALL(zeDeviceGet, (ZeDriver, &ZeDeviceCount, ZeDevices.data()));
 
     for (uint32_t I = 0; I < ZeDeviceCount; ++I) {
       std::unique_ptr<ur_device_handle_t_> Device(
@@ -1458,11 +1450,11 @@ ur_result_t _ur_platform_handle_t::populateDeviceCacheIfNeeded() {
       // are readily visible to the piextDeviceCreateWithNativeHandle.
       //
       uint32_t SubDevicesCount = 0;
-      ZE_CALL(zeDeviceGetSubDevices,
+      ZE2UR_CALL(zeDeviceGetSubDevices,
               (Device->ZeDevice, &SubDevicesCount, nullptr));
 
       auto ZeSubdevices = new ze_device_handle_t[SubDevicesCount];
-      ZE_CALL(zeDeviceGetSubDevices,
+      ZE2UR_CALL(zeDeviceGetSubDevices,
               (Device->ZeDevice, &SubDevicesCount, ZeSubdevices));
 
       // Wrap the Level Zero sub-devices into PI sub-devices, and add them to
@@ -1481,14 +1473,14 @@ ur_result_t _ur_platform_handle_t::populateDeviceCacheIfNeeded() {
         std::vector<int> Ordinals;
 
         uint32_t numQueueGroups = 0;
-        ZE_CALL(zeDeviceGetCommandQueueGroupProperties,
+        ZE2UR_CALL(zeDeviceGetCommandQueueGroupProperties,
                 (PiSubDevice->ZeDevice, &numQueueGroups, nullptr));
         if (numQueueGroups == 0) {
           return UR_RESULT_ERROR_UNKNOWN;
         }
         std::vector<ze_command_queue_group_properties_t> QueueGroupProperties(
             numQueueGroups);
-        ZE_CALL(zeDeviceGetCommandQueueGroupProperties,
+        ZE2UR_CALL(zeDeviceGetCommandQueueGroupProperties,
                 (PiSubDevice->ZeDevice, &numQueueGroups,
                  QueueGroupProperties.data()));
 

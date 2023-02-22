@@ -34,3 +34,11 @@
 
 // Map Level Zero runtime error code to UR error code.
 ur_result_t ze2urResult(ze_result_t ZeResult);
+
+// Trace a call to Level-Zero RT
+#define ZE2UR_CALL(ZeName, ZeArgs)                                             \
+  {                                                                            \
+    ze_result_t ZeResult = ZeName ZeArgs;                                      \
+    if (auto Result = ZeCall().doCall(ZeResult, #ZeName, #ZeArgs, true))       \
+      return ze2urResult(Result);                                              \
+  }
