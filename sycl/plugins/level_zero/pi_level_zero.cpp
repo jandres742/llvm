@@ -359,7 +359,7 @@ pi_result _pi_queue::resetDiscardedEvent(pi_command_list_ptr_t CommandList) {
     }
 
     if (LastCommandEvent->isHostVisible())
-      PiEvent->HostVisibleEvent = PiEvent;
+      PiEvent->HostVisibleEvent = reinterpret_cast<ur_event_handle_t>(PiEvent);
 
     PI_CALL(addEventToQueueCache(PiEvent));
   }
@@ -1384,7 +1384,7 @@ pi_result _pi_queue::executeCommandList(pi_command_list_ptr_t CommandList,
             continue;
 
           if (!Event->HostVisibleEvent) {
-            Event->HostVisibleEvent = HostVisibleEvent;
+            Event->HostVisibleEvent = reinterpret_cast<ur_event_handle_t>(HostVisibleEvent);
             HostVisibleEvent->RefCount.increment();
           }
         }
@@ -4469,7 +4469,7 @@ _pi_event::getOrCreateHostVisibleEvent(ze_event_handle_t &ZeHostVisibleEvent) {
 
     // Create a "proxy" host-visible event.
     auto Res = createEventAndAssociateQueue(
-        Queue, &HostVisibleEvent, PI_COMMAND_TYPE_USER, CommandList,
+        Queue, reinterpret_cast<pi_event *>(&HostVisibleEvent), PI_COMMAND_TYPE_USER, CommandList,
         /* IsInternal */ false, /* ForceHostVisible */ true);
     if (Res != PI_SUCCESS)
       return Res;
@@ -4583,7 +4583,7 @@ static pi_result EventCreate(pi_context Context, pi_queue Queue,
   }
 
   if (HostVisible)
-    (*RetEvent)->HostVisibleEvent = *RetEvent;
+    (*RetEvent)->HostVisibleEvent = reinterpret_cast<ur_event_handle_t>(*RetEvent);
 
   return PI_SUCCESS;
 }
@@ -5079,7 +5079,7 @@ pi_result piextEventCreateWithNativeHandle(pi_native_handle NativeHandle,
 
   // Assume native event is host-visible, or otherwise we'd
   // need to create a host-visible proxy for it.
-  (*Event)->HostVisibleEvent = *Event;
+  (*Event)->HostVisibleEvent = reinterpret_cast<ur_event_handle_t>(*Event);
 
   // Unlike regular events managed by SYCL RT we don't have to wait for interop
   // events completion, and not need to do the their `cleanup()`. This in
