@@ -21,6 +21,16 @@
 #include <zes_api.h>
 
 #include "ur_level_zero_common.hpp"
+#include "ur_level_zero_context.hpp"
+#include "ur_level_zero_device.hpp"
+#include "ur_level_zero_event.hpp"
+#include "ur_level_zero_mem.hpp"
+#include "ur_level_zero_module.hpp"
+#include "ur_level_zero_native.hpp"
+#include "ur_level_zero_platform.hpp"
+#include "ur_level_zero_program.hpp"
+#include "ur_level_zero_queue.hpp"
+#include "ur_level_zero_sampler.hpp"
 
 // Returns the ze_structure_type_t to use in .stype of a structured descriptor.
 // Intentionally not defined; will give an error if no proper specialization
