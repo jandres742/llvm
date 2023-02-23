@@ -136,3 +136,17 @@ UR_APIEXPORT ur_result_t UR_APICALL urProgramCreateWithNativeHandle(
   zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
+
+_ur_program_handle_t::~_ur_program_handle_t() {
+  // According to Level Zero Specification, all kernels and build logs
+  // must be destroyed before the Module can be destroyed.  So, be sure
+  // to destroy build log before destroying the module.
+  if (ZeBuildLog) {
+    ZE_CALL_NOCHECK(zeModuleBuildLogDestroy, (ZeBuildLog));
+  }
+
+  if (ZeModule && OwnZeModule) {
+    ZE_CALL_NOCHECK(zeModuleDestroy, (ZeModule));
+  }
+}
+

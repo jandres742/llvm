@@ -133,6 +133,14 @@ struct _ur_platform_handle_t : public _ur_platform {
   // Return the PI device from cache that represents given native device.
   // If not found, then nullptr is returned.
   ur_device_handle_t getDeviceFromNativeHandle(ze_device_handle_t);
+
+  // Keep track of all contexts in the platform. This is needed to manage
+  // a lifetime of memory allocations in each context when there are kernels
+  // with indirect access.
+  // TODO: should be deleted when memory isolation in the context is implemented
+  // in the driver.
+  std::list<ur_context_handle_t> Contexts;
+  pi_shared_mutex ContextsMutex;
 };
 
 // TODO: make it into a ur_device_handle_t class member

@@ -803,3 +803,159 @@ ur_result_t USMHostAllocImpl(void **ResultPtr, ur_context_handle_t Context,
 
   return UR_RESULT_SUCCESS;
 }
+
+// If indirect access tracking is not enabled then this functions just performs
+// zeMemFree. If indirect access tracking is enabled then reference counting is
+// performed.
+ur_result_t ZeMemFreeHelper(ur_context_handle_t Context, void *Ptr,
+                                 bool OwnZeMemHandle) {
+  ur_platform_handle_t Plt = Context->getPlatform();
+  std::unique_lock<pi_shared_mutex> ContextsLock(Plt->ContextsMutex,
+                                                 std::defer_lock);
+  if (IndirectAccessTrackingEnabled) {
+    ContextsLock.lock();
+    auto It = Context->MemAllocs.find(Ptr);
+    if (It == std::end(Context->MemAllocs)) {
+      die("All memory allocations must be tracked!");
+    }
+    if (!It->second.RefCount.decrementAndTest()) {
+      // Memory can't be deallocated yet.
+      return UR_RESULT_SUCCESS;
+    }
+
+    // Reference count is zero, it is ok to free memory.
+    // We don't need to track this allocation anymore.
+    Context->MemAllocs.erase(It);
+  }
+
+  if (OwnZeMemHandle)
+    ZE2UR_CALL(zeMemFree, (Context->ZeContext, Ptr));
+
+  if (IndirectAccessTrackingEnabled)
+    UR_CALL(ContextReleaseHelper(Context));
+
+  return UR_RESULT_SUCCESS;
+}
+
+bool ShouldUseUSMAllocator() {
+  // Enable allocator by default if it's not explicitly disabled
+  return std::getenv("SYCL_PI_LEVEL_ZERO_DISABLE_USM_ALLOCATOR") == nullptr;
+}
+
+const bool UseUSMAllocator = ShouldUseUSMAllocator();
+
+// Helper function to deallocate USM memory, if indirect access support is
+// enabled then a caller must lock the platform-level mutex guarding the
+// container with contexts because deallocating the memory can turn RefCount of
+// a context to 0 and as a result the context being removed from the list of
+// tracked contexts.
+// If indirect access tracking is not enabled then caller must lock Context
+// mutex.
+ur_result_t USMFreeHelper(ur_context_handle_t Context, void *Ptr,
+                               bool OwnZeMemHandle) {
+  if (IndirectAccessTrackingEnabled) {
+    auto It = Context->MemAllocs.find(Ptr);
+    if (It == std::end(Context->MemAllocs)) {
+      die("All memory allocations must be tracked!");
+    }
+    if (!It->second.RefCount.decrementAndTest()) {
+      // Memory can't be deallocated yet.
+      return UR_RESULT_SUCCESS;
+    }
+
+    // Reference count is zero, it is ok to free memory.
+    // We don't need to track this allocation anymore.
+    Context->MemAllocs.erase(It);
+  }
+
+  if (!UseUSMAllocator) {
+    ur_result_t Res = USMFreeImpl(reinterpret_cast<ur_context_handle_t>(Context), Ptr, OwnZeMemHandle);
+    if (IndirectAccessTrackingEnabled)
+      UR_CALL(ContextReleaseHelper(reinterpret_cast<ur_context_handle_t>(Context)));
+    return Res;
+  }
+
+  // Query the device of the allocation to determine the right allocator context
+  ze_device_handle_t ZeDeviceHandle;
+  ZeStruct<ze_memory_allocation_properties_t> ZeMemoryAllocationProperties;
+
+  // Query memory type of the pointer we're freeing to determine the correct
+  // way to do it(directly or via an allocator)
+  ZE2UR_CALL(zeMemGetAllocProperties,
+          (Context->ZeContext, Ptr, &ZeMemoryAllocationProperties,
+           &ZeDeviceHandle));
+
+  // If memory type is host release from host pool
+  if (ZeMemoryAllocationProperties.type == ZE_MEMORY_TYPE_HOST) {
+    try {
+      Context->HostMemAllocContext->deallocate(Ptr, OwnZeMemHandle);
+    } catch (const UsmAllocationException &Ex) {
+      return Ex.getError();
+    } catch (...) {
+      return UR_RESULT_ERROR_UNKNOWN;
+    }
+    if (IndirectAccessTrackingEnabled)
+      UR_CALL(ContextReleaseHelper(reinterpret_cast<ur_context_handle_t>(Context)));
+    return UR_RESULT_SUCCESS;
+  }
+
+  // Points out an allocation in SharedReadOnlyMemAllocContexts
+  auto SharedReadOnlyAllocsIterator = Context->SharedReadOnlyAllocs.end();
+
+  if (!ZeDeviceHandle) {
+    // The only case where it is OK not have device identified is
+    // if the memory is not known to the driver. We should not ever get
+    // this either, probably.
+    PI_ASSERT(ZeMemoryAllocationProperties.type == ZE_MEMORY_TYPE_UNKNOWN,
+              UR_RESULT_ERROR_INVALID_DEVICE);
+  } else {
+    ur_device_handle_t Device;
+    // All context member devices or their descendants are of the same platform.
+    auto Platform = Context->getPlatform();
+    Device = Platform->getDeviceFromNativeHandle(ZeDeviceHandle);
+    // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+
+    auto DeallocationHelper =
+        [Context, Device, Ptr,
+         OwnZeMemHandle](std::unordered_map<ze_device_handle_t, USMAllocContext>
+                             &AllocContextMap) {
+          try {
+            auto It = AllocContextMap.find(Device->ZeDevice);
+            if (It == AllocContextMap.end())
+              return UR_RESULT_ERROR_INVALID_VALUE;
+
+            // The right context is found, deallocate the pointer
+            It->second.deallocate(Ptr, OwnZeMemHandle);
+          } catch (const UsmAllocationException &Ex) {
+            return Ex.getError();
+          }
+
+          if (IndirectAccessTrackingEnabled)
+            UR_CALL(ContextReleaseHelper(reinterpret_cast<ur_context_handle_t>(Context)));
+          return UR_RESULT_SUCCESS;
+        };
+
+    switch (ZeMemoryAllocationProperties.type) {
+    case ZE_MEMORY_TYPE_SHARED:
+      // Distinguish device_read_only allocations since they have own pool.
+      SharedReadOnlyAllocsIterator = Context->SharedReadOnlyAllocs.find(Ptr);
+      return DeallocationHelper(SharedReadOnlyAllocsIterator !=
+                                        Context->SharedReadOnlyAllocs.end()
+                                    ? Context->SharedReadOnlyMemAllocContexts
+                                    : Context->SharedMemAllocContexts);
+    case ZE_MEMORY_TYPE_DEVICE:
+      return DeallocationHelper(Context->DeviceMemAllocContexts);
+    default:
+      // Handled below
+      break;
+    }
+  }
+
+  ur_result_t Res =USMFreeImpl(reinterpret_cast<ur_context_handle_t>(Context), Ptr, OwnZeMemHandle);
+  if (SharedReadOnlyAllocsIterator != Context->SharedReadOnlyAllocs.end()) {
+    Context->SharedReadOnlyAllocs.erase(SharedReadOnlyAllocsIterator);
+  }
+  if (IndirectAccessTrackingEnabled)
+    UR_CALL(ContextReleaseHelper(reinterpret_cast<ur_context_handle_t>(Context)));
+  return Res;
+}

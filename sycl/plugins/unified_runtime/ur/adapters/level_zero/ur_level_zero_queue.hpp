@@ -22,6 +22,9 @@
 #include <zes_api.h>
 
 #include "ur_level_zero_common.hpp"
+#include "ur_level_zero_device.hpp"
+
+ur_result_t piQueueReleaseInternal(pi_queue Queue);
 
 // Structure describing the specific use of a command-list in a queue.
 // This is because command-lists are re-used across multiple queues
@@ -43,16 +46,16 @@ struct pi_command_list_info_t {
   // Keeps the ordinal of the ZeQueue queue group. Invalid if ZeQueue==nullptr
   uint32_t ZeQueueGroupOrdinal{0};
   // Helper functions to tell if this is a copy command-list.
-  bool isCopy(pi_queue Queue) const;
+  bool isCopy(ur_queue_handle_t Queue) const;
 
   // Keeps events created by commands submitted into this command-list.
   // TODO: use this for explicit wait/cleanup of events at command-list
   // completion.
   // TODO: use this for optimizing events in the same command-list, e.g.
   // only have last one visible to the host.
-  std::vector<pi_event> EventList{};
+  std::vector<ur_event_handle_t> EventList{};
   size_t size() const { return EventList.size(); }
-  void append(pi_event Event) { EventList.push_back(Event); }
+  void append(ur_event_handle_t Event) { EventList.push_back(Event); }
 };
 
 // The map type that would track all command-lists in a queue.
@@ -65,19 +68,19 @@ using pi_command_list_ptr_t = pi_command_list_map_t::iterator;
 struct _ur_queue_handle_t : _pi_object {
   _ur_queue_handle_t(std::vector<ze_command_queue_handle_t> &ComputeQueues,
             std::vector<ze_command_queue_handle_t> &CopyQueues,
-            pi_context Context, pi_device Device, bool OwnZeCommandQueue,
+            ur_context_handle_t Context, ur_device_handle_t Device, bool OwnZeCommandQueue,
             pi_queue_properties Properties = 0, int ForceComputeIndex = -1);
 
   using queue_type = _ur_device_handle_t::queue_group_info_t::type;
   // PI queue is in general a one to many mapping to L0 native queues.
   struct pi_queue_group_t {
-    pi_queue Queue;
+    ur_queue_handle_t Queue;
     pi_queue_group_t() = delete;
 
     // The Queue argument captures the enclosing PI queue.
     // The Type argument specifies the type of this queue group.
     // The actual ZeQueues are populated at PI queue construction.
-    pi_queue_group_t(pi_queue Queue, queue_type Type)
+    pi_queue_group_t(ur_queue_handle_t Queue, queue_type Type)
         : Queue(Queue), Type(Type) {}
 
     // The type of the queue group.
@@ -130,18 +133,18 @@ struct _ur_queue_handle_t : _pi_object {
   // Keeps the PI context to which this queue belongs.
   // This field is only set at _pi_queue creation time, and cannot change.
   // Therefore it can be accessed without holding a lock on this _pi_queue.
-  const pi_context Context;
+  const ur_context_handle_t Context;
 
   // Keeps the PI device to which this queue belongs.
   // This field is only set at _pi_queue creation time, and cannot change.
   // Therefore it can be accessed without holding a lock on this _pi_queue.
-  const pi_device Device;
+  const ur_device_handle_t Device;
 
   // Keeps track of the event associated with the last enqueued command into
   // this queue. this is used to add dependency with the last command to add
   // in-order semantics and updated with the latest event each time a new
   // command is enqueued.
-  pi_event LastCommandEvent = nullptr;
+  ur_event_handle_t LastCommandEvent = nullptr;
 
   // Indicates if we own the ZeCommandQueue or it came from interop that
   // asked to not transfer the ownership to SYCL RT.
@@ -174,14 +177,18 @@ struct _ur_queue_handle_t : _pi_object {
     uint32_t QueueBatchSize = {0};
   };
 
+  // ComputeCommandBatch holds data related to batching of non-copy commands.
+  // CopyCommandBatch holds data related to batching of copy commands.
+  command_batch ComputeCommandBatch, CopyCommandBatch;
+
   // A helper structure to keep active barriers of the queue.
   // It additionally manages ref-count of events in this list.
   struct active_barriers {
-    std::vector<pi_event> Events;
-    void add(pi_event &Event);
-    pi_result clear();
+    std::vector<ur_event_handle_t> Events;
+    void add(ur_event_handle_t &Event);
+    ur_result_t clear();
     bool empty() { return Events.empty(); }
-    std::vector<pi_event> &vector() { return Events; }
+    std::vector<ur_event_handle_t> &vector() { return Events; }
   };
   // A collection of currently active barriers.
   // These should be inserted into a command list whenever an available command
@@ -254,6 +261,169 @@ struct _ur_queue_handle_t : _pi_object {
   // requested type of event. Each list contains events which can be reused
   // inside all command lists in the queue as described in the 2-event model.
   // Leftover events in the cache are relased at the queue destruction.
-  std::vector<std::list<pi_event>> EventCaches{2};
+  std::vector<std::list<ur_event_handle_t>> EventCaches{2};
 
+  // adjust the queue's batch size, knowing that the current command list
+  // is being closed with a full batch.
+  // For copy commands, IsCopy is set to 'true'.
+  // For non-copy commands, IsCopy is set to 'false'.
+  void adjustBatchSizeForFullBatch(bool IsCopy);
+
+  // adjust the queue's batch size, knowing that the current command list
+  // is being closed with only a partial batch of commands.
+  // For copy commands, IsCopy is set to 'true'.
+  // For non-copy commands, IsCopy is set to 'false'.
+  void adjustBatchSizeForPartialBatch(bool IsCopy);
+
+  // Attach a command list to this queue.
+  // For non-immediate commandlist also close and execute it.
+  // Note that this command list cannot be appended to after this.
+  // The "IsBlocking" tells if the wait for completion is required.
+  // If OKToBatchCommand is true, then this command list may be executed
+  // immediately, or it may be left open for other future command to be
+  // batched into.
+  // If IsBlocking is true, then batching will not be allowed regardless
+  // of the value of OKToBatchCommand
+  //
+  // For immediate commandlists, no close and execute is necessary.
+  ur_result_t executeCommandList(pi_command_list_ptr_t CommandList,
+                               bool IsBlocking = false,
+                               bool OKToBatchCommand = false);
+
+  // Helper method telling whether we need to reuse discarded event in this
+  // queue.
+  bool doReuseDiscardedEvents();
+
+  // Append command to provided command list to wait and reset the last event if
+  // it is discarded and create new pi_event wrapper using the same native event
+  // and put it to the cache. We call this method after each command submission
+  // to make native event available to use by next commands.
+  ur_result_t resetDiscardedEvent(pi_command_list_ptr_t);
+
+  // Put pi_event to the cache. Provided pi_event object is not used by
+  // any command but its ZeEvent is used by many pi_event objects.
+  // Commands to wait and reset ZeEvent must be submitted to the queue before
+  // calling this method.
+  ur_result_t addEventToQueueCache(ur_event_handle_t Event);
+
+  // Returns true if any commands for this queue are allowed to
+  // be batched together.
+  // For copy commands, IsCopy is set to 'true'.
+  // For non-copy commands, IsCopy is set to 'false'.
+  bool isBatchingAllowed(bool IsCopy) const;
+
+  // Returns true if the queue is a in-order queue.
+  bool isInOrderQueue() const;
+
+  // Returns true if the queue has discard events property.
+  bool isDiscardEvents() const;
+
+  // Returns true if the queue has explicit priority set by user.
+  bool isPriorityLow() const;
+  bool isPriorityHigh() const;
+
+  // Wait for all commandlists associated with this Queue to finish operations.
+  ur_result_t synchronize();
+
+  // Get event from the queue's cache.
+  // Returns nullptr if the cache doesn't contain any reusable events or if the
+  // cache contains only one event which corresponds to the previous command and
+  // can't be used for the current command because we can't use the same event
+  // two times in a row and have to do round-robin between two events. Otherwise
+  // it picks an event from the beginning of the cache and returns it. Event
+  // from the last command is always appended to the end of the list.
+  ur_event_handle_t getEventFromQueueCache(bool HostVisible);
+
+  // Returns true if an OpenCommandList has commands that need to be submitted.
+  // If IsCopy is 'true', then the OpenCommandList containing copy commands is
+  // checked. Otherwise, the OpenCommandList containing compute commands is
+  // checked.
+  bool hasOpenCommandList(bool IsCopy) const {
+    auto CommandBatch = (IsCopy) ? CopyCommandBatch : ComputeCommandBatch;
+    return CommandBatch.OpenCommandList != CommandListMap.end();
+  }
+
+  // Update map of memory references made by the kernels about to be submitted
+  void CaptureIndirectAccesses();
+
+  // Kernel is not necessarily submitted for execution during
+  // piEnqueueKernelLaunch, it may be batched. That's why we need to save the
+  // list of kernels which is going to be submitted but have not been submitted
+  // yet. This is needed to capture memory allocations for each kernel with
+  // indirect access in the list at the moment when kernel is really submitted
+  // for execution.
+  std::vector<ur_kernel_handle_t> KernelsToBeSubmitted;
+
+  // Append command to the command list to signal new event if the last event in
+  // the command list is discarded. While we submit commands in scope of the
+  // same command list we can reset and reuse events but when we switch to a
+  // different command list we currently need to signal new event and wait for
+  // it in the new command list using barrier.
+  ur_result_t signalEventFromCmdListIfLastEventDiscarded(pi_command_list_ptr_t);
+
+  // If there is an open command list associated with this queue,
+  // close it, execute it, and reset the corresponding OpenCommandList.
+  // If IsCopy is 'true', then the OpenCommandList containing copy commands is
+  // executed. Otherwise OpenCommandList containing compute commands is
+  // executed.
+  ur_result_t executeOpenCommandList(bool IsCopy);
+
+  // Wrapper function to execute both OpenCommandLists (Copy and Compute).
+  // This wrapper is helpful when all 'open' commands need to be executed.
+  // Call-sites instances: piQuueueFinish, piQueueRelease, etc.
+  ur_result_t executeAllOpenCommandLists() {
+    using IsCopy = bool;
+    if (auto Res = executeOpenCommandList(IsCopy{false}))
+      return Res;
+    if (auto Res = executeOpenCommandList(IsCopy{true}))
+      return Res;
+    return UR_RESULT_SUCCESS;
+  }
+
+  /// @brief Resets the command list and associated fence in the map and removes
+  /// events from the command list.
+  /// @param CommandList The caller must verify that this command list and fence
+  /// have been signalled.
+  /// @param MakeAvailable If the reset command list should be made available,
+  /// then MakeAvailable needs to be set to true.
+  /// @param EventListToCleanup  The EventListToCleanup contains a list of
+  /// events from the command list which need to be cleaned up.
+  /// @param CheckStatus Hint informing whether we need to check status of the
+  /// events before removing them from the immediate command list. This is
+  /// needed because immediate command lists are not associated with fences and
+  /// in general status of the event needs to be checked.
+  /// @return PI_SUCCESS if successful, PI error code otherwise.
+  ur_result_t resetCommandList(pi_command_list_ptr_t CommandList,
+                             bool MakeAvailable,
+                             std::vector<ur_event_handle_t> &EventListToCleanup,
+                             bool CheckStatus = true);
+
+  // Gets the open command containing the event, or CommandListMap.end()
+  pi_command_list_ptr_t eventOpenCommandList(ur_event_handle_t Event);
+
+  // Return the queue group to use based on standard/immediate commandlist mode,
+  // and if immediate mode, the thread-specific group.
+  pi_queue_group_t &getQueueGroup(bool UseCopyEngine);
 };
+
+// This helper function creates a pi_event and associate a pi_queue.
+// Note that the caller of this function must have acquired lock on the Queue
+// that is passed in.
+// \param Queue pi_queue to associate with a new event.
+// \param Event a pointer to hold the newly created pi_event
+// \param CommandType various command type determined by the caller
+// \param CommandList is the command list where the event is added
+// \param IsInternal tells if the event is internal, i.e. visible in the L0
+//        plugin only.
+// \param ForceHostVisible tells if the event must be created in
+//        the host-visible pool
+ur_result_t createEventAndAssociateQueue(
+    ur_queue_handle_t Queue, ur_event_handle_t *Event, pi_command_type CommandType,
+    pi_command_list_ptr_t CommandList, bool IsInternal = false,
+    bool ForceHostVisible = false);
+
+// Helper function to perform the necessary cleanup of the events from reset cmd
+// list.
+ur_result_t
+CleanupEventListFromResetCmdList(std::vector<ur_event_handle_t> &EventListToCleanup,
+                                 bool QueueLocked = false);

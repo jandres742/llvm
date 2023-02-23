@@ -115,3 +115,15 @@ ur_result_t USMSharedAllocImpl(void **ResultPtr, ur_context_handle_t Context,
 ur_result_t USMHostAllocImpl(void **ResultPtr, ur_context_handle_t Context,
                                   pi_usm_mem_properties *Properties,
                                   size_t Size, uint32_t Alignment);
+
+// If indirect access tracking is not enabled then this functions just performs
+// zeMemFree. If indirect access tracking is enabled then reference counting is
+// performed.
+ur_result_t ZeMemFreeHelper(ur_context_handle_t Context, void *Ptr,
+                                 bool OwnZeMemHandle = true);
+
+ur_result_t USMFreeHelper(ur_context_handle_t Context, void *Ptr, bool OwnZeMemHandle);
+
+bool ShouldUseUSMAllocator();
+
+extern const bool UseUSMAllocator;

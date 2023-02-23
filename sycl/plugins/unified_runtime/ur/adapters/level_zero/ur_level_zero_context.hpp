@@ -147,7 +147,7 @@ struct _ur_context_handle_t : _pi_object {
   pi_mutex EventCacheMutex;
 
   // Caches for events.
-  std::vector<std::list<pi_event>> EventCaches{4};
+  std::vector<std::list<ur_event_handle_t>> EventCaches{4};
 
   // Initialize the PI context.
   ur_result_t initialize();
@@ -161,4 +161,51 @@ struct _ur_context_handle_t : _pi_object {
   // images.
   ur_device_handle_t getRootDevice() const;
 
+  // Finalize the PI context
+  ur_result_t finalize();
+
+  // Return the Platform, which is the same for all devices in the context
+  ur_platform_handle_t getPlatform() const;
+
+  // Get index of the free slot in the available pool. If there is no available
+  // pool then create new one. The HostVisible parameter tells if we need a
+  // slot for a host-visible event. The ProfilingEnabled tells is we need a
+  // slot for an event with profiling capabilities.
+  ur_result_t getFreeSlotInExistingOrNewPool(ze_event_pool_handle_t &, size_t &,
+                                           bool HostVisible,
+                                           bool ProfilingEnabled);
+
+  // Get pi_event from cache.
+  ur_event_handle_t getEventFromContextCache(bool HostVisible, bool WithProfiling);
+
+  // Add pi_event to cache.
+  void addEventToContextCache(ur_event_handle_t);
+
+  auto getZeEventPoolCache(bool HostVisible, bool WithProfiling) {
+    if (HostVisible)
+      return WithProfiling ? &ZeEventPoolCache[0] : &ZeEventPoolCache[1];
+    else
+      return WithProfiling ? &ZeEventPoolCache[2] : &ZeEventPoolCache[3];
+  }
+
+  // Decrement number of events living in the pool upon event destroy
+  // and return the pool to the cache if there are no unreleased events.
+  ur_result_t decrementUnreleasedEventsInPool(ur_event_handle_t Event);
+
+private:
+
+  // Get the cache of events for a provided scope and profiling mode.
+  auto getEventCache(bool HostVisible, bool WithProfiling) {
+    if (HostVisible)
+      return WithProfiling ? &EventCaches[0] : &EventCaches[1];
+    else
+      return WithProfiling ? &EventCaches[2] : &EventCaches[3];
+  }
 };
+
+
+
+// Helper function to release the context, a caller must lock the platform-level
+// mutex guarding the container with contexts because the context can be removed
+// from the list of tracked contexts.
+ur_result_t ContextReleaseHelper(ur_context_handle_t Context);

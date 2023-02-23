@@ -14,6 +14,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <mutex>
 
 #include <sycl/detail/pi.h>
 #include <ur/ur.hpp>
@@ -22,6 +23,16 @@
 #include <zes_api.h>
 
 #include "ur/usm_allocator_config.hpp"
+
+// Trace an internal PI call; returns in case of an error.
+#define UR_CALL(Call)                                                          \
+  {                                                                            \
+    if (PrintTrace)                                                            \
+      fprintf(stderr, "UR ---> %s\n", #Call);                                  \
+    ur_result_t Result = (Call);                                                 \
+    if (Result != UR_RESULT_SUCCESS)                                                  \
+      return Result;                                                           \
+  }
 
 // Returns the ze_structure_type_t to use in .stype of a structured descriptor.
 // Intentionally not defined; will give an error if no proper specialization
@@ -74,3 +85,10 @@ struct MemAllocRecord : _pi_object {
 
 extern usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
 
+// Controls support of the indirect access kernels and deferred memory release.
+const bool IndirectAccessTrackingEnabled = [] {
+  return std::getenv("SYCL_PI_LEVEL_ZERO_TRACK_INDIRECT_ACCESS_MEMORY") !=
+         nullptr;
+}();
+
+extern const bool UseUSMAllocator;
