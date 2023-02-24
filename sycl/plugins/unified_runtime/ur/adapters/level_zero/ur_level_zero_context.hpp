@@ -218,6 +218,10 @@ struct _ur_context_handle_t : _pi_object {
                           bool UseCopyEngine, bool AllowBatching = false,
                           ze_command_queue_handle_t *ForcedCmdQueue = nullptr);
 
+  // Checks if Device is covered by this context.
+  // For that the Device or its root devices need to be in the context.
+  bool isValidDevice(ur_device_handle_t Device) const;
+
 private:
 
   // Get the cache of events for a provided scope and profiling mode.

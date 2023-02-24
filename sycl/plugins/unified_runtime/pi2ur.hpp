@@ -621,15 +621,57 @@ inline pi_result piQueueCreate(pi_context Context, pi_device Device,
 
 inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
                            pi_queue_properties *Properties, pi_queue *Queue) {
-  printf("%s %d\n", __FILE__, __LINE__);
+
+  PI_ASSERT(Properties, PI_ERROR_INVALID_VALUE);
+  // Expect flags mask to be passed first.
+  PI_ASSERT(Properties[0] == PI_QUEUE_FLAGS, PI_ERROR_INVALID_VALUE);
+
+  PI_ASSERT(Properties[2] == 0 ||
+                (Properties[2] == PI_QUEUE_COMPUTE_INDEX && Properties[4] == 0),
+            PI_ERROR_INVALID_VALUE);
+
+  // Check that unexpected bits are not set.
+  PI_ASSERT(
+      !(Properties[1] & ~(PI_QUEUE_FLAG_OUT_OF_ORDER_EXEC_MODE_ENABLE |
+                  PI_QUEUE_FLAG_PROFILING_ENABLE | PI_QUEUE_FLAG_ON_DEVICE |
+                  PI_QUEUE_FLAG_ON_DEVICE_DEFAULT |
+                  PI_EXT_ONEAPI_QUEUE_FLAG_DISCARD_EVENTS |
+                  PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_LOW |
+                  PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_HIGH)),
+      PI_ERROR_INVALID_VALUE);
+
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+  PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+
+  ur_queue_property_t props [5] {};
+  props[0] = UR_QUEUE_PROPERTIES_FLAGS;
+  if (Properties[1] & PI_QUEUE_FLAG_OUT_OF_ORDER_EXEC_MODE_ENABLE)
+    props[1] |= UR_QUEUE_FLAG_OUT_OF_ORDER_EXEC_MODE_ENABLE;
+  if (Properties[1] & PI_QUEUE_FLAG_PROFILING_ENABLE)
+    props[1] |= UR_QUEUE_FLAG_PROFILING_ENABLE;
+  if (Properties[1] & PI_QUEUE_FLAG_ON_DEVICE)
+    props[1] |= UR_QUEUE_FLAG_ON_DEVICE;
+  if (Properties[1] & PI_QUEUE_FLAG_ON_DEVICE_DEFAULT)
+    props[1] |= UR_QUEUE_FLAG_ON_DEVICE_DEFAULT;
+  if (Properties[1] & PI_EXT_ONEAPI_QUEUE_FLAG_DISCARD_EVENTS)
+    props[1] |= UR_QUEUE_FLAG_DISCARD_EVENTS;
+  if (Properties[1] & PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_LOW)
+    props[1] |= UR_QUEUE_FLAG_PRIORITY_LOW;
+  if (Properties[1] & PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_HIGH)
+    props[1] |= UR_QUEUE_FLAG_PRIORITY_HIGH;
+
+  if (Properties[2] != 0) {
+    props[2] = UR_QUEUE_PROPERTIES_COMPUTE_INDEX;
+    props[3] = Properties[3];
+  }
 
   ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
   ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  ur_queue_property_t props {};
   ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
   HANDLE_ERRORS(urQueueCreate(hContext, 
                               hDevice,
-                              &props,
+                              props,
                               phQueue));
   return PI_SUCCESS;
 }

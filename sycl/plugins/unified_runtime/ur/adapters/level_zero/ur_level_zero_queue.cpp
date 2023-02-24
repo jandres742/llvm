@@ -49,15 +49,6 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
     ur_queue_handle_t
         *phQueue ///< [out] pointer to handle of queue object created
 ) {
-  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
-  // PI_ASSERT(Properties, PI_ERROR_INVALID_VALUE);
-  // Expect flags mask to be passed first.
-  // PI_ASSERT(Properties[0] == PI_QUEUE_FLAGS, PI_ERROR_INVALID_VALUE);
-
-  // PI_ASSERT(Properties[2] == 0 ||
-  //               (Properties[2] == PI_QUEUE_COMPUTE_INDEX && Properties[4] == 0),
-  //           PI_ERROR_INVALID_VALUE);
-
   ur_context_handle_t Context = hContext;
   ur_device_handle_t Device = hDevice;
   _ur_queue_handle_t **Queue = reinterpret_cast<_ur_queue_handle_t **>(phQueue);
@@ -69,20 +60,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
                                ? static_cast<int>(Properties[3])
                                : -1; // Use default/round-robin.
 
-  // Check that unexpected bits are not set.
-  // PI_ASSERT(
-  //     !(Flags & ~(PI_QUEUE_FLAG_OUT_OF_ORDER_EXEC_MODE_ENABLE |
-  //                 PI_QUEUE_FLAG_PROFILING_ENABLE | PI_QUEUE_FLAG_ON_DEVICE |
-  //                 PI_QUEUE_FLAG_ON_DEVICE_DEFAULT |
-  //                 PI_EXT_ONEAPI_QUEUE_FLAG_DISCARD_EVENTS |
-  //                 PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_LOW |
-  //                 PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_HIGH)),
-  //     PI_ERROR_INVALID_VALUE);
-
-  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-  // PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
-  // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
-  // PI_ASSERT(Context->isValidDevice(Device), PI_ERROR_INVALID_DEVICE);
+  // PI_ASSERT(Context->isValidDevice(Device), UR_RESULT_ERROR_INVALID_DEVICE);
 
   // Create placeholder queues in the compute queue group.
   // Actual L0 queues will be created at first use.

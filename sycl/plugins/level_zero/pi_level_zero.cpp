@@ -87,15 +87,6 @@ static inline pi_result mapError(ze_result_t Result) {
 
 } // anonymous namespace
 
-bool _pi_context::isValidDevice(pi_device Device) const {
-  while (Device) {
-    if (std::find(Devices.begin(), Devices.end(), Device) != Devices.end())
-      return true;
-    Device = Device->RootDevice;
-  }
-  return false;
-}
-
 // Forward declarations
 static pi_result enqueueMemCopyHelper(pi_command_type CommandType,
                                       pi_queue Queue, void *Dst,
@@ -475,7 +466,7 @@ pi_result piContextCreate(const pi_context_properties *Properties,
   (void)Properties;
   (void)PFnNotify;
   (void)UserData;
-  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
+
   PI_ASSERT(NumDevices, PI_ERROR_INVALID_VALUE);
   PI_ASSERT(Devices, PI_ERROR_INVALID_DEVICE);
   PI_ASSERT(RetContext, PI_ERROR_INVALID_VALUE);
@@ -604,7 +595,6 @@ pi_result piQueueCreate(pi_context Context, pi_device Device,
 pi_result piextQueueCreate(pi_context Context, pi_device Device,
                            pi_queue_properties *Properties, pi_queue *Queue) {
 
-  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
 #if 0
   PI_ASSERT(Properties, PI_ERROR_INVALID_VALUE);
   // Expect flags mask to be passed first.
@@ -1444,7 +1434,7 @@ pi_result piextMemCreateWithNativeHandle(pi_native_handle NativeHandle,
   pi_device Device = nullptr;
   if (ZeDevice) {
     Device = Context->getPlatform()->getDeviceFromNativeHandle(ZeDevice);
-    PI_ASSERT(Context->isValidDevice(Device), PI_ERROR_INVALID_CONTEXT);
+    // PI_ASSERT(Context->isValidDevice(Device), PI_ERROR_INVALID_CONTEXT);
   }
 
   try {
@@ -1713,7 +1703,7 @@ pi_result piProgramLink(pi_context Context, pi_uint32 NumDevices,
 
   // Validate input parameters.
   PI_ASSERT(DeviceList, PI_ERROR_INVALID_DEVICE);
-  PI_ASSERT(Context->isValidDevice(DeviceList[0]), PI_ERROR_INVALID_DEVICE);
+  // PI_ASSERT(Context->isValidDevice(DeviceList[0]), PI_ERROR_INVALID_DEVICE);
   PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
   if (NumInputPrograms == 0 || InputPrograms == nullptr)
     return PI_ERROR_INVALID_VALUE;
@@ -1919,8 +1909,8 @@ pi_result piProgramBuild(pi_program Program, pi_uint32 NumDevices,
   std::scoped_lock<pi_shared_mutex> Guard(Program->Mutex);
   // Check if device belongs to associated context.
   PI_ASSERT(Program->Context, PI_ERROR_INVALID_PROGRAM);
-  PI_ASSERT(Program->Context->isValidDevice(DeviceList[0]),
-            PI_ERROR_INVALID_VALUE);
+  // PI_ASSERT(Program->Context->isValidDevice(DeviceList[0]),
+  //           PI_ERROR_INVALID_VALUE);
 
   // It is legal to build a program created from either IL or from native
   // device code.

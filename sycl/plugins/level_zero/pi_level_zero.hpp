@@ -90,10 +90,6 @@ struct _pi_context : _ur_context_handle_t {
     // NOTE: one must additionally call initialize() to complete
     // PI context creation.
   }
-
-  // Checks if Device is covered by this context.
-  // For that the Device or its root devices need to be in the context.
-  bool isValidDevice(pi_device Device) const;
 };
 
 struct _pi_queue : _ur_queue_handle_t {

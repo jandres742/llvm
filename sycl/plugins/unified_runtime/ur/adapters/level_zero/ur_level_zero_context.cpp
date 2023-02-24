@@ -570,3 +570,12 @@ ur_result_t _ur_context_handle_t::getAvailableCommandList(
   CommandList->second.ZeFenceInUse = true;
   return pi_result;
 }
+
+bool _ur_context_handle_t::isValidDevice(ur_device_handle_t Device) const {
+  while (Device) {
+    if (std::find(Devices.begin(), Devices.end(), Device) != Devices.end())
+      return true;
+    Device = Device->RootDevice;
+  }
+  return false;
+}

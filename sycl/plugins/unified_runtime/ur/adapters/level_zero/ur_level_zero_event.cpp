@@ -343,6 +343,7 @@ ur_result_t CleanupCompletedEvent(ur_event_handle_t Event, bool QueueLocked) {
 //
 ur_result_t EventCreate(ur_context_handle_t Context, ur_queue_handle_t Queue,
                              bool HostVisible, ur_event_handle_t *RetEvent) {
+  
   bool ProfilingEnabled =
       !Queue || (Queue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) != 0;
 
