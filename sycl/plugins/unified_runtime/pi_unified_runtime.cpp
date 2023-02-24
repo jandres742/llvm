@@ -105,6 +105,11 @@ __SYCL_EXPORT pi_result piQueueRelease(pi_queue Queue) {
   return pi2ur::piQueueRelease(Queue);
 }
 
+__SYCL_EXPORT pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
+                                  uint64_t *HostTime) {
+  return pi2ur::piGetDeviceAndHostTimer(Device, DeviceTime, HostTime);
+}
+
 // This interface is not in Unified Runtime currently
 __SYCL_EXPORT pi_result piTearDown(void *) { return PI_SUCCESS; }
 
@@ -142,6 +147,7 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piDeviceGetInfo)
   _PI_API(piDevicePartition)
   _PI_API(piextDeviceSelectBinary)
+  _PI_API(piGetDeviceAndHostTimer)
 
   _PI_API(piContextCreate)
 

@@ -58,6 +58,21 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetGlobalTimestamps(
                              ///< timestamp that correlates with the Device's
                              ///< global timestamp value
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    _ur_device_handle_t *Device = reinterpret_cast<_ur_device_handle_t *>(hDevice);
+    
+    const uint64_t &ZeTimerResolution =
+      Device->ZeDeviceProperties->timerResolution;
+  const uint64_t TimestampMaxCount =
+      ((1ULL << Device->ZeDeviceProperties->kernelTimestampValidBits) - 1ULL);
+  uint64_t DeviceClockCount, Dummy;
+
+  ZE2UR_CALL(zeDeviceGetGlobalTimestamps,
+          (Device->ZeDevice, pHostTimestamp == nullptr ? &Dummy : pHostTimestamp,
+           &DeviceClockCount));
+
+  if (pDeviceTimestamp != nullptr) {
+    *pDeviceTimestamp = (DeviceClockCount & TimestampMaxCount) * ZeTimerResolution;
+  }
+
+  return UR_RESULT_SUCCESS;
 }

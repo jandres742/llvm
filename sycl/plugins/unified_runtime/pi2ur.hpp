@@ -551,6 +551,14 @@ inline pi_result piDevicePartition(
                                   NumSubDevices));
   return PI_SUCCESS;
 }
+
+inline pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
+                                  uint64_t *HostTime) {
+  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
+  HANDLE_ERRORS(urDeviceGetGlobalTimestamps(hDevice, DeviceTime, HostTime));
+  return PI_SUCCESS;
+}
+
 // Device
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -688,5 +696,6 @@ inline pi_result piQueueRelease(pi_queue Queue) {
 
 // Queue
 ///////////////////////////////////////////////////////////////////////////////
+
 
 } // namespace pi2ur
