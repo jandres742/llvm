@@ -404,6 +404,34 @@ struct _ur_queue_handle_t : _pi_object {
   // Return the queue group to use based on standard/immediate commandlist mode,
   // and if immediate mode, the thread-specific group.
   pi_queue_group_t &getQueueGroup(bool UseCopyEngine);
+
+  // Helper function to create a new command-list to this queue and associated
+  // fence tracking its completion. This command list & fence are added to the
+  // map of command lists in this queue with ZeFenceInUse = false.
+  // The caller must hold a lock of the queue already.
+  ur_result_t
+  createCommandList(bool UseCopyEngine, pi_command_list_ptr_t &CommandList,
+                    ze_command_queue_handle_t *ForcedCmdQueue = nullptr);
+
+  // Inserts a barrier waiting for all unfinished events in ActiveBarriers into
+  // CmdList. Any finished events will be removed from ActiveBarriers.
+  ur_result_t insertActiveBarriers(pi_command_list_ptr_t &CmdList,
+                                   bool UseCopyEngine);
+
+    // This function considers multiple factors including copy engine
+  // availability and user preference and returns a boolean that is used to
+  // specify if copy engine will eventually be used for a particular command.
+  bool useCopyEngine(bool PreferCopyEngine = true) const;
+
+
+
+  // Insert a barrier waiting for the last command event into the beginning of
+  // command list. This barrier guarantees that command list execution starts
+  // only after completion of previous command list which signals aforementioned
+  // event. It allows to reset and reuse same event handles inside all command
+  // lists in the queue.
+  ur_result_t
+  insertStartBarrierIfDiscardEventsMode(pi_command_list_ptr_t &CmdList);
 };
 
 // This helper function creates a pi_event and associate a pi_queue.

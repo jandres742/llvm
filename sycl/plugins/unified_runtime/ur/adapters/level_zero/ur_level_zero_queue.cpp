@@ -27,6 +27,16 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueGetInfo(
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
 
+// Controls if we should choose doing eager initialization
+// to make it happen on warmup paths and have the reportable
+// paths be less likely affected.
+//
+static bool doEagerInit = [] {
+  const char *EagerInit = std::getenv("SYCL_EAGER_INIT");
+  return EagerInit ? std::atoi(EagerInit) != 0 : false;
+}();
+
+
 UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
     ur_context_handle_t hContext, ///< [in] handle of the context object
     ur_device_handle_t hDevice,   ///< [in] handle of the device object
@@ -39,8 +49,112 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
     ur_queue_handle_t
         *phQueue ///< [out] pointer to handle of queue object created
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
+  // PI_ASSERT(Properties, PI_ERROR_INVALID_VALUE);
+  // Expect flags mask to be passed first.
+  // PI_ASSERT(Properties[0] == PI_QUEUE_FLAGS, PI_ERROR_INVALID_VALUE);
+
+  // PI_ASSERT(Properties[2] == 0 ||
+  //               (Properties[2] == PI_QUEUE_COMPUTE_INDEX && Properties[4] == 0),
+  //           PI_ERROR_INVALID_VALUE);
+
+  ur_context_handle_t Context = hContext;
+  ur_device_handle_t Device = hDevice;
+  _ur_queue_handle_t **Queue = reinterpret_cast<_ur_queue_handle_t **>(phQueue);
+
+  const pi_queue_properties *Properties = reinterpret_cast<const pi_queue_properties *>(pProps);
+  pi_queue_properties Flags = Properties[1];
+
+  auto ForceComputeIndex = Properties[2] == PI_QUEUE_COMPUTE_INDEX
+                               ? static_cast<int>(Properties[3])
+                               : -1; // Use default/round-robin.
+
+  // Check that unexpected bits are not set.
+  // PI_ASSERT(
+  //     !(Flags & ~(PI_QUEUE_FLAG_OUT_OF_ORDER_EXEC_MODE_ENABLE |
+  //                 PI_QUEUE_FLAG_PROFILING_ENABLE | PI_QUEUE_FLAG_ON_DEVICE |
+  //                 PI_QUEUE_FLAG_ON_DEVICE_DEFAULT |
+  //                 PI_EXT_ONEAPI_QUEUE_FLAG_DISCARD_EVENTS |
+  //                 PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_LOW |
+  //                 PI_EXT_ONEAPI_QUEUE_FLAG_PRIORITY_HIGH)),
+  //     PI_ERROR_INVALID_VALUE);
+
+  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  // PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+  // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+  // PI_ASSERT(Context->isValidDevice(Device), PI_ERROR_INVALID_DEVICE);
+
+  // Create placeholder queues in the compute queue group.
+  // Actual L0 queues will be created at first use.
+  std::vector<ze_command_queue_handle_t> ZeComputeCommandQueues(
+      Device->QueueGroup[_ur_queue_handle_t::queue_type::Compute].ZeProperties.numQueues,
+      nullptr);
+
+  // Create placeholder queues in the copy queue group (main and link
+  // native groups are combined into one group).
+  // Actual L0 queues will be created at first use.
+  size_t NumCopyGroups = 0;
+  if (Device->hasMainCopyEngine()) {
+    NumCopyGroups += Device->QueueGroup[_ur_queue_handle_t::queue_type::MainCopy]
+                         .ZeProperties.numQueues;
+  }
+  if (Device->hasLinkCopyEngine()) {
+    NumCopyGroups += Device->QueueGroup[_ur_queue_handle_t::queue_type::LinkCopy]
+                         .ZeProperties.numQueues;
+  }
+  std::vector<ze_command_queue_handle_t> ZeCopyCommandQueues(NumCopyGroups,
+                                                             nullptr);
+
+  try {
+    *Queue = new _ur_queue_handle_t(ZeComputeCommandQueues, ZeCopyCommandQueues, Context,
+                           Device, true, Flags, ForceComputeIndex);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  // Do eager initialization of Level Zero handles on request.
+  if (doEagerInit) {
+    ur_queue_handle_t Q = *phQueue;
+    // Creates said number of command-lists.
+    auto warmupQueueGroup = [Q](bool UseCopyEngine,
+                                uint32_t RepeatCount) -> ur_result_t {
+      pi_command_list_ptr_t CommandList;
+      while (RepeatCount--) {
+        if (Q->Device->useImmediateCommandLists()) {
+          CommandList = Q->getQueueGroup(UseCopyEngine).getImmCmdList();
+        } else {
+          // Heuristically create some number of regular command-list to reuse.
+          for (int I = 0; I < 10; ++I) {
+            UR_CALL(Q->createCommandList(UseCopyEngine, CommandList));
+            // Immediately return them to the cache of available command-lists.
+            std::vector<ur_event_handle_t> EventsUnused;
+            UR_CALL(Q->resetCommandList(CommandList, true /* MakeAvailable */,
+                                        EventsUnused));
+          }
+        }
+      }
+      return UR_RESULT_SUCCESS;
+    };
+    // Create as many command-lists as there are queues in the group.
+    // With this the underlying round-robin logic would initialize all
+    // native queues, and create command-lists and their fences.
+    // At this point only the thread creating the queue will have associated
+    // command-lists. Other threads have not accessed the queue yet. So we can
+    // only warmup the initial thread's command-lists.
+    auto InitialGroup = Q->ComputeQueueGroupsByTID.begin()->second;
+    UR_CALL(warmupQueueGroup(false, InitialGroup.UpperIndex -
+                                        InitialGroup.LowerIndex + 1));
+    if (Q->useCopyEngine()) {
+      auto InitialGroup = Q->CopyQueueGroupsByTID.begin()->second;
+      UR_CALL(warmupQueueGroup(true, InitialGroup.UpperIndex -
+                                         InitialGroup.LowerIndex + 1));
+    }
+    // TODO: warmup event pools. Both host-visible and device-only.
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueRetain(
@@ -1068,4 +1182,229 @@ uint32_t _ur_queue_handle_t::pi_queue_group_t::getQueueIndex(uint32_t *QueueGrou
   *QueueIndex = ZeCommandQueueIndex;
 
   return CurrentIndex;
+}
+
+// This function will return one of possibly multiple available native
+// queues and the value of the queue group ordinal.
+ze_command_queue_handle_t &
+_ur_queue_handle_t::pi_queue_group_t::getZeQueue(uint32_t *QueueGroupOrdinal) {
+
+  // QueueIndex is the proper L0 index.
+  // Index is the plugins concept of index, with main and link copy engines in
+  // one range.
+  uint32_t QueueIndex;
+  auto Index = getQueueIndex(QueueGroupOrdinal, &QueueIndex);
+
+  ze_command_queue_handle_t &ZeQueue = ZeQueues[Index];
+  if (ZeQueue)
+    return ZeQueue;
+
+  ZeStruct<ze_command_queue_desc_t> ZeCommandQueueDesc;
+  ZeCommandQueueDesc.ordinal = *QueueGroupOrdinal;
+  ZeCommandQueueDesc.index = QueueIndex;
+  ZeCommandQueueDesc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
+  const char *Priority = "Normal";
+  if (Queue->isPriorityLow()) {
+    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_LOW;
+    Priority = "Low";
+  } else if (Queue->isPriorityHigh()) {
+    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_HIGH;
+    Priority = "High";
+  }
+
+  // Evaluate performance of explicit usage for "0" index.
+  if (QueueIndex != 0) {
+    ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_EXPLICIT_ONLY;
+  }
+
+  zePrint("[getZeQueue]: create queue ordinal = %d, index = %d "
+          "(round robin in [%d, %d]) priority = %s\n",
+          ZeCommandQueueDesc.ordinal, ZeCommandQueueDesc.index, LowerIndex,
+          UpperIndex, Priority);
+
+  auto ZeResult = ZE_CALL_NOCHECK(
+      zeCommandQueueCreate, (Queue->Context->ZeContext, Queue->Device->ZeDevice,
+                             &ZeCommandQueueDesc, &ZeQueue));
+  if (ZeResult) {
+    die("[L0] getZeQueue: failed to create queue");
+  }
+
+  return ZeQueue;
+}
+
+int32_t _ur_queue_handle_t::pi_queue_group_t::getCmdQueueOrdinal(
+    ze_command_queue_handle_t CmdQueue) {
+  // Find out the right queue group ordinal (first queue might be "main" or
+  // "link")
+  auto QueueType = Type;
+  if (QueueType != queue_type::Compute)
+    QueueType = (ZeQueues[0] == CmdQueue && Queue->Device->hasMainCopyEngine())
+                    ? queue_type::MainCopy
+                    : queue_type::LinkCopy;
+  return Queue->Device->QueueGroup[QueueType].ZeOrdinal;
+}
+
+// Helper function to create a new command-list to this queue and associated
+// fence tracking its completion. This command list & fence are added to the
+// map of command lists in this queue with ZeFenceInUse = false.
+// The caller must hold a lock of the queue already.
+ur_result_t
+_ur_queue_handle_t::createCommandList(bool UseCopyEngine,
+                             pi_command_list_ptr_t &CommandList,
+                             ze_command_queue_handle_t *ForcedCmdQueue) {
+
+  ze_fence_handle_t ZeFence;
+  ZeStruct<ze_fence_desc_t> ZeFenceDesc;
+  ze_command_list_handle_t ZeCommandList;
+
+  uint32_t QueueGroupOrdinal;
+  auto &QGroup = getQueueGroup(UseCopyEngine);
+  auto &ZeCommandQueue =
+      ForcedCmdQueue ? *ForcedCmdQueue : QGroup.getZeQueue(&QueueGroupOrdinal);
+  if (ForcedCmdQueue)
+    QueueGroupOrdinal = QGroup.getCmdQueueOrdinal(ZeCommandQueue);
+
+  ZeStruct<ze_command_list_desc_t> ZeCommandListDesc;
+  ZeCommandListDesc.commandQueueGroupOrdinal = QueueGroupOrdinal;
+
+  ZE2UR_CALL(zeCommandListCreate, (Context->ZeContext, Device->ZeDevice,
+                                &ZeCommandListDesc, &ZeCommandList));
+
+  ZE2UR_CALL(zeFenceCreate, (ZeCommandQueue, &ZeFenceDesc, &ZeFence));
+  std::tie(CommandList, std::ignore) = CommandListMap.insert(
+      std::pair<ze_command_list_handle_t, pi_command_list_info_t>(
+          ZeCommandList, {ZeFence, false, ZeCommandQueue, QueueGroupOrdinal}));
+
+  UR_CALL(insertStartBarrierIfDiscardEventsMode(CommandList));
+  UR_CALL(insertActiveBarriers(CommandList, UseCopyEngine));
+  return UR_RESULT_SUCCESS;
+}
+
+ur_result_t _ur_queue_handle_t::insertActiveBarriers(pi_command_list_ptr_t &CmdList,
+                                          bool UseCopyEngine) {
+  // Early exit if there are no active barriers.
+  if (ActiveBarriers.empty())
+    return UR_RESULT_SUCCESS;
+
+  // Create a wait-list and retain events.
+  _pi_ze_event_list_t ActiveBarriersWaitList;
+  if (auto Res = ActiveBarriersWaitList.createAndRetainPiZeEventList(
+          ActiveBarriers.vector().size(), ActiveBarriers.vector().data(), reinterpret_cast<ur_queue_handle_t>(this),
+          UseCopyEngine))
+    return Res;
+
+  // We can now replace active barriers with the ones in the wait list.
+  if (auto Res = ActiveBarriers.clear())
+    return Res;
+
+  if (ActiveBarriersWaitList.Length == 0) {
+    return UR_RESULT_SUCCESS;
+  }
+
+  for (pi_uint32 I = 0; I < ActiveBarriersWaitList.Length; ++I) {
+    auto &Event = ActiveBarriersWaitList.PiEventList[I];
+    ActiveBarriers.add(Event);
+  }
+
+  ur_event_handle_t Event = nullptr;
+  if (auto Res = createEventAndAssociateQueue(reinterpret_cast<ur_queue_handle_t>(this),
+                                                          &Event,
+                                                          PI_COMMAND_TYPE_USER,
+                                                          CmdList,
+                                                          /*IsInternal*/ true))
+    return Res;
+
+  Event->WaitList = ActiveBarriersWaitList;
+  Event->OwnZeEvent = true;
+
+  // If there are more active barriers, insert a barrier on the command-list. We
+  // do not need an event for finishing so we pass nullptr.
+  ZE2UR_CALL(zeCommandListAppendBarrier,
+          (CmdList->first, nullptr, ActiveBarriersWaitList.Length,
+           ActiveBarriersWaitList.ZeEventList));
+  return UR_RESULT_SUCCESS;
+}
+
+ur_result_t _ur_queue_handle_t::insertStartBarrierIfDiscardEventsMode(
+    pi_command_list_ptr_t &CmdList) {
+  // If current command list is different from the last command list then insert
+  // a barrier waiting for the last command event.
+  if (doReuseDiscardedEvents() && CmdList != LastUsedCommandList &&
+      LastCommandEvent) {
+    ZE2UR_CALL(zeCommandListAppendBarrier,
+            (CmdList->first, nullptr, 1, &(LastCommandEvent->ZeEvent)));
+    LastCommandEvent = nullptr;
+  }
+  return UR_RESULT_SUCCESS;
+}
+
+// This is an experimental option that allows the use of copy engine, if
+// available in the device, in Level Zero plugin for copy operations submitted
+// to an in-order queue. The default is 1.
+static const bool UseCopyEngineForInOrderQueue = [] {
+  const char *CopyEngineForInOrderQueue =
+      std::getenv("SYCL_PI_LEVEL_ZERO_USE_COPY_ENGINE_FOR_IN_ORDER_QUEUE");
+  return (!CopyEngineForInOrderQueue ||
+          (std::stoi(CopyEngineForInOrderQueue) != 0));
+}();
+
+bool _ur_queue_handle_t::useCopyEngine(bool PreferCopyEngine) const {
+  auto InitialCopyGroup = CopyQueueGroupsByTID.begin()->second;
+  return PreferCopyEngine && InitialCopyGroup.ZeQueues.size() > 0 &&
+         (!isInOrderQueue() || UseCopyEngineForInOrderQueue);
+}
+
+// This function will return one of po6ssibly multiple available
+// immediate commandlists associated with this Queue.
+pi_command_list_ptr_t &_ur_queue_handle_t::pi_queue_group_t::getImmCmdList() {
+
+  uint32_t QueueIndex, QueueOrdinal;
+  auto Index = getQueueIndex(&QueueOrdinal, &QueueIndex);
+
+  if (ImmCmdLists[Index] != Queue->CommandListMap.end())
+    return ImmCmdLists[Index];
+
+  ZeStruct<ze_command_queue_desc_t> ZeCommandQueueDesc;
+  ZeCommandQueueDesc.ordinal = QueueOrdinal;
+  ZeCommandQueueDesc.index = QueueIndex;
+  ZeCommandQueueDesc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
+  const char *Priority = "Normal";
+  if (Queue->isPriorityLow()) {
+    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_LOW;
+    Priority = "Low";
+  } else if (Queue->isPriorityHigh()) {
+    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_HIGH;
+    Priority = "High";
+  }
+
+  // Evaluate performance of explicit usage for "0" index.
+  if (QueueIndex != 0) {
+    ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_EXPLICIT_ONLY;
+  }
+
+  zePrint("[getZeQueue]: create queue ordinal = %d, index = %d "
+          "(round robin in [%d, %d]) priority = %s\n",
+          ZeCommandQueueDesc.ordinal, ZeCommandQueueDesc.index, LowerIndex,
+          UpperIndex, Priority);
+
+  ze_command_list_handle_t ZeCommandList;
+  ZE_CALL_NOCHECK(zeCommandListCreateImmediate,
+                  (Queue->Context->ZeContext, Queue->Device->ZeDevice,
+                   &ZeCommandQueueDesc, &ZeCommandList));
+  ImmCmdLists[Index] =
+      Queue->CommandListMap
+          .insert(std::pair<ze_command_list_handle_t, pi_command_list_info_t>{
+              ZeCommandList, {nullptr, true, nullptr, QueueOrdinal}})
+          .first;
+  // Add this commandlist to the cache so it can be destroyed as part of
+  // piQueueReleaseInternal
+  auto QueueType = Type;
+  std::scoped_lock<pi_mutex> Lock(Queue->Context->ZeCommandListCacheMutex);
+  auto &ZeCommandListCache =
+      QueueType == queue_type::Compute
+          ? Queue->Context->ZeComputeCommandListCache[Queue->Device->ZeDevice]
+          : Queue->Context->ZeCopyCommandListCache[Queue->Device->ZeDevice];
+  ZeCommandListCache.push_back(ZeCommandList);
+
+  return ImmCmdLists[Index];
 }

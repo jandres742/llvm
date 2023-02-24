@@ -23,6 +23,7 @@
 #include <zes_api.h>
 
 #include "ur_level_zero_common.hpp"
+#include "ur_level_zero_queue.hpp"
 #include <ur/usm_allocator.hpp>
 
 struct _ur_context_handle_t : _pi_object {
@@ -191,6 +192,31 @@ struct _ur_context_handle_t : _pi_object {
   // Decrement number of events living in the pool upon event destroy
   // and return the pool to the cache if there are no unreleased events.
   ur_result_t decrementUnreleasedEventsInPool(ur_event_handle_t Event);
+
+  // Retrieves a command list for executing on this device along with
+  // a fence to be used in tracking the execution of this command list.
+  // If a command list has been created on this device which has
+  // completed its commands, then that command list and its associated fence
+  // will be reused. Otherwise, a new command list and fence will be created for
+  // running on this device. L0 fences are created on a L0 command queue so the
+  // caller must pass a command queue to create a new fence for the new command
+  // list if a command list/fence pair is not available. All Command Lists &
+  // associated fences are destroyed at Device Release.
+  // If UseCopyEngine is true, the command will eventually be executed in a
+  // copy engine. Otherwise, the command will be executed in a compute engine.
+  // If AllowBatching is true, then the command list returned may already have
+  // command in it, if AllowBatching is false, any open command lists that
+  // already exist in Queue will be closed and executed.
+  // If ForcedCmdQueue is not nullptr, the resulting command list must be tied
+  // to the contained command queue. This option is ignored if immediate
+  // command lists are used.
+  // When using immediate commandlists, retrieves an immediate command list
+  // for executing on this device. Immediate commandlists are created only
+  // once for each SYCL Queue and after that they are reused.
+  ur_result_t
+  getAvailableCommandList(ur_queue_handle_t Queue, pi_command_list_ptr_t &CommandList,
+                          bool UseCopyEngine, bool AllowBatching = false,
+                          ze_command_queue_handle_t *ForcedCmdQueue = nullptr);
 
 private:
 

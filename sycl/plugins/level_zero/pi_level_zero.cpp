@@ -52,16 +52,6 @@ static const bool UseCopyEngineForD2DCopy = [] {
   return (CopyEngineForD2DCopy && (std::stoi(CopyEngineForD2DCopy) != 0));
 }();
 
-// This is an experimental option that allows the use of copy engine, if
-// available in the device, in Level Zero plugin for copy operations submitted
-// to an in-order queue. The default is 1.
-static const bool UseCopyEngineForInOrderQueue = [] {
-  const char *CopyEngineForInOrderQueue =
-      std::getenv("SYCL_PI_LEVEL_ZERO_USE_COPY_ENGINE_FOR_IN_ORDER_QUEUE");
-  return (!CopyEngineForInOrderQueue ||
-          (std::stoi(CopyEngineForInOrderQueue) != 0));
-}();
-
 // This is an experimental option that allows the use of multiple command lists
 // when submitting barriers. The default is 0.
 static const bool UseMultipleCmdlistBarriers = [] {
@@ -95,15 +85,6 @@ static inline pi_result mapError(ze_result_t Result) {
       return Result;                                                           \
   }
 
-// Controls if we should choose doing eager initialization
-// to make it happen on warmup paths and have the reportable
-// paths be less likely affected.
-//
-static bool doEagerInit = [] {
-  const char *EagerInit = std::getenv("SYCL_EAGER_INIT");
-  return EagerInit ? std::atoi(EagerInit) != 0 : false;
-}();
-
 } // anonymous namespace
 
 bool _pi_context::isValidDevice(pi_device Device) const {
@@ -133,25 +114,6 @@ static pi_result enqueueMemCopyRectHelper(
     const pi_event *EventWaitList, pi_event *Event,
     bool PreferCopyEngine = false);
 
-
-// Get value of the threshold for number of events in immediate command lists.
-// If number of events in the immediate command list exceeds this threshold then
-// cleanup process for those events is executed.
-static const size_t ImmCmdListsEventCleanupThreshold = [] {
-  const char *ImmCmdListsEventCleanupThresholdStr = std::getenv(
-      "SYCL_PI_LEVEL_ZERO_IMMEDIATE_COMMANDLISTS_EVENT_CLEANUP_THRESHOLD");
-  static constexpr int Default = 20;
-  if (!ImmCmdListsEventCleanupThresholdStr)
-    return Default;
-
-  int Threshold = std::atoi(ImmCmdListsEventCleanupThresholdStr);
-
-  // Basically disable threshold if negative value is provided.
-  if (Threshold < 0)
-    return INT_MAX;
-
-  return Threshold;
-}();
 
 _pi_queue::_pi_queue(std::vector<ze_command_queue_handle_t> &ComputeQueues,
                      std::vector<ze_command_queue_handle_t> &CopyQueues,
@@ -288,352 +250,6 @@ static pi_result resetCommandLists(pi_queue Queue) {
     }
   }
   CleanupEventListFromResetCmdList(EventListToCleanup);
-  return PI_SUCCESS;
-}
-
-// Retrieve an available command list to be used in a PI call.
-pi_result _pi_context::getAvailableCommandList(
-    pi_queue Queue, pi_command_list_ptr_t &CommandList, bool UseCopyEngine,
-    bool AllowBatching, ze_command_queue_handle_t *ForcedCmdQueue) {
-  // Immediate commandlists have been pre-allocated and are always available.
-  if (Queue->Device->useImmediateCommandLists()) {
-    CommandList = Queue->getQueueGroup(UseCopyEngine).getImmCmdList();
-    if (CommandList->second.EventList.size() >
-        ImmCmdListsEventCleanupThreshold) {
-      std::vector<ur_event_handle_t> EventListToCleanup;
-      Queue->resetCommandList(CommandList, false, EventListToCleanup);
-      CleanupEventListFromResetCmdList(EventListToCleanup, true);
-    }
-    PI_CALL(Queue->insertStartBarrierIfDiscardEventsMode(CommandList));
-    if (auto Res = Queue->insertActiveBarriers(CommandList, UseCopyEngine))
-      return Res;
-    return PI_SUCCESS;
-  }
-
-  auto &CommandBatch =
-      UseCopyEngine ? Queue->CopyCommandBatch : Queue->ComputeCommandBatch;
-  // Handle batching of commands
-  // First see if there is an command-list open for batching commands
-  // for this queue.
-  if (Queue->hasOpenCommandList(UseCopyEngine)) {
-    if (AllowBatching) {
-      CommandList = CommandBatch.OpenCommandList;
-      PI_CALL(Queue->insertStartBarrierIfDiscardEventsMode(CommandList));
-      return PI_SUCCESS;
-    }
-    // If this command isn't allowed to be batched or doesn't match the forced
-    // command queue, then we need to go ahead and execute what is already in
-    // the batched list, and then go on to process this. On exit from
-    // executeOpenCommandList OpenCommandList will be invalidated.
-    if (auto Res = ur2piResult(Queue->executeOpenCommandList(UseCopyEngine)))
-      return Res;
-    // Note that active barriers do not need to be inserted here as they will
-    // have been enqueued into the command-list when they were created.
-  }
-
-  // Create/Reuse the command list, because in Level Zero commands are added to
-  // the command lists, and later are then added to the command queue.
-  // Each command list is paired with an associated fence to track when the
-  // command list is available for reuse.
-  _pi_result pi_result = PI_ERROR_OUT_OF_RESOURCES;
-
-  // Initally, we need to check if a command list has already been created
-  // on this device that is available for use. If so, then reuse that
-  // Level-Zero Command List and Fence for this PI call.
-  {
-    // Make sure to acquire the lock before checking the size, or there
-    // will be a race condition.
-    std::scoped_lock<pi_mutex> Lock(Queue->Context->ZeCommandListCacheMutex);
-    // Under mutex since operator[] does insertion on the first usage for every
-    // unique ZeDevice.
-    auto &ZeCommandListCache =
-        UseCopyEngine
-            ? Queue->Context->ZeCopyCommandListCache[Queue->Device->ZeDevice]
-            : Queue->Context
-                  ->ZeComputeCommandListCache[Queue->Device->ZeDevice];
-
-    for (auto ZeCommandListIt = ZeCommandListCache.begin();
-         ZeCommandListIt != ZeCommandListCache.end(); ++ZeCommandListIt) {
-      auto &ZeCommandList = *ZeCommandListIt;
-      auto it = Queue->CommandListMap.find(ZeCommandList);
-      if (it != Queue->CommandListMap.end()) {
-        if (ForcedCmdQueue && *ForcedCmdQueue != it->second.ZeQueue)
-          continue;
-        CommandList = it;
-        if (CommandList->second.ZeFence != nullptr)
-          CommandList->second.ZeFenceInUse = true;
-      } else {
-        // If there is a command list available on this context, but it
-        // wasn't yet used in this queue then create a new entry in this
-        // queue's map to hold the fence and other associated command
-        // list information.
-        auto &QGroup = Queue->getQueueGroup(UseCopyEngine);
-        uint32_t QueueGroupOrdinal;
-        auto &ZeCommandQueue = ForcedCmdQueue
-                                   ? *ForcedCmdQueue
-                                   : QGroup.getZeQueue(&QueueGroupOrdinal);
-        if (ForcedCmdQueue)
-          QueueGroupOrdinal = QGroup.getCmdQueueOrdinal(ZeCommandQueue);
-
-        ze_fence_handle_t ZeFence;
-        ZeStruct<ze_fence_desc_t> ZeFenceDesc;
-        ZE_CALL(zeFenceCreate, (ZeCommandQueue, &ZeFenceDesc, &ZeFence));
-        CommandList =
-            Queue->CommandListMap
-                .emplace(ZeCommandList,
-                         pi_command_list_info_t{ZeFence, true, ZeCommandQueue,
-                                                QueueGroupOrdinal})
-                .first;
-      }
-      ZeCommandListCache.erase(ZeCommandListIt);
-      if (auto Res = Queue->insertStartBarrierIfDiscardEventsMode(CommandList))
-        return Res;
-      if (auto Res = Queue->insertActiveBarriers(CommandList, UseCopyEngine))
-        return Res;
-      return PI_SUCCESS;
-    }
-  }
-
-  // If there are no available command lists in the cache, then we check for
-  // command lists that have already signalled, but have not been added to the
-  // available list yet. Each command list has a fence associated which tracks
-  // if a command list has completed dispatch of its commands and is ready for
-  // reuse. If a command list is found to have been signalled, then the
-  // command list & fence are reset and we return.
-  for (auto it = Queue->CommandListMap.begin();
-       it != Queue->CommandListMap.end(); ++it) {
-    // Make sure this is the command list type needed.
-    if (UseCopyEngine != it->second.isCopy(reinterpret_cast<ur_queue_handle_t>(Queue)))
-      continue;
-
-    ze_result_t ZeResult =
-        ZE_CALL_NOCHECK(zeFenceQueryStatus, (it->second.ZeFence));
-    if (ZeResult == ZE_RESULT_SUCCESS) {
-      std::vector<ur_event_handle_t> EventListToCleanup;
-      Queue->resetCommandList(it, false, EventListToCleanup);
-      CleanupEventListFromResetCmdList(EventListToCleanup,
-                                       true /* QueueLocked */);
-      CommandList = it;
-      CommandList->second.ZeFenceInUse = true;
-      if (auto Res = Queue->insertStartBarrierIfDiscardEventsMode(CommandList))
-        return Res;
-      return PI_SUCCESS;
-    }
-  }
-
-  // If there are no available command lists nor signalled command lists,
-  // then we must create another command list.
-  pi_result = Queue->createCommandList(UseCopyEngine, CommandList);
-  CommandList->second.ZeFenceInUse = true;
-  return pi_result;
-}
-
-// Helper function to create a new command-list to this queue and associated
-// fence tracking its completion. This command list & fence are added to the
-// map of command lists in this queue with ZeFenceInUse = false.
-// The caller must hold a lock of the queue already.
-pi_result
-_pi_queue::createCommandList(bool UseCopyEngine,
-                             pi_command_list_ptr_t &CommandList,
-                             ze_command_queue_handle_t *ForcedCmdQueue) {
-
-  ze_fence_handle_t ZeFence;
-  ZeStruct<ze_fence_desc_t> ZeFenceDesc;
-  ze_command_list_handle_t ZeCommandList;
-
-  uint32_t QueueGroupOrdinal;
-  auto &QGroup = getQueueGroup(UseCopyEngine);
-  auto &ZeCommandQueue =
-      ForcedCmdQueue ? *ForcedCmdQueue : QGroup.getZeQueue(&QueueGroupOrdinal);
-  if (ForcedCmdQueue)
-    QueueGroupOrdinal = QGroup.getCmdQueueOrdinal(ZeCommandQueue);
-
-  ZeStruct<ze_command_list_desc_t> ZeCommandListDesc;
-  ZeCommandListDesc.commandQueueGroupOrdinal = QueueGroupOrdinal;
-
-  ZE_CALL(zeCommandListCreate, (Context->ZeContext, Device->ZeDevice,
-                                &ZeCommandListDesc, &ZeCommandList));
-
-  ZE_CALL(zeFenceCreate, (ZeCommandQueue, &ZeFenceDesc, &ZeFence));
-  std::tie(CommandList, std::ignore) = CommandListMap.insert(
-      std::pair<ze_command_list_handle_t, pi_command_list_info_t>(
-          ZeCommandList, {ZeFence, false, ZeCommandQueue, QueueGroupOrdinal}));
-
-  PI_CALL(insertStartBarrierIfDiscardEventsMode(CommandList));
-  PI_CALL(insertActiveBarriers(CommandList, UseCopyEngine));
-  return PI_SUCCESS;
-}
-
-int32_t _pi_queue::pi_queue_group_t::getCmdQueueOrdinal(
-    ze_command_queue_handle_t CmdQueue) {
-  // Find out the right queue group ordinal (first queue might be "main" or
-  // "link")
-  auto QueueType = Type;
-  if (QueueType != queue_type::Compute)
-    QueueType = (ZeQueues[0] == CmdQueue && Queue->Device->hasMainCopyEngine())
-                    ? queue_type::MainCopy
-                    : queue_type::LinkCopy;
-  return Queue->Device->QueueGroup[QueueType].ZeOrdinal;
-}
-
-// This function will return one of possibly multiple available native
-// queues and the value of the queue group ordinal.
-ze_command_queue_handle_t &
-_pi_queue::pi_queue_group_t::getZeQueue(uint32_t *QueueGroupOrdinal) {
-
-  // QueueIndex is the proper L0 index.
-  // Index is the plugins concept of index, with main and link copy engines in
-  // one range.
-  uint32_t QueueIndex;
-  auto Index = getQueueIndex(QueueGroupOrdinal, &QueueIndex);
-
-  ze_command_queue_handle_t &ZeQueue = ZeQueues[Index];
-  if (ZeQueue)
-    return ZeQueue;
-
-  ZeStruct<ze_command_queue_desc_t> ZeCommandQueueDesc;
-  ZeCommandQueueDesc.ordinal = *QueueGroupOrdinal;
-  ZeCommandQueueDesc.index = QueueIndex;
-  ZeCommandQueueDesc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
-  const char *Priority = "Normal";
-  if (Queue->isPriorityLow()) {
-    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_LOW;
-    Priority = "Low";
-  } else if (Queue->isPriorityHigh()) {
-    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_HIGH;
-    Priority = "High";
-  }
-
-  // Evaluate performance of explicit usage for "0" index.
-  if (QueueIndex != 0) {
-    ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_EXPLICIT_ONLY;
-  }
-
-  zePrint("[getZeQueue]: create queue ordinal = %d, index = %d "
-          "(round robin in [%d, %d]) priority = %s\n",
-          ZeCommandQueueDesc.ordinal, ZeCommandQueueDesc.index, LowerIndex,
-          UpperIndex, Priority);
-
-  auto ZeResult = ZE_CALL_NOCHECK(
-      zeCommandQueueCreate, (Queue->Context->ZeContext, Queue->Device->ZeDevice,
-                             &ZeCommandQueueDesc, &ZeQueue));
-  if (ZeResult) {
-    die("[L0] getZeQueue: failed to create queue");
-  }
-
-  return ZeQueue;
-}
-
-// This function will return one of possibly multiple available
-// immediate commandlists associated with this Queue.
-pi_command_list_ptr_t &_pi_queue::pi_queue_group_t::getImmCmdList() {
-
-  uint32_t QueueIndex, QueueOrdinal;
-  auto Index = getQueueIndex(&QueueOrdinal, &QueueIndex);
-
-  if (ImmCmdLists[Index] != Queue->CommandListMap.end())
-    return ImmCmdLists[Index];
-
-  ZeStruct<ze_command_queue_desc_t> ZeCommandQueueDesc;
-  ZeCommandQueueDesc.ordinal = QueueOrdinal;
-  ZeCommandQueueDesc.index = QueueIndex;
-  ZeCommandQueueDesc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
-  const char *Priority = "Normal";
-  if (Queue->isPriorityLow()) {
-    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_LOW;
-    Priority = "Low";
-  } else if (Queue->isPriorityHigh()) {
-    ZeCommandQueueDesc.priority = ZE_COMMAND_QUEUE_PRIORITY_PRIORITY_HIGH;
-    Priority = "High";
-  }
-
-  // Evaluate performance of explicit usage for "0" index.
-  if (QueueIndex != 0) {
-    ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_EXPLICIT_ONLY;
-  }
-
-  zePrint("[getZeQueue]: create queue ordinal = %d, index = %d "
-          "(round robin in [%d, %d]) priority = %s\n",
-          ZeCommandQueueDesc.ordinal, ZeCommandQueueDesc.index, LowerIndex,
-          UpperIndex, Priority);
-
-  ze_command_list_handle_t ZeCommandList;
-  ZE_CALL_NOCHECK(zeCommandListCreateImmediate,
-                  (Queue->Context->ZeContext, Queue->Device->ZeDevice,
-                   &ZeCommandQueueDesc, &ZeCommandList));
-  ImmCmdLists[Index] =
-      Queue->CommandListMap
-          .insert(std::pair<ze_command_list_handle_t, pi_command_list_info_t>{
-              ZeCommandList, {nullptr, true, nullptr, QueueOrdinal}})
-          .first;
-  // Add this commandlist to the cache so it can be destroyed as part of
-  // piQueueReleaseInternal
-  auto QueueType = Type;
-  std::scoped_lock<pi_mutex> Lock(Queue->Context->ZeCommandListCacheMutex);
-  auto &ZeCommandListCache =
-      QueueType == queue_type::Compute
-          ? Queue->Context->ZeComputeCommandListCache[Queue->Device->ZeDevice]
-          : Queue->Context->ZeCopyCommandListCache[Queue->Device->ZeDevice];
-  ZeCommandListCache.push_back(ZeCommandList);
-
-  return ImmCmdLists[Index];
-}
-
-pi_result _pi_queue::insertStartBarrierIfDiscardEventsMode(
-    pi_command_list_ptr_t &CmdList) {
-  // If current command list is different from the last command list then insert
-  // a barrier waiting for the last command event.
-  if (doReuseDiscardedEvents() && CmdList != LastUsedCommandList &&
-      LastCommandEvent) {
-    ZE_CALL(zeCommandListAppendBarrier,
-            (CmdList->first, nullptr, 1, &(LastCommandEvent->ZeEvent)));
-    LastCommandEvent = nullptr;
-  }
-  return PI_SUCCESS;
-}
-
-pi_result _pi_queue::insertActiveBarriers(pi_command_list_ptr_t &CmdList,
-                                          bool UseCopyEngine) {
-  // Early exit if there are no active barriers.
-  if (ActiveBarriers.empty())
-    return PI_SUCCESS;
-
-  // Create a wait-list and retain events.
-  _pi_ze_event_list_t ActiveBarriersWaitList;
-  if (auto Res = ur2piResult(ActiveBarriersWaitList.createAndRetainPiZeEventList(
-          ActiveBarriers.vector().size(), ActiveBarriers.vector().data(), reinterpret_cast<ur_queue_handle_t>(this),
-          UseCopyEngine)))
-    return Res;
-
-  // We can now replace active barriers with the ones in the wait list.
-  if (auto Res = ur2piResult(ActiveBarriers.clear()))
-    return Res;
-
-  if (ActiveBarriersWaitList.Length == 0) {
-    return PI_SUCCESS;
-  }
-
-  for (pi_uint32 I = 0; I < ActiveBarriersWaitList.Length; ++I) {
-    auto &Event = ActiveBarriersWaitList.PiEventList[I];
-    ActiveBarriers.add(Event);
-  }
-
-  pi_event Event = nullptr;
-  if (auto Res = ur2piResult(createEventAndAssociateQueue(reinterpret_cast<ur_queue_handle_t>(this),
-                                                          reinterpret_cast<ur_event_handle_t *>(&Event),
-                                                          PI_COMMAND_TYPE_USER,
-                                                          CmdList,
-                                                          /*IsInternal*/ true)))
-    return Res;
-
-  Event->WaitList = ActiveBarriersWaitList;
-  Event->OwnZeEvent = true;
-
-  // If there are more active barriers, insert a barrier on the command-list. We
-  // do not need an event for finishing so we pass nullptr.
-  ZE_CALL(zeCommandListAppendBarrier,
-          (CmdList->first, nullptr, ActiveBarriersWaitList.Length,
-           ActiveBarriersWaitList.ZeEventList));
   return PI_SUCCESS;
 }
 
@@ -987,6 +603,9 @@ pi_result piQueueCreate(pi_context Context, pi_device Device,
 }
 pi_result piextQueueCreate(pi_context Context, pi_device Device,
                            pi_queue_properties *Properties, pi_queue *Queue) {
+
+  printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
+#if 0
   PI_ASSERT(Properties, PI_ERROR_INVALID_VALUE);
   // Expect flags mask to be passed first.
   PI_ASSERT(Properties[0] == PI_QUEUE_FLAGS, PI_ERROR_INVALID_VALUE);
@@ -1083,7 +702,11 @@ pi_result piextQueueCreate(pi_context Context, pi_device Device,
     }
     // TODO: warmup event pools. Both host-visible and device-only.
   }
+
   return PI_SUCCESS;
+#else
+  return pi2ur::piextQueueCreate(Context, Device, Properties, Queue);
+#endif
 }
 
 pi_result piQueueGetInfo(pi_queue Queue, pi_queue_info ParamName,
@@ -2932,8 +2555,8 @@ piEnqueueKernelLaunch(pi_queue Queue, pi_kernel Kernel, pi_uint32 WorkDim,
 
   // Get a new command list to be used on this call
   pi_command_list_ptr_t CommandList{};
-  if (auto Res = Queue->Context->getAvailableCommandList(
-          Queue, CommandList, UseCopyEngine, true /* AllowBatching */))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+          reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, UseCopyEngine, true /* AllowBatching */)))
     return Res;
 
   ze_event_handle_t ZeEvent = nullptr;
@@ -3059,8 +2682,8 @@ _pi_event::getOrCreateHostVisibleEvent(ze_event_handle_t &ZeHostVisibleEvent) {
     bool OkToBatch = true;
 
     pi_command_list_ptr_t CommandList{};
-    if (auto Res = Queue->Context->getAvailableCommandList(
-            Queue, CommandList, false /* UseCopyEngine */, OkToBatch))
+    if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+            reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, false /* UseCopyEngine */, OkToBatch)))
       return Res;
 
     // Create a "proxy" host-visible event.
@@ -3594,8 +3217,8 @@ pi_result piEnqueueEventsWait(pi_queue Queue, pi_uint32 NumEventsInWaitList,
 
     // Get a new command list to be used on this call
     pi_command_list_ptr_t CommandList{};
-    if (auto Res = Queue->Context->getAvailableCommandList(Queue, CommandList,
-                                                           UseCopyEngine))
+    if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(reinterpret_cast<ur_queue_handle_t>(Queue), CommandList,
+                                                           UseCopyEngine)))
       return Res;
 
     ze_event_handle_t ZeEvent = nullptr;
@@ -3714,9 +3337,9 @@ pi_result piEnqueueEventsWaitWithBarrier(pi_queue Queue,
 
     // Get an arbitrary command-list in the queue.
     pi_command_list_ptr_t CmdList;
-    if (auto Res = Queue->Context->getAvailableCommandList(
-            Queue, CmdList,
-            /*UseCopyEngine=*/false, OkToBatch))
+    if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+            reinterpret_cast<ur_queue_handle_t>(Queue), CmdList,
+            /*UseCopyEngine=*/false, OkToBatch)))
       return Res;
 
     // Insert the barrier into the command-list and execute.
@@ -3775,8 +3398,8 @@ pi_result piEnqueueEventsWaitWithBarrier(pi_queue Queue,
         for (auto ZeQueue : QueueGroup.second.ZeQueues) {
           if (ZeQueue) {
             pi_command_list_ptr_t CmdList;
-            if (auto Res = Queue->Context->getAvailableCommandList(
-                    Queue, CmdList, UseCopyEngine, OkToBatch, &ZeQueue))
+            if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+                    reinterpret_cast<ur_queue_handle_t>(Queue), CmdList, UseCopyEngine, OkToBatch, &ZeQueue)))
               return Res;
             CmdLists.push_back(CmdList);
           }
@@ -3789,9 +3412,9 @@ pi_result piEnqueueEventsWaitWithBarrier(pi_queue Queue,
   if (CmdLists.size() == 0) {
     // Get any available command list.
     pi_command_list_ptr_t CmdList;
-    if (auto Res = Queue->Context->getAvailableCommandList(
-            Queue, CmdList,
-            /*UseCopyEngine=*/false, OkToBatch))
+    if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+            reinterpret_cast<ur_queue_handle_t>(Queue), CmdList,
+            /*UseCopyEngine=*/false, OkToBatch)))
       return Res;
     CmdLists.push_back(CmdList);
   }
@@ -3894,12 +3517,6 @@ pi_result piEnqueueMemBufferReadRect(
 
 } // extern "C"
 
-bool _pi_queue::useCopyEngine(bool PreferCopyEngine) const {
-  auto InitialCopyGroup = CopyQueueGroupsByTID.begin()->second;
-  return PreferCopyEngine && InitialCopyGroup.ZeQueues.size() > 0 &&
-         (!isInOrderQueue() || UseCopyEngineForInOrderQueue);
-}
-
 // Shared by all memory read/write/copy PI interfaces.
 // PI interfaces must have queue's and destination buffer's mutexes locked for
 // exclusive use and source buffer's mutex locked for shared use on entry.
@@ -3923,8 +3540,8 @@ enqueueMemCopyHelper(pi_command_type CommandType, pi_queue Queue, void *Dst,
 
   // Get a new command list to be used on this call
   pi_command_list_ptr_t CommandList{};
-  if (auto Res = Queue->Context->getAvailableCommandList(
-          Queue, CommandList, UseCopyEngine, OkToBatch))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+          reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, UseCopyEngine, OkToBatch)))
     return Res;
 
   ze_event_handle_t ZeEvent = nullptr;
@@ -3985,8 +3602,8 @@ static pi_result enqueueMemCopyRectHelper(
 
   // Get a new command list to be used on this call
   pi_command_list_ptr_t CommandList{};
-  if (auto Res = Queue->Context->getAvailableCommandList(
-          Queue, CommandList, UseCopyEngine, OkToBatch))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+          reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, UseCopyEngine, OkToBatch)))
     return Res;
 
   ze_event_handle_t ZeEvent = nullptr;
@@ -4241,8 +3858,8 @@ enqueueMemFillHelper(pi_command_type CommandType, pi_queue Queue, void *Ptr,
   pi_command_list_ptr_t CommandList{};
   // We want to batch these commands to avoid extra submissions (costly)
   bool OkToBatch = true;
-  if (auto Res = Queue->Context->getAvailableCommandList(
-          Queue, CommandList, UseCopyEngine, OkToBatch))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+          reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, UseCopyEngine, OkToBatch)))
     return Res;
 
   ze_event_handle_t ZeEvent = nullptr;
@@ -4429,8 +4046,8 @@ pi_result piEnqueueMemBufferMap(pi_queue Queue, pi_mem Mem, pi_bool BlockingMap,
   } else {
     // For discrete devices we need a command list
     pi_command_list_ptr_t CommandList{};
-    if (auto Res = Queue->Context->getAvailableCommandList(Queue, CommandList,
-                                                           UseCopyEngine))
+    if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(reinterpret_cast<ur_queue_handle_t>(Queue), CommandList,
+                                                           UseCopyEngine)))
       return Res;
 
     // Add the event to the command list.
@@ -4546,8 +4163,8 @@ pi_result piEnqueueMemUnmap(pi_queue Queue, pi_mem Mem, void *MappedPtr,
                                                           Buffer->Mutex);
 
   pi_command_list_ptr_t CommandList{};
-  if (auto Res = Queue->Context->getAvailableCommandList(Queue, CommandList,
-                                                         UseCopyEngine))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(reinterpret_cast<ur_queue_handle_t>(Queue), CommandList,
+                                                         UseCopyEngine)))
     return Res;
 
   CommandList->second.append(reinterpret_cast<ur_event_handle_t>(*Event));
@@ -4659,8 +4276,8 @@ static pi_result enqueueMemImageCommandHelper(
 
   // Get a new command list to be used on this call
   pi_command_list_ptr_t CommandList{};
-  if (auto Res = Queue->Context->getAvailableCommandList(
-          Queue, CommandList, UseCopyEngine, OkToBatch))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
+          reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, UseCopyEngine, OkToBatch)))
     return Res;
 
   ze_event_handle_t ZeEvent = nullptr;
@@ -5383,8 +5000,8 @@ pi_result piextUSMEnqueuePrefetch(pi_queue Queue, const void *Ptr, size_t Size,
   pi_command_list_ptr_t CommandList{};
   // TODO: Change UseCopyEngine argument to 'true' once L0 backend
   // support is added
-  if (auto Res = Queue->Context->getAvailableCommandList(Queue, CommandList,
-                                                         UseCopyEngine))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(reinterpret_cast<ur_queue_handle_t>(Queue), CommandList,
+                                                         UseCopyEngine)))
     return Res;
 
   // TODO: do we need to create a unique command type for this?
@@ -5453,8 +5070,8 @@ pi_result piextUSMEnqueueMemAdvise(pi_queue Queue, const void *Ptr,
   // UseCopyEngine is set to 'false' here.
   // TODO: Additional analysis is required to check if this operation will
   // run faster on copy engines.
-  if (auto Res = Queue->Context->getAvailableCommandList(Queue, CommandList,
-                                                         UseCopyEngine))
+  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(reinterpret_cast<ur_queue_handle_t>(Queue), CommandList,
+                                                         UseCopyEngine)))
     return Res;
 
   // TODO: do we need to create a unique command type for this?

@@ -94,31 +94,6 @@ struct _pi_context : _ur_context_handle_t {
   // Checks if Device is covered by this context.
   // For that the Device or its root devices need to be in the context.
   bool isValidDevice(pi_device Device) const;
-
-  // Retrieves a command list for executing on this device along with
-  // a fence to be used in tracking the execution of this command list.
-  // If a command list has been created on this device which has
-  // completed its commands, then that command list and its associated fence
-  // will be reused. Otherwise, a new command list and fence will be created for
-  // running on this device. L0 fences are created on a L0 command queue so the
-  // caller must pass a command queue to create a new fence for the new command
-  // list if a command list/fence pair is not available. All Command Lists &
-  // associated fences are destroyed at Device Release.
-  // If UseCopyEngine is true, the command will eventually be executed in a
-  // copy engine. Otherwise, the command will be executed in a compute engine.
-  // If AllowBatching is true, then the command list returned may already have
-  // command in it, if AllowBatching is false, any open command lists that
-  // already exist in Queue will be closed and executed.
-  // If ForcedCmdQueue is not nullptr, the resulting command list must be tied
-  // to the contained command queue. This option is ignored if immediate
-  // command lists are used.
-  // When using immediate commandlists, retrieves an immediate command list
-  // for executing on this device. Immediate commandlists are created only
-  // once for each SYCL Queue and after that they are reused.
-  pi_result
-  getAvailableCommandList(pi_queue Queue, pi_command_list_ptr_t &CommandList,
-                          bool UseCopyEngine, bool AllowBatching = false,
-                          ze_command_queue_handle_t *ForcedCmdQueue = nullptr);
 };
 
 struct _pi_queue : _ur_queue_handle_t {
@@ -128,35 +103,6 @@ struct _pi_queue : _ur_queue_handle_t {
             std::vector<ze_command_queue_handle_t> &CopyQueues,
             pi_context Context, pi_device Device, bool OwnZeCommandQueue,
             pi_queue_properties Properties = 0, int ForceComputeIndex = -1);
-
-  // This function considers multiple factors including copy engine
-  // availability and user preference and returns a boolean that is used to
-  // specify if copy engine will eventually be used for a particular command.
-  bool useCopyEngine(bool PreferCopyEngine = true) const;
-
-
-  // Helper function to create a new command-list to this queue and associated
-  // fence tracking its completion. This command list & fence are added to the
-  // map of command lists in this queue with ZeFenceInUse = false.
-  // The caller must hold a lock of the queue already.
-  pi_result
-  createCommandList(bool UseCopyEngine, pi_command_list_ptr_t &CommandList,
-                    ze_command_queue_handle_t *ForcedCmdQueue = nullptr);
-
-
-  // Inserts a barrier waiting for all unfinished events in ActiveBarriers into
-  // CmdList. Any finished events will be removed from ActiveBarriers.
-  pi_result insertActiveBarriers(pi_command_list_ptr_t &CmdList,
-                                 bool UseCopyEngine);
-
-
-  // Insert a barrier waiting for the last command event into the beginning of
-  // command list. This barrier guarantees that command list execution starts
-  // only after completion of previous command list which signals aforementioned
-  // event. It allows to reset and reuse same event handles inside all command
-  // lists in the queue.
-  pi_result
-  insertStartBarrierIfDiscardEventsMode(pi_command_list_ptr_t &CmdList);
 };
 
 struct _pi_mem : _pi_object {
