@@ -65,9 +65,10 @@ __SYCL_EXPORT pi_result piDevicePartition(
 }
 
 // Stub for the not yet supported API
-__SYCL_EXPORT pi_result piextDeviceSelectBinary(pi_device, pi_device_binary *,
-                                                pi_uint32, pi_uint32 *) {
-  return PI_ERROR_INVALID_BINARY;
+__SYCL_EXPORT pi_result piextDeviceSelectBinary(pi_device Device,
+                        pi_device_binary *Binaries, pi_uint32 NumBinaries,
+                        pi_uint32 *SelectedBinaryInd) {
+  return pi2ur::piextDeviceSelectBinary(Device, Binaries, NumBinaries, SelectedBinaryInd);
 }
 
 __SYCL_EXPORT pi_result piContextCreate(const pi_context_properties *Properties,
@@ -76,7 +77,6 @@ __SYCL_EXPORT pi_result piContextCreate(const pi_context_properties *Properties,
                                             const void *PrivateInfo, size_t CB,
                                             void *UserData),
                           void *UserData, pi_context *RetContext) {
-  printf("%s %d\n", __FILE__, __LINE__);
   return pi2ur::piContextCreate(Properties,
                                 NumDevices,
                                 Devices,

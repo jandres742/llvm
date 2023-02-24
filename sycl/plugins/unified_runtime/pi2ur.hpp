@@ -559,6 +559,20 @@ inline pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
   return PI_SUCCESS;
 }
 
+inline  pi_result
+piextDeviceSelectBinary(pi_device Device, // TODO: does this need to be context?
+                        pi_device_binary *Binaries, pi_uint32 NumBinaries,
+                        pi_uint32 *SelectedBinaryInd) {
+
+  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
+  const uint8_t **ppBinaries = const_cast<const uint8_t **>(reinterpret_cast<uint8_t **>(Binaries));
+  HANDLE_ERRORS(urDeviceSelectBinary(hDevice,
+                                     ppBinaries,
+                                     NumBinaries,
+                                     SelectedBinaryInd));
+  return PI_SUCCESS;
+}
+
 // Device
 ///////////////////////////////////////////////////////////////////////////////
 
