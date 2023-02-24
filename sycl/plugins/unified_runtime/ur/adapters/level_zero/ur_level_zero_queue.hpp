@@ -24,7 +24,7 @@
 #include "ur_level_zero_common.hpp"
 #include "ur_level_zero_device.hpp"
 
-ur_result_t piQueueReleaseInternal(pi_queue Queue);
+ur_result_t piQueueReleaseInternal(ur_queue_handle_t Queue);
 
 // Structure describing the specific use of a command-list in a queue.
 // This is because command-lists are re-used across multiple queues

@@ -145,8 +145,66 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueRetain(
 UR_APIEXPORT ur_result_t UR_APICALL urQueueRelease(
     ur_queue_handle_t hQueue ///< [in] handle of the queue object to release
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+
+  _ur_queue_handle_t *Queue = reinterpret_cast<_ur_queue_handle_t *>(hQueue);
+
+  std::vector<ur_event_handle_t> EventListToCleanup;
+  {
+    std::scoped_lock<pi_shared_mutex> Lock(Queue->Mutex);
+
+    if ((--Queue->RefCountExternal) != 0)
+      return UR_RESULT_SUCCESS;
+
+    // When external reference count goes to zero it is still possible
+    // that internal references still exists, e.g. command-lists that
+    // are not yet completed. So do full queue synchronization here
+    // and perform proper cleanup.
+    //
+    // It is possible to get to here and still have an open command list
+    // if no wait or finish ever occurred for this queue.
+    if (auto Res = Queue->executeAllOpenCommandLists())
+      return Res;
+
+    // Make sure all commands get executed.
+    Queue->synchronize();
+
+    // Destroy all the fences created associated with this queue.
+    for (auto it = Queue->CommandListMap.begin();
+         it != Queue->CommandListMap.end(); ++it) {
+      // This fence wasn't yet signalled when we polled it for recycling
+      // the command-list, so need to release the command-list too.
+      // For immediate commandlists we don't need to do an L0 reset of the
+      // commandlist but do need to do event cleanup which is also in the
+      // resetCommandList function.
+      // If the fence is a nullptr we are using immediate commandlists,
+      // otherwise regular commandlists which use a fence.
+      if (it->second.ZeFence == nullptr || it->second.ZeFenceInUse) {
+        Queue->resetCommandList(it, true, EventListToCleanup);
+      }
+      // TODO: remove "if" when the problem is fixed in the level zero
+      // runtime. Destroy only if a queue is healthy. Destroying a fence may
+      // cause a hang otherwise.
+      // If the fence is a nullptr we are using immediate commandlists.
+      if (Queue->Healthy && it->second.ZeFence != nullptr)
+        ZE2UR_CALL(zeFenceDestroy, (it->second.ZeFence));
+    }
+    Queue->CommandListMap.clear();
+  }
+
+  for (auto &Event : EventListToCleanup) {
+    // We don't need to synchronize the events since the queue
+    // synchronized above already does that.
+    {
+      std::scoped_lock<pi_shared_mutex> EventLock(Event->Mutex);
+      Event->Completed = true;
+    }
+    UR_CALL(CleanupCompletedEvent(Event));
+    // This event was removed from the command list, so decrement ref count
+    // (it was incremented when they were added to the command list).
+    UR_CALL(piEventReleaseInternal(reinterpret_cast<ur_event_handle_t>(Event)));
+  }
+  UR_CALL(piQueueReleaseInternal(reinterpret_cast<ur_queue_handle_t>(Queue)));
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueGetNativeHandle(
@@ -737,7 +795,7 @@ ur_result_t _ur_queue_handle_t::active_barriers::clear() {
   return UR_RESULT_SUCCESS;
 }
 
-ur_result_t piQueueReleaseInternal(pi_queue Queue) {
+ur_result_t piQueueReleaseInternal(ur_queue_handle_t Queue) {
   // PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
   ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);

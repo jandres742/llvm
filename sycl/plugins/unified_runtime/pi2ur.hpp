@@ -676,6 +676,16 @@ inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
   return PI_SUCCESS;
 }
 
+inline pi_result piQueueRelease(pi_queue Queue) {
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  
+  HANDLE_ERRORS(urQueueRelease(hQueue));
+
+  return PI_SUCCESS;
+}
+
 // Queue
 ///////////////////////////////////////////////////////////////////////////////
 

@@ -87,7 +87,6 @@ __SYCL_EXPORT pi_result piContextCreate(const pi_context_properties *Properties,
 
 __SYCL_EXPORT pi_result piQueueCreate(pi_context Context, pi_device Device,
                         pi_queue_properties Flags, pi_queue *Queue) {
-  printf("%s %d\n", __FILE__, __LINE__);
   return pi2ur::piQueueCreate(Context,
                               Device,
                               Flags,
@@ -96,11 +95,14 @@ __SYCL_EXPORT pi_result piQueueCreate(pi_context Context, pi_device Device,
 
 __SYCL_EXPORT pi_result piextQueueCreate(pi_context Context, pi_device Device,
                            pi_queue_properties *Properties, pi_queue *Queue) {
-  printf("%s %d\n", __FILE__, __LINE__);
   return pi2ur::piextQueueCreate(Context,
                               Device,
                               Properties,
                               Queue);
+}
+
+__SYCL_EXPORT pi_result piQueueRelease(pi_queue Queue) {
+  return pi2ur::piQueueRelease(Queue);
 }
 
 // This interface is not in Unified Runtime currently
@@ -144,6 +146,7 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piContextCreate)
 
   _PI_API(piQueueCreate)
+  _PI_API(piQueueRelease)
   _PI_API(piextQueueCreate)
 
   _PI_API(piTearDown)
