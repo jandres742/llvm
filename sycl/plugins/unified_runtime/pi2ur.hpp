@@ -9,9 +9,14 @@
 
 #include <unordered_map>
 
+#include "pi2ur_context.hpp"
+
 #include "ur_api.h"
 #include <sycl/detail/pi.h>
 #include <ur/ur.hpp>
+
+// #include "pi2ur_common.hpp"
+
 
 // Map of UR error codes to PI error codes
 static pi_result ur2piResult(ur_result_t urResult) {
@@ -584,12 +589,28 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
                                             const void *PrivateInfo, size_t CB,
                                             void *UserData),
                           void *UserData, pi_context *RetContext) {
-  printf("%s %d\n", __FILE__, __LINE__);
   uint32_t DeviceCount = reinterpret_cast<uint32_t>(NumDevices);
   ur_device_handle_t *phDevices = reinterpret_cast<ur_device_handle_t *>(const_cast<pi_device *>(Devices));
-  ur_context_handle_t *phContext = reinterpret_cast<ur_context_handle_t *>(RetContext);
+  // ur_context_handle_t *phContext = reinterpret_cast<ur_context_handle_t *>(RetContext);
 
-  HANDLE_ERRORS(urContextCreate(DeviceCount, phDevices, phContext));
+  ur_context_handle_t UrContext;  
+  HANDLE_ERRORS(urContextCreate(DeviceCount, phDevices, &UrContext));
+  
+  try {
+    // _pi_context *Context = new _pi_context(*phContext);
+    // *RetContext = reinterpret_cast<pi_context>(Context);
+    _pi_context *PiContext = new _pi_context(UrContext);
+    *RetContext = reinterpret_cast<pi_context>(PiContext);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  // printf("%s %d  *RetContext %lx PiContext %lx UrContext %lx\n",
+  //   __FILE__, __LINE__, (unsigned long int) *RetContext, (unsigned long int)PiContext,
+  //   (unsigned long int)UrContext);
+
 
   return PI_SUCCESS;
 }
@@ -630,11 +651,16 @@ inline pi_result piQueueCreate(pi_context Context, pi_device Device,
                         pi_queue_properties Flags, pi_queue *Queue) {
   printf("%s %d\n", __FILE__, __LINE__);
 
-  ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
   ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
   ur_queue_property_t props {};
   ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
-  HANDLE_ERRORS(urQueueCreate(hContext, 
+
+  printf("%s %d Queue %lx PiContext %lx Context %lx\n",
+    __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
+    (unsigned long int)PiContext->UrContext);
+
+  HANDLE_ERRORS(urQueueCreate(PiContext->UrContext, 
                               hDevice,
                               &props,
                               phQueue));
@@ -688,10 +714,21 @@ inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
     props[3] = Properties[3];
   }
 
-  ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+
+  printf("%s %d Queue %lx PiContext %lx Context %lx\n",
+    __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
+    (unsigned long int)PiContext->UrContext);
+
   ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
   ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
-  HANDLE_ERRORS(urQueueCreate(hContext, 
+  ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
+
+printf("%s %d Queue %lx PiContext %lx Context %lx hContext %lx\n",
+    __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
+    (unsigned long int)PiContext->UrContext, (unsigned long int)hContext);
+
+  HANDLE_ERRORS(urQueueCreate(hContext,//PiContext->UrContext, 
                               hDevice,
                               props,
                               phQueue));
