@@ -42,7 +42,8 @@ struct _ur_context_handle_t : _pi_object {
     // Keep the PI devices this PI context was created for.
   // This field is only set at _pi_context creation time, and cannot change.
   // Therefore it can be accessed without holding a lock on this _pi_context.
-  const std::vector<ur_device_handle_t> Devices;
+  //const std::vector<ur_device_handle_t> Devices;
+  std::vector<ur_device_handle_t> Devices;
 
     // Indicates if we own the ZeContext or it came from interop that
   // asked to not transfer the ownership to SYCL RT.

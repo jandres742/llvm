@@ -101,6 +101,11 @@ struct _pi_queue : _ur_queue_handle_t {
             pi_queue_properties Properties = 0, int ForceComputeIndex = -1);
 };
 
+struct _pi_mem : _ur_mem_handle_t {
+  using _ur_mem_handle_t::_ur_mem_handle_t;
+};
+
+#if 0
 struct _pi_mem : _pi_object {
   // Keeps the PI context of this memory handle.
   pi_context Context;
@@ -126,10 +131,12 @@ struct _pi_mem : _pi_object {
 protected:
   _pi_mem(pi_context Ctx) : Context{Ctx} {}
 };
+#endif
 
 struct _pi_buffer;
 using pi_buffer = _pi_buffer *;
 
+#if 0
 struct _pi_buffer final : _pi_mem {
   // Buffer constructor
   _pi_buffer(pi_context Context, size_t Size, char *HostPtr,
@@ -214,7 +221,9 @@ struct _pi_buffer final : _pi_mem {
     size_t Origin; // only valid if Parent != nullptr
   } SubBuffer;
 };
+#endif
 
+#if 0
 // TODO: add proper support for images on context with multiple devices.
 struct _pi_image final : _pi_mem {
   // Image constructor
@@ -242,6 +251,7 @@ struct _pi_image final : _pi_mem {
   // Level Zero image handle.
   ze_image_handle_t ZeImage;
 };
+#endif
 
 struct _pi_event : _ur_event_handle_t {
   _pi_event(ze_event_handle_t ZeEvent, ze_event_pool_handle_t ZeEventPool,
@@ -277,33 +287,7 @@ struct _pi_program : _ur_program_handle_t {
 
 struct _pi_kernel : _ur_kernel_handle_t {
   _pi_kernel(ze_kernel_handle_t Kernel, bool OwnZeKernel, ur_program_handle_t Program)
-      : _ur_kernel_handle_t(Program), ZeKernel{Kernel}, OwnZeKernel{OwnZeKernel} {}
-
-  // Completed initialization of PI kernel. Must be called after construction.
-  pi_result initialize();
-
-  // Level Zero function handle.
-  ze_kernel_handle_t ZeKernel;
-
-  // Indicates if we own the ZeKernel or it came from interop that
-  // asked to not transfer the ownership to SYCL RT.
-  bool OwnZeKernel;
-
-  // Keeps info about an argument to the kernel enough to set it with
-  // zeKernelSetArgumentValue.
-  struct ArgumentInfo {
-    uint32_t Index;
-    size_t Size;
-    const pi_mem Value;
-    _pi_mem::access_mode_t AccessMode{_pi_mem::unknown};
-  };
-  // Arguments that still need to be set (with zeKernelSetArgumentValue)
-  // before kernel is enqueued.
-  std::vector<ArgumentInfo> PendingArguments;
-
-  // Cache of the kernel properties.
-  ZeCache<ZeStruct<ze_kernel_properties_t>> ZeKernelProperties;
-  ZeCache<std::string> ZeKernelName;
+      : _ur_kernel_handle_t(Kernel, OwnZeKernel, Program) {}
 };
 
 struct _pi_sampler : _pi_object {

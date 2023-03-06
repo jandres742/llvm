@@ -53,6 +53,17 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
   ur_device_handle_t Device = hDevice;
   _ur_queue_handle_t **Queue = reinterpret_cast<_ur_queue_handle_t **>(phQueue);
 
+  Context->Devices[0] = Device;
+
+  printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
+    (unsigned long int)Context);
+  if (Context) {
+    printf("%s %d Context->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]);
+    if (Context->Devices[0]) {
+      printf("%s %d Context->Devices[0]->ZeDevice %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]->ZeDevice);
+    }
+  }
+
   const pi_queue_properties *Properties = reinterpret_cast<const pi_queue_properties *>(pProps);
   pi_queue_properties Flags = Properties[1];
 

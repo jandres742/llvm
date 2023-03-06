@@ -24,6 +24,12 @@
 
 #include "ur/usm_allocator_config.hpp"
 
+template <class To, class From> To ur_cast(From Value) {
+  // TODO: see if more sanity checks are possible.
+  assert(sizeof(From) == sizeof(To));
+  return (To)(Value);
+}
+
 // Trace an internal PI call; returns in case of an error.
 #define UR_CALL(Call)                                                          \
   {                                                                            \

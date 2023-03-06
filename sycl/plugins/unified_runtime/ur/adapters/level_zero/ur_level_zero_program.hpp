@@ -131,8 +131,8 @@ struct _ur_program_handle_t : _pi_object {
   std::string BuildFlags;
 
   // The Level Zero module handle.  Used primarily in Exe state.
-  ze_module_handle_t ZeModule;
+  ze_module_handle_t ZeModule {};
 
   // The Level Zero build log from the last call to zeModuleCreate().
-  ze_module_build_log_handle_t ZeBuildLog;
+  ze_module_build_log_handle_t ZeBuildLog {}; 
 };
