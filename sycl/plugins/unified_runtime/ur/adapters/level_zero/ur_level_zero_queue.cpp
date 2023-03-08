@@ -14,6 +14,137 @@
 #include "ur_level_zero_queue.hpp"
 #include <ur_bindings.hpp>
 
+
+/// @brief Cleanup events in the immediate lists of the queue.
+/// @param Queue Queue where events need to be cleaned up.
+/// @param QueueLocked Indicates if the queue mutex is locked by caller.
+/// @param QueueSynced 'true' if queue was synchronized before the
+/// call and no other commands were submitted after synchronization, 'false'
+/// otherwise.
+/// @param CompletedEvent Hint providing an event which was synchronized before
+/// the call, in case of in-order queue it allows to cleanup all preceding
+/// events.
+/// @return PI_SUCCESS if successful, PI error code otherwise.
+ur_result_t CleanupEventsInImmCmdLists(ur_queue_handle_t UrQueue,
+                                       bool QueueLocked,
+                                       bool QueueSynced,
+                                       ur_event_handle_t CompletedEvent) {
+  // Handle only immediate command lists here.
+  if (!UrQueue || !UrQueue->Device->useImmediateCommandLists())
+    return UR_RESULT_SUCCESS;
+
+  _ur_event_handle_t *UrCompletedEvent = reinterpret_cast<_ur_event_handle_t *>(CompletedEvent);
+
+  std::vector<ur_event_handle_t> EventListToCleanup;
+  {
+    std::unique_lock<pi_shared_mutex> QueueLock(UrQueue->Mutex, std::defer_lock);
+    if (!QueueLocked)
+      QueueLock.lock();
+    // If queue is locked and fully synchronized then cleanup all events.
+    // If queue is not locked then by this time there may be new submitted
+    // commands so we can't do full cleanup.
+    if (QueueLocked &&
+        (QueueSynced || (UrQueue->isInOrderQueue() &&
+                         (reinterpret_cast<ur_event_handle_t>(UrCompletedEvent) == UrQueue->LastCommandEvent ||
+                          !UrQueue->LastCommandEvent)))) {
+      UrQueue->LastCommandEvent = nullptr;
+      for (auto &&It = UrQueue->CommandListMap.begin();
+           It != UrQueue->CommandListMap.end(); ++It) {
+        UR_CALL(UrQueue->resetCommandList(It,
+                                          true,
+                                          EventListToCleanup,
+                                          false /* CheckStatus */));
+      }
+    } else if (UrQueue->isInOrderQueue() && UrCompletedEvent) {
+      // If the queue is in-order and we have information about completed event
+      // then cleanup all events in the command list preceding to CompletedEvent
+      // including itself.
+
+      // Check that the comleted event has associated command list.
+      if (!(UrCompletedEvent->CommandList &&
+            UrCompletedEvent->CommandList.value() != UrQueue->CommandListMap.end()))
+        return UR_RESULT_SUCCESS;
+
+      auto &CmdListEvents =
+          UrCompletedEvent->CommandList.value()->second.EventList;
+      auto CompletedEventIt =
+          std::find(CmdListEvents.begin(), CmdListEvents.end(), UrCompletedEvent);
+      if (CompletedEventIt != CmdListEvents.end()) {
+        // We can cleanup all events prior to the completed event in this
+        // command list and completed event itself.
+        // TODO: we can potentially cleanup more events here by finding
+        // completed events on another command lists, but it is currently not
+        // implemented.
+        std::move(std::begin(CmdListEvents), CompletedEventIt + 1,
+                  std::back_inserter(EventListToCleanup));
+        CmdListEvents.erase(CmdListEvents.begin(), CompletedEventIt + 1);
+      }
+    } else {
+      // Fallback to resetCommandList over all command lists.
+      for (auto &&It = UrQueue->CommandListMap.begin();
+           It != UrQueue->CommandListMap.end(); ++It) {
+        UR_CALL(UrQueue->resetCommandList(It,
+                                          true,
+                                          EventListToCleanup,
+                                          true /* CheckStatus */));
+      }
+    }
+  }
+  UR_CALL(CleanupEventListFromResetCmdList(EventListToCleanup, QueueLocked));
+  return UR_RESULT_SUCCESS;
+}
+
+
+/// @brief Reset signalled command lists in the queue and put them to the cache
+/// of command lists. Also cleanup events associated with signalled command
+/// lists. Queue must not be locked by the caller.
+/// @param Queue Queue where we look for signalled command lists and cleanup
+/// events.
+/// @return PI_SUCCESS if successful, PI error code otherwise.
+ur_result_t resetCommandLists(ur_queue_handle_t Queue) {
+
+  _ur_queue_handle_t *UrQueue = reinterpret_cast<_ur_queue_handle_t *>(Queue);
+  // Handle immediate command lists here, they don't need to be reset and we
+  // only need to cleanup events.
+  if (UrQueue->Device->useImmediateCommandLists()) {
+    UR_CALL(CleanupEventsInImmCmdLists(Queue));
+    return UR_RESULT_SUCCESS;
+  }
+
+  // We need events to be cleaned up out of scope where queue is locked to avoid
+  // nested locks, because event cleanup requires event to be locked. Nested
+  // locks are hard to control and can cause deadlocks if mutexes are locked in
+  // different order.
+  std::vector<ur_event_handle_t> EventListToCleanup;
+  {
+    // We check for command lists that have been already signalled, but have not
+    // been added to the available list yet. Each command list has a fence
+    // associated which tracks if a command list has completed dispatch of its
+    // commands and is ready for reuse. If a command list is found to have been
+    // signalled, then the command list & fence are reset and command list is
+    // returned to the command list cache. All events associated with command
+    // list are cleaned up if command list was reset.
+    std::unique_lock<pi_shared_mutex> QueueLock(Queue->Mutex);
+    for (auto &&it = Queue->CommandListMap.begin();
+         it != Queue->CommandListMap.end(); ++it) {
+      // Immediate commandlists don't use a fence and are handled separately
+      // above.
+      assert(it->second.ZeFence != nullptr);
+      // It is possible that the fence was already noted as signalled and
+      // reset. In that case the ZeFenceInUse flag will be false.
+      if (it->second.ZeFenceInUse) {
+        ze_result_t ZeResult =
+            ZE_CALL_NOCHECK(zeFenceQueryStatus, (it->second.ZeFence));
+        if (ZeResult == ZE_RESULT_SUCCESS)
+          UR_CALL(UrQueue->resetCommandList(it, true, EventListToCleanup));
+      }
+    }
+  }
+  CleanupEventListFromResetCmdList(EventListToCleanup);
+  return UR_RESULT_SUCCESS;
+}
+
+
 UR_APIEXPORT ur_result_t UR_APICALL urQueueGetInfo(
     ur_queue_handle_t hQueue, ///< [in] handle of the queue object
     ur_queue_info_t propName, ///< [in] name of the queue property to query
@@ -52,6 +183,17 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
   ur_context_handle_t Context = hContext;
   ur_device_handle_t Device = hDevice;
   _ur_queue_handle_t **Queue = reinterpret_cast<_ur_queue_handle_t **>(phQueue);
+
+  Context->Devices[0] = Device;
+
+  printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
+    (unsigned long int)Context);
+  if (Context) {
+    printf("%s %d Context->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]);
+    if (Context->Devices[0]) {
+      printf("%s %d Context->Devices[0]->ZeDevice %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]->ZeDevice);
+    }
+  }
 
   const pi_queue_properties *Properties = reinterpret_cast<const pi_queue_properties *>(pProps);
   pi_queue_properties Flags = Properties[1];
@@ -229,8 +371,67 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreateWithNativeHandle(
 UR_APIEXPORT ur_result_t UR_APICALL urQueueFinish(
     ur_queue_handle_t hQueue ///< [in] handle of the queue to be finished.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  // ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  _ur_queue_handle_t *UrQueue = reinterpret_cast<_ur_queue_handle_t *>(hQueue);
+
+  if (UrQueue->Device->useImmediateCommandLists()) {
+    // Lock automatically releases when this goes out of scope.
+    std::scoped_lock<pi_shared_mutex> Lock(UrQueue->Mutex);
+
+    UrQueue->synchronize();
+  } else {
+    std::unique_lock<pi_shared_mutex> Lock(UrQueue->Mutex);
+    std::vector<ze_command_queue_handle_t> ZeQueues;
+
+    // execute any command list that may still be open.
+    UR_CALL(UrQueue->executeAllOpenCommandLists());
+
+    // Make a copy of queues to sync and release the lock.
+    for (auto &QueueMap :
+         {UrQueue->ComputeQueueGroupsByTID, UrQueue->CopyQueueGroupsByTID})
+      for (auto &QueueGroup : QueueMap)
+        std::copy(QueueGroup.second.ZeQueues.begin(),
+                  QueueGroup.second.ZeQueues.end(),
+                  std::back_inserter(ZeQueues));
+
+    // Remember the last command's event.
+    auto LastCommandEvent = UrQueue->LastCommandEvent;
+
+    // Don't hold a lock to the queue's mutex while waiting.
+    // This allows continue working with the queue from other threads.
+    // TODO: this currently exhibits some issues in the driver, so
+    // we control this with an env var. Remove this control when
+    // we settle one way or the other.
+    static bool HoldLock =
+        std::getenv("SYCL_PI_LEVEL_ZERO_QUEUE_FINISH_HOLD_LOCK") != nullptr;
+    if (!HoldLock) {
+      Lock.unlock();
+    }
+
+    for (auto &ZeQueue : ZeQueues) {
+      if (ZeQueue)
+        ZE2UR_CALL(zeHostSynchronize, (ZeQueue));
+    }
+
+    // Prevent unneeded already finished events to show up in the wait list.
+    // We can only do so if nothing else was submitted to the queue
+    // while we were synchronizing it.
+    if (!HoldLock) {
+      std::scoped_lock<pi_shared_mutex> Lock(UrQueue->Mutex);
+      if (LastCommandEvent == UrQueue->LastCommandEvent) {
+        UrQueue->LastCommandEvent = nullptr;
+      }
+    } else {
+      UrQueue->LastCommandEvent = nullptr;
+    }
+  }
+  // Reset signalled command lists and return them back to the cache of
+  // available command lists. Events in the immediate command lists are cleaned
+  // up in synchronize().
+  if (!UrQueue->Device->useImmediateCommandLists())
+    resetCommandLists(hQueue);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueFlush(
@@ -965,7 +1166,7 @@ ur_result_t createEventAndAssociateQueue(
   if (*Event == nullptr)
     UR_CALL(EventCreate(Queue->Context, Queue, ForceHostVisible, Event));
 
-  (*Event)->Queue = Queue;
+  (*Event)->UrQueue = Queue;
   (*Event)->CommandType = CommandType;
   (*Event)->IsDiscarded = IsInternal;
   (*Event)->CommandList = CommandList;

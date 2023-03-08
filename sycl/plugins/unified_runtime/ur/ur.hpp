@@ -47,6 +47,8 @@ const int UR_EXT_DEVICE_INFO_FREE_MEMORY = UR_EXT_DEVICE_INFO_END - 13;
 const ur_device_info_t UR_EXT_DEVICE_INFO_OPENCL_C_VERSION =
     (ur_device_info_t)0x103D;
 
+const uint32_t UR_EXT_MAP_FLAG_WRITE_INVALIDATE_REGION = (UR_MAP_FLAG_WRITE + 1);
+
 const int UR_EXT_RESULT_END = 0x1000;
 const ur_result_t UR_EXT_RESULT_ADAPTER_SPECIFIC_ERROR =
     ur_result_t(UR_EXT_RESULT_END - 1);

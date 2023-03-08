@@ -44,8 +44,244 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
         *phEvent ///< [in,out][optional] return an event object that identifies
                  ///< this particular kernel execution instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+
+  _ur_queue_handle_t *UrQueue = ur_cast<_ur_queue_handle_t *>(hQueue);
+  _ur_kernel_handle_t *UrKernel = ur_cast<_ur_kernel_handle_t *>(hKernel);
+
+  // Lock automatically releases when this goes out of scope.
+  std::scoped_lock<pi_shared_mutex, pi_shared_mutex, pi_shared_mutex> Lock(
+      UrQueue->Mutex, UrKernel->Mutex, UrKernel->Program->Mutex);
+  if (pGlobalWorkOffset != NULL) {
+    if (!UrQueue->Device->Platform->ZeDriverGlobalOffsetExtensionFound) {
+      zePrint("No global offset extension found on this driver\n");
+      return UR_RESULT_ERROR_INVALID_VALUE;
+    }
+
+    ZE2UR_CALL(zeKernelSetGlobalOffsetExp, (UrKernel->ZeKernel,
+                                            pGlobalWorkOffset[0],
+                                            pGlobalWorkOffset[1],
+                                            pGlobalWorkOffset[2]));
+  }
+
+  // If there are any pending arguments set them now.
+  for (auto &Arg : UrKernel->PendingArguments) {
+    // The ArgValue may be a NULL pointer in which case a NULL value is used for
+    // the kernel argument declared as a pointer to global or constant memory.
+    char **ZeHandlePtr = nullptr;
+    if (Arg.Value) {
+      UR_CALL(Arg.Value->getZeHandlePtr(ZeHandlePtr,
+                                        Arg.AccessMode,
+                                        UrQueue->Device));
+    }
+    ZE2UR_CALL(zeKernelSetArgumentValue, (UrKernel->ZeKernel,
+                                          Arg.Index,
+                                          Arg.Size,
+                                          ZeHandlePtr));
+  }
+  UrKernel->PendingArguments.clear();
+
+  ze_group_count_t ZeThreadGroupDimensions{1, 1, 1};
+  uint32_t WG[3] {};
+
+#if 0
+  // global_work_size of unused dimensions must be set to 1
+  PI_ASSERT(WorkDim == 3 || GlobalWorkSize[2] == 1, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(WorkDim >= 2 || GlobalWorkSize[1] == 1, PI_ERROR_INVALID_VALUE);
+#endif
+
+  if (pLocalWorkSize) {
+    WG[0] = ur_cast<uint32_t>(pLocalWorkSize[0]);
+    WG[1] = ur_cast<uint32_t>(pLocalWorkSize[1]);
+    WG[2] = ur_cast<uint32_t>(pLocalWorkSize[2]);
+  } else {
+    // We can't call to zeKernelSuggestGroupSize if 64-bit GlobalWorkSize
+    // values do not fit to 32-bit that the API only supports currently.
+    bool SuggestGroupSize = true;
+    for (int I : {0, 1, 2}) {
+      if (pGlobalWorkSize[I] > UINT32_MAX) {
+        SuggestGroupSize = false;
+      }
+    }
+    if (SuggestGroupSize) {
+      ZE2UR_CALL(zeKernelSuggestGroupSize, (UrKernel->ZeKernel,
+                                            pGlobalWorkSize[0],
+                                            pGlobalWorkSize[1],
+                                            pGlobalWorkSize[2],
+                                            &WG[0],
+                                            &WG[1],
+                                            &WG[2]));
+    } else {
+      for (int I : {0, 1, 2}) {
+        // Try to find a I-dimension WG size that the GlobalWorkSize[I] is
+        // fully divisable with. Start with the max possible size in
+        // each dimension.
+        uint32_t GroupSize[] = {
+            UrQueue->Device->ZeDeviceComputeProperties->maxGroupSizeX,
+            UrQueue->Device->ZeDeviceComputeProperties->maxGroupSizeY,
+            UrQueue->Device->ZeDeviceComputeProperties->maxGroupSizeZ};
+        GroupSize[I] = std::min(size_t(GroupSize[I]), pGlobalWorkSize[I]);
+        while (pGlobalWorkSize[I] % GroupSize[I]) {
+          --GroupSize[I];
+        }
+        if (pGlobalWorkSize[I] / GroupSize[I] > UINT32_MAX) {
+          zePrint("urEnqueueKernelLaunch: can't find a WG size "
+                  "suitable for global work size > UINT32_MAX\n");
+          return UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE;
+        }
+        WG[I] = GroupSize[I];
+      }
+      zePrint("urEnqueueKernelLaunch: using computed WG size = {%d, %d, %d}\n",
+              WG[0], WG[1], WG[2]);
+    }
+  }
+
+  // TODO: assert if sizes do not fit into 32-bit?
+  switch (workDim) {
+  case 3:
+    ZeThreadGroupDimensions.groupCountX =
+        ur_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
+    ZeThreadGroupDimensions.groupCountY =
+        ur_cast<uint32_t>(pGlobalWorkSize[1] / WG[1]);
+    ZeThreadGroupDimensions.groupCountZ =
+        ur_cast<uint32_t>(pGlobalWorkSize[2] / WG[2]);
+    break;
+  case 2:
+    ZeThreadGroupDimensions.groupCountX =
+        ur_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
+    ZeThreadGroupDimensions.groupCountY =
+        ur_cast<uint32_t>(pGlobalWorkSize[1] / WG[1]);
+    WG[2] = 1;
+    break;
+  case 1:
+    ZeThreadGroupDimensions.groupCountX =
+        ur_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
+    WG[1] = WG[2] = 1;
+    break;
+
+  default:
+    zePrint("piEnqueueKernelLaunch: unsupported work_dim\n");
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+
+  // Error handling for non-uniform group size case
+  if (pGlobalWorkSize[0] !=
+      size_t(ZeThreadGroupDimensions.groupCountX) * WG[0]) {
+    zePrint("urEnqueueKernelLaunch: invalid work_dim. The range is not a "
+            "multiple of the group size in the 1st dimension\n");
+    return UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE;
+  }
+  if (pGlobalWorkSize[1] !=
+      size_t(ZeThreadGroupDimensions.groupCountY) * WG[1]) {
+    zePrint("urEnqueueKernelLaunch: invalid work_dim. The range is not a "
+            "multiple of the group size in the 2nd dimension\n");
+    return UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE;
+  }
+  if (pGlobalWorkSize[2] !=
+      size_t(ZeThreadGroupDimensions.groupCountZ) * WG[2]) {
+    zePrint("piEnqueueKernelLaunch: invalid work_dim. The range is not a "
+            "multiple of the group size in the 3rd dimension\n");
+    return UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE;
+  }
+
+  ZE2UR_CALL(zeKernelSetGroupSize, (UrKernel->ZeKernel,
+                                    WG[0],
+                                    WG[1],
+                                    WG[2]));
+
+  bool UseCopyEngine = false;
+  _pi_ze_event_list_t TmpWaitList;
+  if (auto Res = TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
+                                                          reinterpret_cast<const ur_event_handle_t *>(phEventWaitList),
+                                                          reinterpret_cast<ur_queue_handle_t>(UrQueue), 
+                                                          UseCopyEngine))
+    return Res;
+
+  // Get a new command list to be used on this call
+  pi_command_list_ptr_t CommandList{};
+  if (auto Res = UrQueue->Context->getAvailableCommandList(hQueue,
+                                                           CommandList,
+                                                           UseCopyEngine,
+                                                           true /* AllowBatching */))
+    return Res;
+
+  ze_event_handle_t ZeEvent = nullptr;
+  ur_event_handle_t InternalEvent;
+  bool IsInternal = phEvent == nullptr;
+  ur_event_handle_t *hEvent = phEvent ? phEvent : &InternalEvent;
+  UR_CALL(createEventAndAssociateQueue(hQueue,
+                                       hEvent,
+                                       PI_COMMAND_TYPE_NDRANGE_KERNEL,
+                                       CommandList,
+                                       IsInternal));
+  
+
+  _ur_event_handle_t **pUrEvent = reinterpret_cast<_ur_event_handle_t **>(hEvent);
+  ZeEvent = (*pUrEvent)->ZeEvent;
+  (*pUrEvent)->WaitList = TmpWaitList;
+
+  // Save the kernel in the event, so that when the event is signalled
+  // the code can do a piKernelRelease on this kernel.
+  (*pUrEvent)->CommandData = (void *)UrKernel;
+
+  // Increment the reference count of the Kernel and indicate that the Kernel is
+  // in use. Once the event has been signalled, the code in
+  // CleanupCompletedEvent(Event) will do a piReleaseKernel to update the
+  // reference count on the kernel, using the kernel saved in CommandData.
+#if 0
+  UR_CALL(piKernelRetain(UrKernel));
+#endif
+
+  // Add to list of kernels to be submitted
+  if (IndirectAccessTrackingEnabled)
+    UrQueue->KernelsToBeSubmitted.push_back(reinterpret_cast<ur_kernel_handle_t>(UrKernel));
+
+  if (UrQueue->Device->useImmediateCommandLists() &&
+      IndirectAccessTrackingEnabled) {
+    // If using immediate commandlists then gathering of indirect
+    // references and appending to the queue (which means submission)
+    // must be done together.
+    std::unique_lock<pi_shared_mutex> ContextsLock(
+        UrQueue->Device->Platform->ContextsMutex, std::defer_lock);
+    // We are going to submit kernels for execution. If indirect access flag is
+    // set for a kernel then we need to make a snapshot of existing memory
+    // allocations in all contexts in the platform. We need to lock the mutex
+    // guarding the list of contexts in the platform to prevent creation of new
+    // memory alocations in any context before we submit the kernel for
+    // execution.
+    ContextsLock.lock();
+    UrQueue->CaptureIndirectAccesses();
+    // Add the command to the command list, which implies submission.
+    ZE2UR_CALL(zeCommandListAppendLaunchKernel, (CommandList->first,
+                                                 UrKernel->ZeKernel,
+                                                 &ZeThreadGroupDimensions,
+                                                 ZeEvent,
+                                                 (*pUrEvent)->WaitList.Length,
+                                                 (*pUrEvent)->WaitList.ZeEventList));
+  } else {
+    // Add the command to the command list for later submission.
+    // No lock is needed here, unlike the immediate commandlist case above,
+    // because the kernels are not actually submitted yet. Kernels will be
+    // submitted only when the comamndlist is closed. Then, a lock is held.
+    ZE2UR_CALL(zeCommandListAppendLaunchKernel, (CommandList->first,
+                                                 UrKernel->ZeKernel,
+                                                 &ZeThreadGroupDimensions,
+                                                 ZeEvent,
+                                                 (*pUrEvent)->WaitList.Length,
+                                                 (*pUrEvent)->WaitList.ZeEventList));
+  }
+
+  zePrint("calling zeCommandListAppendLaunchKernel() with"
+          "  ZeEvent %#llx\n", ur_cast<std::uintptr_t>(ZeEvent));
+#if 0
+  printZeEventList((*pUrEvent)->WaitList);
+#endif
+
+  // Execute command list asynchronously, as the event will be used
+  // to track down its completion.
+  if (auto Res = UrQueue->executeCommandList(CommandList, false, true))
+    return Res;
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueDeviceGlobalVariableWrite(
@@ -106,8 +342,34 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelCreate(
     ur_kernel_handle_t
         *phKernel ///< [out] pointer to handle of kernel object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  _ur_program_handle_t *UrProgram = reinterpret_cast<_ur_program_handle_t *>(hProgram);
+
+  std::shared_lock<pi_shared_mutex> Guard(UrProgram->Mutex);
+  if (UrProgram->State != _ur_program_handle_t::state::Exe) {
+    return UR_RESULT_ERROR_INVALID_PROGRAM_EXECUTABLE;
+  }
+
+  printf("%s %d UrProgram %lx\n", __FILE__, __LINE__, (unsigned long int)UrProgram);
+
+  ZeStruct<ze_kernel_desc_t> ZeKernelDesc;
+  ZeKernelDesc.flags = 0;
+  ZeKernelDesc.pKernelName = pKernelName;
+
+  ze_kernel_handle_t ZeKernel;
+  ZE2UR_CALL(zeKernelCreate, (UrProgram->ZeModule, &ZeKernelDesc, &ZeKernel));
+
+  try {
+    _ur_kernel_handle_t *UrKernel = new _ur_kernel_handle_t(ZeKernel, true, hProgram);
+    *phKernel = reinterpret_cast<ur_kernel_handle_t>(UrKernel);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  UR_CALL((*phKernel)->initialize());
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgValue(
@@ -117,8 +379,34 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgValue(
     const void
         *pArgValue ///< [in] argument value represented as matching arg type.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // We don't yet know the device where this kernel will next be run on.
+  // Thus we can't know the actual memory allocation that needs to be used.
+  // Remember the memory object being used as an argument for this kernel
+  // to process it later when the device is known (at the kernel enqueue).
+  //
+  // TODO: for now we have to conservatively assume the access as read-write.
+  //       Improve that by passing SYCL buffer accessor type into
+  //       piextKernelSetArgMemObj.
+  //
+
+  _ur_kernel_handle_t *UrKernel = reinterpret_cast<_ur_kernel_handle_t *>(hKernel);
+
+  pi_mem **ArgValue = reinterpret_cast<pi_mem **>(const_cast<void *>(pArgValue));
+
+  std::scoped_lock<pi_shared_mutex> Guard(UrKernel->Mutex);
+  // The ArgValue may be a NULL pointer in which case a NULL value is used for
+  // the kernel argument declared as a pointer to global or constant memory.
+  auto Arg = ArgValue ? *ArgValue : nullptr;
+  UrKernel->PendingArguments.push_back(
+      {argIndex, sizeof(void *),
+#if 0
+      const_cast<const _ur_mem_handle_t *>(reinterpret_cast<_ur_mem_handle_t *>(Arg)),
+#else
+      reinterpret_cast<_ur_mem_handle_t *>(Arg),
+#endif
+      _ur_mem_handle_t::read_write});
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgLocal(
@@ -248,8 +536,22 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelCreateWithNativeHandle(
     ur_kernel_handle_t
         *phKernel ///< [out] pointer to the handle of the kernel object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  ze_kernel_handle_t ZeKernel = ur_cast<ze_kernel_handle_t>(hNativeKernel);
+  _ur_kernel_handle_t *Kernel = nullptr;
+  try {
+    Kernel = new _ur_kernel_handle_t(ZeKernel,
+                                     true, // OwnZeKernel
+                                     hContext);
+    *phKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  UR_CALL(Kernel->initialize());
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urModuleCreate(
@@ -267,8 +569,66 @@ UR_APIEXPORT ur_result_t UR_APICALL urModuleCreate(
     ur_module_handle_t
         *phModule ///< [out] pointer to handle of Module object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  printf("%s %d\n", __FILE__, __LINE__);
+  // Construct a ze_module_program_exp_desc_t which contains information about
+  // all of the modules that will be linked together.
+  ZeStruct<ze_module_program_exp_desc_t> ZeModuleDescExp;
+  std::vector<size_t> CodeSizes(1u);
+  std::vector<const uint8_t *> CodeBufs(1u);
+  std::vector<const char *> BuildFlagPtrs(1u);
+printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDescExp.count = 1u;
+  ZeModuleDescExp.inputSizes = &length;
+  ZeModuleDescExp.pInputModules = reinterpret_cast<const uint8_t **>(&pIL);
+  ZeModuleDescExp.pBuildFlags = BuildFlagPtrs.data();
+printf("%s %d\n", __FILE__, __LINE__);
+  ZeStruct<ze_module_desc_t> ZeModuleDesc;
+  ZeModuleDesc.pNext = &ZeModuleDescExp;
+  ZeModuleDesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
+printf("%s %d\n", __FILE__, __LINE__);
+  // This works around a bug in the Level Zero driver.  When "ZE_DEBUG=-1",
+  // the driver does validation of the API calls, and it expects
+  // "pInputModule" to be non-NULL and "inputSize" to be non-zero.  This
+  // validation is wrong when using the "ze_module_program_exp_desc_t"
+  // extension because those fields are supposed to be ignored.  As a
+  // workaround, set both fields to 1.
+  //
+  // TODO: Remove this workaround when the driver is fixed.
+  ZeModuleDesc.pInputModule = reinterpret_cast<const uint8_t *>(1);
+  ZeModuleDesc.inputSize = 1;
+printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDesc.pNext = nullptr;
+  ZeModuleDesc.inputSize = ZeModuleDescExp.inputSizes[0];
+  ZeModuleDesc.pInputModule = ZeModuleDescExp.pInputModules[0];
+  ZeModuleDesc.pBuildFlags = ZeModuleDescExp.pBuildFlags[0];
+#if 0
+  ZeModuleDesc.pConstants = ZeModuleDescExp.pConstants[0];
+#endif
+printf("%s %d\n", __FILE__, __LINE__);
+  // Call the Level Zero API to compile, link, and create the module.
+  _ur_context_handle_t *UrContext = reinterpret_cast<_ur_context_handle_t *>(hContext);
+  printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
+    (unsigned long int)UrContext);
+  if (UrContext) {
+    printf("%s %d UrContext->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext->Devices[0]);
+  }
+  ze_device_handle_t ZeDevice = UrContext->Devices[0]->ZeDevice;
+  printf("%s %d\n", __FILE__, __LINE__);
+  ze_context_handle_t ZeContext = UrContext->ZeContext;
+  printf("%s %d\n", __FILE__, __LINE__);
+  ze_module_handle_t ZeModule = nullptr;
+  ze_module_build_log_handle_t ZeBuildLog = nullptr;
+  printf("%s %d\n", __FILE__, __LINE__);
+  ZE2UR_CALL(zeModuleCreate, (ZeContext,
+                              ZeDevice, &ZeModuleDesc,
+                              &ZeModule, &ZeBuildLog));
+  printf("%s %d\n", __FILE__, __LINE__);
+
+  _ur_module_handle_t *UrModule = new _ur_module_handle_t(hContext, pIL, length);
+
+  *phModule = reinterpret_cast<ur_module_handle_t>(UrModule);
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urModuleRetain(
@@ -302,4 +662,33 @@ UR_APIEXPORT ur_result_t UR_APICALL urModuleCreateWithNativeHandle(
 ) {
   zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+}
+
+
+ur_result_t _ur_kernel_handle_t::initialize() {
+  // Retain the program and context to show it's used by this kernel.
+#if 0
+  PI_CALL(piProgramRetain(Program));
+
+  if (IndirectAccessTrackingEnabled)
+    // TODO: do piContextRetain without the guard
+    UR_CALL(piContextRetain(Program->Context));
+#endif
+
+  // Set up how to obtain kernel properties when needed.
+  ZeKernelProperties.Compute = [this](ze_kernel_properties_t &Properties) {
+    ZE_CALL_NOCHECK(zeKernelGetProperties, (ZeKernel, &Properties));
+  };
+
+  // Cache kernel name.
+  ZeKernelName.Compute = [this](std::string &Name) {
+    size_t Size = 0;
+    ZE_CALL_NOCHECK(zeKernelGetName, (ZeKernel, &Size, nullptr));
+    char *KernelName = new char[Size];
+    ZE_CALL_NOCHECK(zeKernelGetName, (ZeKernel, &Size, KernelName));
+    Name = KernelName;
+    delete[] KernelName;
+  };
+
+  return UR_RESULT_SUCCESS;
 }

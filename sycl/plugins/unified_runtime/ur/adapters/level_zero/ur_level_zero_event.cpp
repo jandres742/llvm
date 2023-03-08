@@ -15,6 +15,26 @@
 #include "ur_level_zero_event.hpp"
 #include <ur_bindings.hpp>
 
+void printZeEventList(const _pi_ze_event_list_t &PiZeEventList) {
+  zePrint("  NumEventsInWaitList %d:", PiZeEventList.Length);
+
+  for (pi_uint32 I = 0; I < PiZeEventList.Length; I++) {
+    zePrint(" %#llx", ur_cast<std::uintptr_t>(PiZeEventList.ZeEventList[I]));
+  }
+
+  zePrint("\n");
+}
+
+// This is an experimental option that allows the use of multiple command lists
+// when submitting barriers. The default is 0.
+static const bool UseMultipleCmdlistBarriers = [] {
+  const char *UseMultipleCmdlistBarriersFlag =
+      std::getenv("SYCL_PI_LEVEL_ZERO_USE_MULTIPLE_COMMANDLIST_BARRIERS");
+  if (!UseMultipleCmdlistBarriersFlag)
+    return true;
+  return std::stoi(UseMultipleCmdlistBarriersFlag) > 0;
+}();
+
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
     ur_queue_handle_t hQueue,     ///< [in] handle of the queue object
     uint32_t numEventsInWaitList, ///< [in] size of the event wait list
@@ -28,8 +48,88 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
         *phEvent ///< [in,out][optional] return an event object that identifies
                  ///< this particular command instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+
+  _ur_queue_handle_t *Queue = ur_cast<_ur_queue_handle_t *>(hQueue);
+  _ur_event_handle_t **OutEvent = ur_cast<_ur_event_handle_t **>(phEvent);
+
+  if (phEventWaitList) {
+#if 0
+    PI_ASSERT(NumEventsInWaitList > 0, PI_ERROR_INVALID_VALUE);
+#endif
+
+    bool UseCopyEngine = false;
+
+    // Lock automatically releases when this goes out of scope.
+    std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+    _pi_ze_event_list_t TmpWaitList = {};
+    UR_CALL(TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
+                                                     reinterpret_cast<const ur_event_handle_t *>(phEventWaitList),
+                                                     hQueue,
+                                                     UseCopyEngine));
+
+    // Get a new command list to be used on this call
+    pi_command_list_ptr_t CommandList{};
+    UR_CALL(Queue->Context->getAvailableCommandList(hQueue,
+                                                    CommandList,
+                                                    UseCopyEngine));
+
+    ze_event_handle_t ZeEvent = nullptr;
+    ur_event_handle_t InternalEvent;
+    bool IsInternal = phEvent == nullptr;
+    ur_event_handle_t *Event = phEvent ? phEvent : &InternalEvent;
+    UR_CALL(createEventAndAssociateQueue(hQueue,
+                                         reinterpret_cast<ur_event_handle_t *>(Event),
+                                         PI_COMMAND_TYPE_USER,
+                                         CommandList,
+                                         IsInternal));
+
+    ZeEvent = (*Event)->ZeEvent;
+    (*Event)->WaitList = TmpWaitList;
+
+    const auto &WaitList = (*Event)->WaitList;
+    auto ZeCommandList = CommandList->first;
+    ZE2UR_CALL(zeCommandListAppendWaitOnEvents, (ZeCommandList,
+                                                 WaitList.Length,
+                                                 WaitList.ZeEventList));
+
+    ZE2UR_CALL(zeCommandListAppendSignalEvent, (ZeCommandList, ZeEvent));
+
+    // Execute command list asynchronously as the event will be used
+    // to track down its completion.
+    return Queue->executeCommandList(CommandList);
+  }
+
+  {
+    // If wait-list is empty, then this particular command should wait until
+    // all previous enqueued commands to the command-queue have completed.
+    //
+    // TODO: find a way to do that without blocking the host.
+
+    // Lock automatically releases when this goes out of scope.
+    std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+    if (OutEvent) {
+      UR_CALL(createEventAndAssociateQueue(hQueue,
+                                           phEvent,
+                                           PI_COMMAND_TYPE_USER,
+                                           Queue->CommandListMap.end()));
+    }
+
+    Queue->synchronize();
+
+    if (OutEvent) {
+      Queue->LastCommandEvent = reinterpret_cast<ur_event_handle_t>(*phEvent);
+
+      ZE2UR_CALL(zeEventHostSignal, ((*OutEvent)->ZeEvent));
+      (*OutEvent)->Completed = true;
+    }
+  }
+
+  if (!Queue->Device->useImmediateCommandLists())
+    resetCommandLists(hQueue);
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWaitWithBarrier(
@@ -45,8 +145,192 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWaitWithBarrier(
         *phEvent ///< [in,out][optional] return an event object that identifies
                  ///< this particular command instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  _ur_queue_handle_t *Queue = ur_cast<_ur_queue_handle_t *>(hQueue);
+
+  // Lock automatically releases when this goes out of scope.
+  std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  // Helper function for appending a barrier to a command list.
+  auto insertBarrierIntoCmdList =
+      [&hQueue](pi_command_list_ptr_t CmdList,
+               const _pi_ze_event_list_t &EventWaitList,
+               ur_event_handle_t &Event,
+               bool IsInternal) {
+        UR_CALL(createEventAndAssociateQueue(hQueue,
+                                             &Event,
+                                             PI_COMMAND_TYPE_USER,
+                                             CmdList,
+                                             IsInternal));
+
+        Event->WaitList = EventWaitList;
+        ZE2UR_CALL(zeCommandListAppendBarrier, (CmdList->first,
+                                                Event->ZeEvent,
+                                                EventWaitList.Length,
+                                                EventWaitList.ZeEventList));
+        return UR_RESULT_SUCCESS;
+      };
+
+  ur_event_handle_t InternalEvent;
+  bool IsInternal = phEvent == nullptr;
+  ur_event_handle_t *Event = phEvent ? phEvent : &InternalEvent;
+
+  // Indicator for whether batching is allowed. This may be changed later in
+  // this function, but allow it by default.
+  bool OkToBatch = true;
+
+  // If we have a list of events to make the barrier from, then we can create a
+  // barrier on these and use the resulting event as our future barrier.
+  // We use the same approach if
+  // SYCL_PI_LEVEL_ZERO_USE_MULTIPLE_COMMANDLIST_BARRIERS is not set to a
+  // positive value.
+  // We use the same approach if we have in-order queue because every command
+  // depends on previous one, so we don't need to insert barrier to multiple
+  // command lists.
+  if (numEventsInWaitList || !UseMultipleCmdlistBarriers ||
+      Queue->isInOrderQueue()) {
+    // Retain the events as they will be owned by the result event.
+    _pi_ze_event_list_t TmpWaitList;
+    UR_CALL(TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
+                                                     phEventWaitList,
+                                                     hQueue,
+                                                     false /*UseCopyEngine=*/));
+
+    // Get an arbitrary command-list in the queue.
+    pi_command_list_ptr_t CmdList;
+    UR_CALL(Queue->Context->getAvailableCommandList(hQueue,
+                                                    CmdList,
+                                                    false /*UseCopyEngine=*/,
+                                                    OkToBatch));
+
+    // Insert the barrier into the command-list and execute.
+    UR_CALL(insertBarrierIntoCmdList(CmdList, TmpWaitList, *Event, IsInternal));
+
+    UR_CALL(Queue->executeCommandList(CmdList, false, OkToBatch));
+
+    // Because of the dependency between commands in the in-order queue we don't
+    // need to keep track of any active barriers if we have in-order queue.
+    if (UseMultipleCmdlistBarriers && !Queue->isInOrderQueue()) {
+      auto UREvent = reinterpret_cast<ur_event_handle_t>(*Event);
+      Queue->ActiveBarriers.add(UREvent);
+    }
+    return UR_RESULT_SUCCESS;
+  }
+
+  // Since there are no events to explicitly create a barrier for, we are
+  // inserting a queue-wide barrier.
+
+  // Command list(s) for putting barriers.
+  std::vector<pi_command_list_ptr_t> CmdLists;
+
+#if 0
+  // There must be at least one L0 queue.
+  auto &InitialComputeGroup = Queue->ComputeQueueGroupsByTID.begin()->second;
+  auto &InitialCopyGroup = Queue->CopyQueueGroupsByTID.begin()->second;
+  PI_ASSERT(!InitialComputeGroup.ZeQueues.empty() ||
+                !InitialCopyGroup.ZeQueues.empty(),
+            PI_ERROR_INVALID_QUEUE);
+#endif
+
+  size_t NumQueues = 0;
+  for (auto &QueueMap :
+       {Queue->ComputeQueueGroupsByTID, Queue->CopyQueueGroupsByTID})
+    for (auto &QueueGroup : QueueMap)
+      NumQueues += QueueGroup.second.ZeQueues.size();
+
+  OkToBatch = true;
+  // Get an available command list tied to each command queue. We need
+  // these so a queue-wide barrier can be inserted into each command
+  // queue.
+  CmdLists.reserve(NumQueues);
+  for (auto &QueueMap :
+       {Queue->ComputeQueueGroupsByTID, Queue->CopyQueueGroupsByTID})
+    for (auto &QueueGroup : QueueMap) {
+      bool UseCopyEngine =
+          QueueGroup.second.Type != _ur_queue_handle_t::queue_type::Compute;
+      if (Queue->Device->useImmediateCommandLists()) {
+        // If immediate command lists are being used, each will act as their own
+        // queue, so we must insert a barrier into each.
+        for (auto ImmCmdList : QueueGroup.second.ImmCmdLists)
+          if (ImmCmdList != Queue->CommandListMap.end())
+            CmdLists.push_back(ImmCmdList);
+      } else {
+        for (auto ZeQueue : QueueGroup.second.ZeQueues) {
+          if (ZeQueue) {
+            pi_command_list_ptr_t CmdList;
+            UR_CALL(Queue->Context->getAvailableCommandList(hQueue,
+                                                            CmdList,
+                                                            UseCopyEngine,
+                                                            OkToBatch,
+                                                            &ZeQueue));
+            CmdLists.push_back(CmdList);
+          }
+        }
+      }
+    }
+
+  // If no activity has occurred on the queue then there will be no cmdlists.
+  // We need one for generating an Event, so create one.
+  if (CmdLists.size() == 0) {
+    // Get any available command list.
+    pi_command_list_ptr_t CmdList;
+    UR_CALL(Queue->Context->getAvailableCommandList(hQueue,
+                                                    CmdList,
+                                                    false /*UseCopyEngine=*/,
+                                                    OkToBatch));
+    CmdLists.push_back(CmdList);
+  }
+
+  if (CmdLists.size() > 1) {
+    // Insert a barrier into each unique command queue using the available
+    // command-lists.
+    std::vector<ur_event_handle_t> EventWaitVector(CmdLists.size());
+    for (size_t I = 0; I < CmdLists.size(); ++I) {
+      UR_CALL(insertBarrierIntoCmdList(CmdLists[I],
+                                       _pi_ze_event_list_t{},
+                                       EventWaitVector[I],
+                                       true /*IsInternal*/));
+    }
+    // If there were multiple queues we need to create a "convergence" event to
+    // be our active barrier. This convergence event is signalled by a barrier
+    // on all the events from the barriers we have inserted into each queue.
+    // Use the first command list as our convergence command list.
+    pi_command_list_ptr_t &ConvergenceCmdList = CmdLists[0];
+
+    // Create an event list. It will take ownership over all relevant events so
+    // we relinquish ownership and let it keep all events it needs.
+    _pi_ze_event_list_t BaseWaitList;
+    UR_CALL(BaseWaitList.createAndRetainPiZeEventList(EventWaitVector.size(),
+                                                      reinterpret_cast<const ur_event_handle_t *>(EventWaitVector.data()),
+                                                      hQueue,
+                                                      ConvergenceCmdList->second.isCopy(hQueue)));
+
+    // Insert a barrier with the events from each command-queue into the
+    // convergence command list. The resulting event signals the convergence of
+    // all barriers.
+    UR_CALL(insertBarrierIntoCmdList(ConvergenceCmdList,
+                                     BaseWaitList,
+                                     *Event,
+                                     IsInternal));
+  } else {
+    // If there is only a single queue then insert a barrier and the single
+    // result event can be used as our active barrier and used as the return
+    // event. Take into account whether output event is discarded or not.
+    UR_CALL(insertBarrierIntoCmdList(CmdLists[0],
+                                     _pi_ze_event_list_t{},
+                                     *Event,
+                                     IsInternal));
+  }
+
+  // Execute each command list so the barriers can be encountered.
+  for (pi_command_list_ptr_t &CmdList : CmdLists)
+    UR_CALL(Queue->executeCommandList(CmdList,
+                                      false,
+                                      OkToBatch));
+
+  UR_CALL(Queue->ActiveBarriers.clear());
+  auto UREvent = reinterpret_cast<ur_event_handle_t>(*Event);
+  Queue->ActiveBarriers.add(UREvent);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventGetInfo(
@@ -56,7 +340,94 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetInfo(
     void *pPropValue,     ///< [out][optional] value of the event property
     size_t
         *pPropValueSizeRet ///< [out][optional] bytes returned in event property
-);
+) {
+#if 0
+  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
+#endif
+
+  _ur_event_handle_t *UrEvent = reinterpret_cast<_ur_event_handle_t *>(hEvent);
+
+  switch (propName) {
+  case UR_EVENT_INFO_COMMAND_QUEUE: {
+    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
+    ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(UrEvent->UrQueue); 
+    std::memcpy(pPropValue, &hQueue, propValueSize);
+    if (pPropValueSizeRet)
+      *pPropValueSizeRet = sizeof(hQueue);
+    return UR_RESULT_SUCCESS;
+  }
+  case UR_EVENT_INFO_CONTEXT: {
+    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
+    ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(UrEvent->Context);
+    std::memcpy(pPropValue, &hContext, propValueSize);
+    if (pPropValueSizeRet)
+      *pPropValueSizeRet = sizeof(hContext);
+    return UR_RESULT_SUCCESS;
+  }
+  case UR_EVENT_INFO_COMMAND_TYPE: {
+    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
+    pi_command_type CommandType = UrEvent->CommandType;
+    std::memcpy(pPropValue, &CommandType, propValueSize);
+    if (pPropValueSizeRet)
+      *pPropValueSizeRet = sizeof(CommandType);
+    return UR_RESULT_SUCCESS;
+  }
+  case UR_EVENT_INFO_COMMAND_EXECUTION_STATUS: {
+    // Check to see if the event's Queue has an open command list due to
+    // batching. If so, go ahead and close and submit it, because it is
+    // possible that this is trying to query some event's status that
+    // is part of the batch.  This isn't strictly required, but it seems
+    // like a reasonable thing to do.
+    auto UrQueue = UrEvent->UrQueue;
+    if (UrQueue) {
+      // Lock automatically releases when this goes out of scope.
+      std::scoped_lock<pi_shared_mutex> lock(UrQueue->Mutex);
+      const auto &OpenCommandList = UrQueue->eventOpenCommandList(reinterpret_cast<ur_event_handle_t>(hEvent));
+      if (OpenCommandList != UrQueue->CommandListMap.end()) {
+        UR_CALL(UrQueue->executeOpenCommandList(OpenCommandList->second.isCopy(UrQueue)));
+      }
+    }
+
+    // Level Zero has a much more explicit notion of command submission than
+    // OpenCL. It doesn't happen unless the user submits a command list. We've
+    // done it just above so the status is at least PI_EVENT_RUNNING.
+    uint32_t Result = PI_EVENT_RUNNING;
+
+    // Make sure that we query a host-visible event only.
+    // If one wasn't yet created then don't create it here as well, and
+    // just conservatively return that event is not yet completed.
+    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
+    auto HostVisibleEvent = UrEvent->HostVisibleEvent;
+    if (UrEvent->Completed) {
+      Result = PI_EVENT_COMPLETE;
+    } else if (HostVisibleEvent) {
+      ze_result_t ZeResult;
+      ZeResult =
+          ZE_CALL_NOCHECK(zeEventQueryStatus, (HostVisibleEvent->ZeEvent));
+      if (ZeResult == ZE_RESULT_SUCCESS) {
+        Result = PI_EVENT_COMPLETE;
+      }
+    }
+    std::memcpy(pPropValue, &Result, propValueSize);
+    if (pPropValueSizeRet)
+      *pPropValueSizeRet = sizeof(Result);
+    return UR_RESULT_SUCCESS;
+  }
+  case UR_EVENT_INFO_REFERENCE_COUNT: {
+    uint32_t RefCount = UrEvent->RefCount.load();
+    std::memcpy(pPropValue, &RefCount, propValueSize);
+    if (pPropValueSizeRet)
+      *pPropValueSizeRet = sizeof(RefCount);
+    return UR_RESULT_SUCCESS;
+  }
+  default:
+    zePrint("Unsupported ParamName in urEventGetInfo: ParamName=%d(%x)\n",
+            propName, propName);
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+
+  return UR_RESULT_SUCCESS;
+}
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventGetProfilingInfo(
     ur_event_handle_t hEvent, ///< [in] handle of the event object
@@ -72,14 +443,134 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetProfilingInfo(
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
 
+ur_result_t
+_ur_event_handle_t::getOrCreateHostVisibleEvent(ze_event_handle_t &ZeHostVisibleEvent) {
+#if 0
+  PI_ASSERT(Queue, PI_ERROR_INVALID_EVENT);
+#endif
+
+  std::scoped_lock<pi_shared_mutex, pi_shared_mutex> Lock(UrQueue->Mutex,
+                                                          this->Mutex);
+
+  if (!HostVisibleEvent) {
+    if (DeviceEventsSetting != OnDemandHostVisibleProxy)
+      die("getOrCreateHostVisibleEvent: missing host-visible event");
+
+    // Submit the command(s) signalling the proxy event to the queue.
+    // We have to first submit a wait for the device-only event for which this
+    // proxy is created.
+    //
+    // Get a new command list to be used on this call
+
+    // We want to batch these commands to avoid extra submissions (costly)
+    bool OkToBatch = true;
+
+    pi_command_list_ptr_t CommandList{};
+    UR_CALL(UrQueue->Context->getAvailableCommandList(UrQueue,
+                                                             CommandList,
+                                                             false /* UseCopyEngine */,
+                                                             OkToBatch))
+
+    // Create a "proxy" host-visible event.
+    UR_CALL(createEventAndAssociateQueue(UrQueue,
+                                         &HostVisibleEvent,
+                                         PI_COMMAND_TYPE_USER,
+                                         CommandList,
+                                         false /* IsInternal */,
+                                         true /* ForceHostVisible */))
+
+    ZE2UR_CALL(zeCommandListAppendWaitOnEvents, (CommandList->first, 1, &ZeEvent));
+    ZE2UR_CALL(zeCommandListAppendSignalEvent, (CommandList->first,
+                                                HostVisibleEvent->ZeEvent));
+
+    UR_CALL(UrQueue->executeCommandList(CommandList, false, OkToBatch))
+  }
+
+  ZeHostVisibleEvent = HostVisibleEvent->ZeEvent;
+  return UR_RESULT_SUCCESS;
+}
+
+
 UR_APIEXPORT ur_result_t UR_APICALL urEventWait(
     uint32_t numEvents, ///< [in] number of events in the event list
     const ur_event_handle_t
         *phEventWaitList ///< [in][range(0, numEvents)] pointer to a list of
                          ///< events to wait for completion
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  for (uint32_t I = 0; I < numEvents; I++) {
+    if (DeviceEventsSetting == OnDemandHostVisibleProxy) {
+      // Make sure to add all host-visible "proxy" event signals if needed.
+      // This ensures that all signalling commands are submitted below and
+      // thus proxy events can be waited without a deadlock.
+      //
+      _ur_event_handle_t *Event = ur_cast<_ur_event_handle_t *>(phEventWaitList[I]);
+      if (!Event->hasExternalRefs())
+        die("urEventsWait must not be called for an internal event");
+
+      ze_event_handle_t ZeHostVisibleEvent;
+      if (auto Res =
+              Event->getOrCreateHostVisibleEvent(ZeHostVisibleEvent))
+        return Res;
+    }
+  }
+  // Submit dependent open command lists for execution, if any
+  for (uint32_t I = 0; I < numEvents; I++) {
+    _ur_event_handle_t *Event = ur_cast<_ur_event_handle_t *>(phEventWaitList[I]);
+    auto UrQueue = Event->UrQueue;
+    if (UrQueue) {
+      // Lock automatically releases when this goes out of scope.
+      std::scoped_lock<pi_shared_mutex> lock(UrQueue->Mutex);
+
+      UR_CALL(UrQueue->executeAllOpenCommandLists());
+    }
+  }
+  std::unordered_set<ur_queue_handle_t> Queues;
+  for (uint32_t I = 0; I < numEvents; I++) {
+    {
+      _ur_event_handle_t *Event = ur_cast<_ur_event_handle_t *>(phEventWaitList[I]);
+      {
+        std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
+        if (!Event->hasExternalRefs())
+          die("piEventsWait must not be called for an internal event");
+
+        if (!Event->Completed) {
+          auto HostVisibleEvent = Event->HostVisibleEvent;
+          if (!HostVisibleEvent)
+            die("The host-visible proxy event missing");
+
+          ze_event_handle_t ZeEvent = HostVisibleEvent->ZeEvent;
+          zePrint("ZeEvent = %#llx\n", ur_cast<std::uintptr_t>(ZeEvent));
+          ZE2UR_CALL(zeHostSynchronize, (ZeEvent));
+          Event->Completed = true;
+        }
+      }
+      if (auto Q = Event->UrQueue) {
+        if (Q->Device->useImmediateCommandLists() && Q->isInOrderQueue())
+          // Use information about waited event to cleanup completed events in
+          // the in-order queue.
+          CleanupEventsInImmCmdLists(Event->UrQueue,
+                                     false /* QueueLocked */,
+                                     false /* QueueSynced */,
+                                     reinterpret_cast<ur_event_handle_t>(Event));
+        else {
+          // NOTE: we are cleaning up after the event here to free resources
+          // sooner in case run-time is not calling piEventRelease soon enough.
+          CleanupCompletedEvent(reinterpret_cast<ur_event_handle_t>(Event));
+          // For the case when we have out-of-order queue or regular command
+          // lists its more efficient to check fences so put the queue in the
+          // set to cleanup later.
+          Queues.insert(Q);
+        }
+      }
+    }
+  }
+
+  // We waited some events above, check queue for signaled command lists and
+  // reset them.
+  for (auto &Q : Queues)
+    resetCommandLists(Q);
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventRetain(
@@ -101,8 +592,25 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetNativeHandle(
     ur_native_handle_t
         *phNativeEvent ///< [out] a pointer to the native handle of the event.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  _ur_event_handle_t *Event = reinterpret_cast<_ur_event_handle_t *>(hEvent);
+  {
+    std::shared_lock<pi_shared_mutex> Lock(Event->Mutex);
+    auto *ZeEvent = ur_cast<ze_event_handle_t *>(phNativeEvent);
+    *ZeEvent = Event->ZeEvent;
+  }
+  // Event can potentially be in an open command-list, make sure that
+  // it is submitted for execution to avoid potential deadlock if
+  // interop app is going to wait for it.
+  auto Queue = Event->UrQueue;
+  if (Queue) {
+    std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+    const auto &OpenCommandList =
+      Queue->eventOpenCommandList(hEvent);
+    if (OpenCommandList != Queue->CommandListMap.end()) {
+      UR_CALL(Queue->executeOpenCommandList(OpenCommandList->second.isCopy(Queue)));
+    }
+  }
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventCreateWithNativeHandle(
@@ -225,7 +733,7 @@ ur_result_t CleanupCompletedEvent(ur_event_handle_t Event, bool QueueLocked) {
     if (Event->CleanedUp)
       return UR_RESULT_SUCCESS;
 
-    AssociatedQueue = Event->Queue;
+    AssociatedQueue = Event->UrQueue;
 
     // Remember the kernel associated with this event if there is one. We are
     // going to release it later.
@@ -402,7 +910,7 @@ ur_result_t EventCreate(ur_context_handle_t Context, ur_queue_handle_t Queue,
 }
 
 ur_result_t _ur_event_handle_t::reset() {
-  Queue = nullptr;
+  UrQueue = nullptr;
   CleanedUp = false;
   Completed = false;
   CommandData = nullptr;
@@ -514,7 +1022,7 @@ ur_result_t _pi_ze_event_list_t::createAndRetainPiZeEventList(
           }
         }
 
-        auto Queue = EventList[I]->Queue;
+        auto Queue = EventList[I]->UrQueue;
         if (Queue) {
           // The caller of createAndRetainPiZeEventList must already hold
           // a lock of the CurQueue. Additionally lock the Queue if it
@@ -630,6 +1138,6 @@ ur_result_t _pi_ze_event_list_t::collectEventsForReleaseAndDestroyPiZeEventList(
 
 // Tells if this event is with profiling capabilities.
 bool _ur_event_handle_t::isProfilingEnabled() const {
-  return !Queue || // tentatively assume user events are profiling enabled
-          (Queue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) != 0;
+  return !UrQueue || // tentatively assume user events are profiling enabled
+          (UrQueue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) != 0;
 }

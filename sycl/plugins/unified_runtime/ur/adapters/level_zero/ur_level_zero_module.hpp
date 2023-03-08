@@ -24,15 +24,38 @@
 #include "ur_level_zero_common.hpp"
 
 struct _ur_module_handle_t : _pi_object {
-  _ur_module_handle_t() {}
+  _ur_module_handle_t(ur_context_handle_t hContext, const void *pIL, size_t length):
+    hContext(hContext), pIL(pIL), length(length) {}
+
+  // handle of the context instance.
+  ur_context_handle_t hContext; 
+  
+  // pointer to IL string.
+  const void *pIL;              
+
+  // length of IL in bytes.
+  size_t length;
 };
 
 struct _ur_kernel_handle_t : _pi_object {
-  _ur_kernel_handle_t(ur_program_handle_t Program): Program{Program}, SubmissionsCount{0}, MemAllocs{} {}
+  _ur_kernel_handle_t(ze_kernel_handle_t Kernel, bool OwnZeKernel, ur_program_handle_t Program):
+    Program{Program}, ZeKernel{Kernel}, OwnZeKernel{OwnZeKernel}, SubmissionsCount{0}, MemAllocs{} {}
 
+  _ur_kernel_handle_t(ze_kernel_handle_t Kernel, bool OwnZeKernel, ur_context_handle_t Context):
+    Context{Context}, ZeKernel{Kernel}, OwnZeKernel{OwnZeKernel}, SubmissionsCount{0}, MemAllocs{} {}
+
+  // Keep the program of the kernel.
+  ur_context_handle_t Context;
 
   // Keep the program of the kernel.
   ur_program_handle_t Program;
+
+    // Level Zero function handle.
+  ze_kernel_handle_t ZeKernel;
+
+  // Indicates if we own the ZeKernel or it came from interop that
+  // asked to not transfer the ownership to SYCL RT.
+  bool OwnZeKernel;
 
   // Counter to track the number of submissions of the kernel.
   // When this value is zero, it means that kernel is not submitted for an
@@ -75,4 +98,24 @@ struct _ur_kernel_handle_t : _pi_object {
   // times and which allocations were retained by each submission. We release
   // all allocations in the set only when SubmissionsCount == 0.
   std::unordered_set<std::pair<void *const, MemAllocRecord> *, Hash> MemAllocs;
+
+  // Completed initialization of PI kernel. Must be called after construction.
+  ur_result_t initialize();
+
+  // Keeps info about an argument to the kernel enough to set it with
+  // zeKernelSetArgumentValue.
+  struct ArgumentInfo {
+    uint32_t Index;
+    size_t Size;
+    // const _ur_mem_handle_t *Value;
+    _ur_mem_handle_t *Value;
+    _ur_mem_handle_t::access_mode_t AccessMode{_ur_mem_handle_t::unknown};
+  };
+  // Arguments that still need to be set (with zeKernelSetArgumentValue)
+  // before kernel is enqueued.
+  std::vector<ArgumentInfo> PendingArguments;
+
+  // Cache of the kernel properties.
+  ZeCache<ZeStruct<ze_kernel_properties_t>> ZeKernelProperties;
+  ZeCache<std::string> ZeKernelName;
 };

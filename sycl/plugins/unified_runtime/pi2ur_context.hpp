@@ -14,6 +14,8 @@
 // #include <ur/ur.hpp>
 // #include "ur/adapters/level_zero/ur_level_zero.hpp"
 #include "pi2ur_common.hpp"
+// #include "ur/adapters/level_zero/ur_level_zero.hpp"
+#include <ze_api.h>
 
 
 namespace pi2ur {
@@ -24,6 +26,171 @@ struct _pi_context : _pi_object {
   ur_context_handle_t UrContext;
 };
 
+// struct _pi_queue : _pi_object {
+//   _pi_queue(ur_context_handle_t UrContext): UrContext{UrContext}  {}
+
+//   ur_context_handle_t UrContext;
+//   ur_queue_handle_t UrQueue;
+// };
+
+struct _pi_device : _pi_object {
+  _pi_device(ur_device_handle_t UrDevice): UrDevice{UrDevice}  {}
+
+  ur_device_handle_t UrDevice;
+};
+
+struct _pi_program : _pi_object {
+  // _ur_program_handle_t() {}
+
+  typedef enum {
+    // The program has been created from intermediate language (SPIR-V), but it
+    // is not yet compiled.
+    IL,
+
+    // The program has been created by loading native code, but it has not yet
+    // been built.  This is equivalent to an OpenCL "program executable" that
+    // is loaded via clCreateProgramWithBinary().
+    Native,
+
+    // The program was notionally compiled from SPIR-V form.  However, since we
+    // postpone compilation until the module is linked, the internal state
+    // still represents the module as SPIR-V.
+    Object,
+
+    // The program has been built or linked, and it is represented as a Level
+    // Zero module.
+    Exe,
+
+    // An error occurred during piProgramLink, but we created a _pi_program
+    // object anyways in order to hold the ZeBuildLog.  Note that the UrModule
+    // may or may not be nullptr in this state, depending on the error.
+    Invalid
+  } state;
+
+  // A utility class that converts specialization constants into the form
+  // required by the Level Zero driver.
+  class SpecConstantShim {
+  public:
+    SpecConstantShim(_pi_program *Program) {
+      ZeSpecConstants.numConstants = Program->SpecConstants.size();
+      ZeSpecContantsIds.reserve(ZeSpecConstants.numConstants);
+      ZeSpecContantsValues.reserve(ZeSpecConstants.numConstants);
+
+      for (auto &SpecConstant : Program->SpecConstants) {
+        ZeSpecContantsIds.push_back(SpecConstant.first);
+        ZeSpecContantsValues.push_back(SpecConstant.second);
+      }
+      ZeSpecConstants.pConstantIds = ZeSpecContantsIds.data();
+      ZeSpecConstants.pConstantValues = ZeSpecContantsValues.data();
+    }
+
+    const ze_module_constants_t *ze() { return &ZeSpecConstants; }
+
+  private:
+    std::vector<uint32_t> ZeSpecContantsIds;
+    std::vector<const void *> ZeSpecContantsValues;
+    ze_module_constants_t ZeSpecConstants;
+  };
+
+  // Construct a program in IL or Native state.
+  _pi_program(state St, _pi_context * Context, const void *Input, size_t Length)
+      : Context{Context}, OwnZeModule{true}, State{St},
+        Code{new uint8_t[Length]}, CodeLength{Length}, UrModule{nullptr},
+        ZeBuildLog{nullptr} {
+    std::memcpy(Code.get(), Input, Length);
+  }
+
+  // Construct a program in Exe or Invalid state.
+  _pi_program(state St, _pi_context * Context, ur_module_handle_t UrModule,
+              ze_module_build_log_handle_t ZeBuildLog)
+      : Context{Context}, OwnZeModule{true}, State{St}, UrModule{UrModule},
+        ZeBuildLog{ZeBuildLog} {}
+
+  // Construct a program in Exe state (interop).
+  _pi_program(state St, _pi_context * Context, ur_module_handle_t UrModule,
+              bool OwnZeModule)
+      : Context{Context}, OwnZeModule{OwnZeModule}, State{St},
+        UrModule{UrModule}, ZeBuildLog{nullptr} {}
+
+  // Construct a program in Invalid state with a custom error message.
+  _pi_program(state St, _pi_context * Context, const std::string &ErrorMessage)
+      : Context{Context}, OwnZeModule{true}, ErrorMessage{ErrorMessage},
+        State{St}, UrModule{nullptr}, ZeBuildLog{nullptr} {}
+
+  ~_pi_program();
+
+  const _pi_context * Context; // Context of the program.
+
+  // Indicates if we own the UrModule or it came from interop that
+  // asked to not transfer the ownership to SYCL RT.
+  const bool OwnZeModule;
+
+  // This error message is used only in Invalid state to hold a custom error
+  // message from a call to piProgramLink.
+  const std::string ErrorMessage;
+
+  state State;
+
+  // In IL and Object states, this contains the SPIR-V representation of the
+  // module.  In Native state, it contains the native code.
+  std::unique_ptr<uint8_t[]> Code; // Array containing raw IL / native code.
+  size_t CodeLength{0};            // Size (bytes) of the array.
+
+  std::vector<ur_module_handle_t> UrModules;
+
+  // Used only in IL and Object states.  Contains the SPIR-V specialization
+  // constants as a map from the SPIR-V "SpecID" to a buffer that contains the
+  // associated value.  The caller of the PI layer is responsible for
+  // maintaining the storage of this buffer.
+  std::unordered_map<uint32_t, const void *> SpecConstants;
+
+  // Used only in Object state.  Contains the build flags from the last call to
+  // piProgramCompile().
+  std::string BuildFlags;
+
+  // The Level Zero module handle.  Used primarily in Exe state.
+  ur_program_handle_t UrProgram;
+
+  // The Level Zero module handle.  Used primarily in Exe state.
+  ur_module_handle_t UrModule;
+
+  ur_device_handle_t UrDevice;
+
+  // The Level Zero build log from the last call to zeModuleCreate().
+  ze_module_build_log_handle_t ZeBuildLog;
+};
+
+struct _pi_kernel :  _pi_object {
+  _pi_kernel(ur_kernel_handle_t UrKernel): UrKernel{UrKernel}   {}
+  _pi_kernel(char *NativeHandle, bool OwnNativeHandle):
+    UrKernel{UrKernel}, NativeHandle{NativeHandle}, OwnNativeHandle{OwnNativeHandle}   {}
+
+  ur_kernel_handle_t UrKernel {};
+  _pi_program *PiProgram = nullptr;
+  char *NativeHandle = nullptr;
+  bool OwnNativeHandle = false;
+};
+
+struct _pi_mem : _pi_object {
+  _pi_mem(ur_context_handle_t UrContext): UrContext{UrContext}  {}
+  _pi_mem(ur_context_handle_t UrContext,
+          size_t Size,
+          void* NativeHandle,
+          bool OwnNativeHandle): UrContext{UrContext},
+                                 Size{Size},
+                                 NativeHandle{NativeHandle},
+                                 OwnNativeHandle{OwnNativeHandle}  {}
+
+  ur_context_handle_t UrContext {};
+  ur_mem_handle_t UrMemory {};
+  size_t Size = 0;
+  void *NativeHandle {};
+  bool OwnNativeHandle = false;
+};
+
+struct _pi_buffer : _pi_mem {
+  _pi_buffer(ur_context_handle_t UrContext): _pi_mem(UrContext)  {}
+};
 
 // inline pi_result piContextCreate(const pi_context_properties *Properties,
 //                           pi_uint32 NumDevices, const pi_device *Devices,

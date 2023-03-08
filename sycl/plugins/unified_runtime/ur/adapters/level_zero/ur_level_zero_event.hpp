@@ -124,6 +124,8 @@ struct _pi_ze_event_list_t {
   }
 };
 
+void printZeEventList(const _pi_ze_event_list_t &PiZeEventList);
+
 struct _ur_event_handle_t : _pi_object {
   _ur_event_handle_t(ze_event_handle_t ZeEvent, ze_event_pool_handle_t ZeEventPool, ur_context_handle_t Context, pi_command_type CommandType, bool OwnZeEvent): 
     ZeEvent{ZeEvent}, OwnZeEvent{OwnZeEvent}, ZeEventPool{ZeEventPool}, Context{Context}, CommandType{CommandType}, CommandData{nullptr} {}
@@ -158,7 +160,7 @@ struct _ur_event_handle_t : _pi_object {
 
   // Keeps the command-queue and command associated with the event.
   // These are NULL for the user events.
-  ur_queue_handle_t Queue = {nullptr};
+  ur_queue_handle_t UrQueue = {nullptr};
   pi_command_type CommandType;
 
   // Opaque data to hold any data needed for CommandType.
@@ -212,6 +214,9 @@ struct _ur_event_handle_t : _pi_object {
 
   // Tells if this event is with profiling capabilities.
   bool isProfilingEnabled() const;
+
+  // Get the host-visible event or create one and enqueue its signal.
+  ur_result_t getOrCreateHostVisibleEvent(ze_event_handle_t &HostVisibleEvent);
 
 };
 

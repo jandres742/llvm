@@ -25,6 +25,11 @@
 #include "ur_level_zero_device.hpp"
 
 ur_result_t piQueueReleaseInternal(ur_queue_handle_t Queue);
+ur_result_t resetCommandLists(ur_queue_handle_t Queue);
+ur_result_t CleanupEventsInImmCmdLists(ur_queue_handle_t UrQueue,
+                                       bool QueueLocked = false,
+                                       bool QueueSynced = false,
+                                       ur_event_handle_t CompletedEvent = nullptr);
 
 // Structure describing the specific use of a command-list in a queue.
 // This is because command-lists are re-used across multiple queues
