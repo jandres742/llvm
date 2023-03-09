@@ -609,6 +609,8 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
     return PI_ERROR_UNKNOWN;
   }
 
+  printf("%s %d *RetContext %lx\n", __FILE__, __LINE__, (unsigned long int)*RetContext);
+
   // printf("%s %d  *RetContext %lx PiContext %lx UrContext %lx\n",
   //   __FILE__, __LINE__, (unsigned long int) *RetContext, (unsigned long int)PiContext,
   //   (unsigned long int)UrContext);
@@ -649,9 +651,12 @@ piContextRetain(pi_context Context) {
 inline pi_result
 piContextRelease(pi_context Context) {
 
-  ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
 
-  HANDLE_ERRORS(urContextRelease(hContext));
+  printf("%s %d hContext %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext);
+
+  HANDLE_ERRORS(urContextRelease(UrContext));
 
   return PI_SUCCESS;
 }

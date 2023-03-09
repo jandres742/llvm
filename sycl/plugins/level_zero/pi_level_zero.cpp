@@ -381,13 +381,18 @@ pi_result piContextRetain(pi_context Context) {
 }
 
 pi_result piContextRelease(pi_context Context) {
+  return pi2ur::piContextRelease(Context);
+#if 0
+  printf("%s %d Context %lx\n", __FILE__, __LINE__, (unsigned long int)Context);
   pi_platform Plt = Context->getPlatform();
+  printf("%s %d Plt %lx\n", __FILE__, __LINE__, (unsigned long int)Plt);
   std::unique_lock<pi_shared_mutex> ContextsLock(Plt->ContextsMutex,
                                                  std::defer_lock);
   if (IndirectAccessTrackingEnabled)
     ContextsLock.lock();
 
   return ur2piResult(ContextReleaseHelper(reinterpret_cast<ur_context_handle_t>(Context)));
+#endif
 }
 
 pi_result piQueueCreate(pi_context Context, pi_device Device,

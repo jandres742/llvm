@@ -85,6 +85,10 @@ __SYCL_EXPORT pi_result piContextCreate(const pi_context_properties *Properties,
                                 RetContext);
 }
 
+__SYCL_EXPORT pi_result piContextRelease(pi_context Context) {
+  return pi2ur::piContextRelease(Context);
+}
+
 __SYCL_EXPORT pi_result piQueueCreate(pi_context Context, pi_device Device,
                         pi_queue_properties Flags, pi_queue *Queue) {
   return pi2ur::piQueueCreate(Context,
@@ -660,6 +664,7 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piGetDeviceAndHostTimer)
 
   _PI_API(piContextCreate)
+  _PI_API(piContextRelease)
 
   _PI_API(piQueueCreate)
   _PI_API(piQueueRelease)

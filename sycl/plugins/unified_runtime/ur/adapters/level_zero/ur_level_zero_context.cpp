@@ -23,6 +23,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextCreate(
         *phContext ///< [out] pointer to handle of context object created
 ) {
   ur_platform_handle_t Platform = phDevices[0]->Platform;
+  printf("%s %d phDevices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)phDevices[0]);
   ZeStruct<ze_context_desc_t> ContextDesc {};
 
   printf("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
@@ -34,7 +35,17 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextCreate(
                                                              DeviceCount,
                                                              const_cast<const ur_device_handle_t *>(phDevices),
                                                              true);
+    
+    printf("%s %d phDevices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)phDevices[0]);
+    
+    Context->initialize();
+    printf("%s %d phDevices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)phDevices[0]);
+    printf("%s %d Context %lx getPlatform %lx\n", __FILE__, __LINE__, (unsigned long int)Context, (unsigned long int)Context->getPlatform());
     *phContext = reinterpret_cast<ur_context_handle_t>(Context);
+    if (IndirectAccessTrackingEnabled) {
+      std::scoped_lock<pi_shared_mutex> Lock(Platform->ContextsMutex);
+      Platform->Contexts.push_back(*phContext);
+    }
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -53,10 +64,18 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextRetain(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextRelease(
-    ur_context_handle_t hContext ///< [in] handle of the context to release.
+    ur_context_handle_t
+      hContext ///< [in] handle of the context to release.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  printf("%s %d Context %lx\n", __FILE__, __LINE__, (unsigned long int)hContext);
+  ur_platform_handle_t Plt = hContext->getPlatform();
+  printf("%s %d Plt %lx\n", __FILE__, __LINE__, (unsigned long int)Plt);  
+  std::unique_lock<pi_shared_mutex> ContextsLock(Plt->ContextsMutex,
+                                                 std::defer_lock);
+  if (IndirectAccessTrackingEnabled)
+    ContextsLock.lock();
+
+  return ContextReleaseHelper(hContext);
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextGetInfo(
@@ -261,7 +280,10 @@ ur_result_t ContextReleaseHelper(ur_context_handle_t Context) {
   return Result;
 }
 
-ur_platform_handle_t _ur_context_handle_t::getPlatform() const { return Devices[0]->Platform; }
+ur_platform_handle_t _ur_context_handle_t::getPlatform() const {
+  printf("%s %d Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)Devices[0]);
+  return Devices[0]->Platform;
+}
 
 ur_result_t _ur_context_handle_t::finalize() {
   // This function is called when pi_context is deallocated, piContextRelease.
