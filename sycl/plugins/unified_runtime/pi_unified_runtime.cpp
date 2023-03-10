@@ -454,6 +454,17 @@ piKernelRetain(pi_kernel Kernel) {
   return pi2ur::piKernelRetain(Kernel);
 }
 
+__SYCL_EXPORT pi_result
+piKernelRelease(pi_kernel Kernel) {
+
+  return pi2ur::piKernelRelease(Kernel);
+}
+
+__SYCL_EXPORT pi_result
+piProgramRelease(pi_program Program) {
+  return pi2ur::piProgramRelease(Program);
+}
+
 /// USM Memset API
 ///
 /// @param Queue is the queue to submit to
@@ -768,6 +779,8 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piKernelSetArg)
   _PI_API(piKernelGetGroupInfo)
   _PI_API(piKernelRetain)
+  _PI_API(piKernelRelease)
+  _PI_API(piProgramRelease)
 
   _PI_API(piMemBufferCreate)
   _PI_API(piextUSMHostAlloc)

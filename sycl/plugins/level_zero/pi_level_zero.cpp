@@ -1741,6 +1741,8 @@ pi_result piProgramRetain(pi_program Program) {
 }
 
 pi_result piProgramRelease(pi_program Program) {
+  return pi2ur::piProgramRelease(Program);
+#if 0
   printf("%s %d\n", __FILE__, __LINE__);
   PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
 
@@ -1753,6 +1755,7 @@ pi_result piProgramRelease(pi_program Program) {
 
   printf("%s %d\n", __FILE__, __LINE__);
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piextProgramGetNativeHandle(pi_program Program,
@@ -2082,6 +2085,10 @@ pi_result piKernelRetain(pi_kernel Kernel) {
 }
 
 pi_result piKernelRelease(pi_kernel Kernel) {
+
+  return pi2ur::piKernelRelease(Kernel);
+
+#if 0
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
 
   if (!Kernel->RefCount.decrementAndTest())
@@ -2098,6 +2105,7 @@ pi_result piKernelRelease(pi_kernel Kernel) {
   delete Kernel;
 
   return PI_SUCCESS;
+#endif
 }
 
 pi_result

@@ -575,10 +575,22 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelRetain(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelRelease(
-    ur_kernel_handle_t hKernel ///< [in] handle for the Kernel to release
+    ur_kernel_handle_t Kernel ///< [in] handle for the Kernel to release
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  if (!Kernel->RefCount.decrementAndTest())
+    return UR_RESULT_SUCCESS;
+
+  auto KernelProgram = Kernel->Program;
+  if (Kernel->OwnZeKernel)
+    ZE2UR_CALL(zeKernelDestroy, (Kernel->ZeKernel));
+  if (IndirectAccessTrackingEnabled) {
+    UR_CALL(urContextRelease(KernelProgram->Context));
+  }
+  // do a release on the program this kernel was part of
+  UR_CALL(urProgramRelease(KernelProgram));
+  delete Kernel;
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgPointer(

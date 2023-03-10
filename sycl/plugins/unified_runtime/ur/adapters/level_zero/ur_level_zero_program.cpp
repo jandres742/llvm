@@ -160,10 +160,16 @@ UR_APIEXPORT ur_result_t UR_APICALL urProgramRetain(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urProgramRelease(
-    ur_program_handle_t hProgram ///< [in] handle for the Program to release
+    ur_program_handle_t Program ///< [in] handle for the Program to release
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  if (!Program->RefCount.decrementAndTest())
+    return UR_RESULT_SUCCESS;
+  
+  printf("%s %d Program %lx\n", __FILE__, __LINE__, (unsigned long int)Program);
+  delete Program;
+
+  printf("%s %d\n", __FILE__, __LINE__);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urProgramGetFunctionPointer(

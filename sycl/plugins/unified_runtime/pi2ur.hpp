@@ -1417,6 +1417,32 @@ piKernelRetain(pi_kernel Kernel) {
   return PI_SUCCESS;
 }
 
+inline pi_result
+piKernelRelease(pi_kernel Kernel) {
+
+  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+
+  HANDLE_ERRORS(urKernelRetain(UrKernel));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piProgramRelease(pi_program Program) {
+  
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+
+  HANDLE_ERRORS(urProgramRelease(UrProgram));
+
+  return PI_SUCCESS;
+}
+
 // Program
 ///////////////////////////////////////////////////////////////////////////////
 
