@@ -155,8 +155,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urProgramCreateWithBinary(
 UR_APIEXPORT ur_result_t UR_APICALL urProgramRetain(
     ur_program_handle_t hProgram ///< [in] handle for the Program to retain
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  hProgram->RefCount.increment();
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urProgramRelease(

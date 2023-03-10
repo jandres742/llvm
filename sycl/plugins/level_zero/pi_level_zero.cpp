@@ -1732,9 +1732,12 @@ pi_result piProgramGetBuildInfo(pi_program Program, pi_device Device,
 }
 
 pi_result piProgramRetain(pi_program Program) {
+  return pi2ur::piProgramRetain(Program);
+#if 0
   PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
   Program->RefCount.increment();
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piProgramRelease(pi_program Program) {
@@ -1839,6 +1842,12 @@ pi_result piKernelCreate(pi_program Program, const char *KernelName,
 pi_result piKernelSetArg(pi_kernel Kernel, pi_uint32 ArgIndex, size_t ArgSize,
                          const void *ArgValue) {
 
+  return pi2ur::piKernelSetArg(Kernel,
+                               ArgIndex,
+                               ArgSize,
+                               ArgValue);
+
+#if 0
   // OpenCL: "the arg_value pointer can be NULL or point to a NULL value
   // in which case a NULL value will be used as the value for the argument
   // declared as a pointer to global or constant memory in the kernel"
@@ -1860,6 +1869,7 @@ pi_result piKernelSetArg(pi_kernel Kernel, pi_uint32 ArgIndex, size_t ArgSize,
            pi_cast<const void *>(ArgValue)));
 
   return PI_SUCCESS;
+#endif
 }
 
 // Special version of piKernelSetArg to accept pi_mem.
@@ -1914,6 +1924,13 @@ pi_result piextKernelSetArgSampler(pi_kernel Kernel, pi_uint32 ArgIndex,
 pi_result piKernelGetInfo(pi_kernel Kernel, pi_kernel_info ParamName,
                           size_t ParamValueSize, void *ParamValue,
                           size_t *ParamValueSizeRet) {
+
+  return pi2ur::piKernelGetInfo(Kernel,
+                                ParamName,
+                                ParamValueSize,
+                                ParamValue,
+                                ParamValueSizeRet);
+#if 0
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
 
   ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
@@ -1959,12 +1976,22 @@ pi_result piKernelGetInfo(pi_kernel Kernel, pi_kernel_info ParamName,
   }
 
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piKernelGetGroupInfo(pi_kernel Kernel, pi_device Device,
                                pi_kernel_group_info ParamName,
                                size_t ParamValueSize, void *ParamValue,
                                size_t *ParamValueSizeRet) {
+
+  return pi2ur::piKernelGetGroupInfo(Kernel,
+                                     Device,
+                                     ParamName,
+                                     ParamValueSize,
+                                     ParamValue,
+                                     ParamValueSizeRet);
+
+#if 0
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
   PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
 
@@ -2013,6 +2040,7 @@ pi_result piKernelGetGroupInfo(pi_kernel Kernel, pi_device Device,
     return PI_ERROR_INVALID_VALUE;
   }
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piKernelGetSubGroupInfo(pi_kernel Kernel, pi_device Device,
@@ -2044,10 +2072,13 @@ pi_result piKernelGetSubGroupInfo(pi_kernel Kernel, pi_device Device,
 
 pi_result piKernelRetain(pi_kernel Kernel) {
 
+  return pi2ur::piKernelRetain(Kernel);
+#if 0
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
 
   Kernel->RefCount.increment();
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piKernelRelease(pi_kernel Kernel) {
@@ -4215,6 +4246,14 @@ pi_result piextUSMDeviceAlloc(void **ResultPtr, pi_context Context,
                               pi_device Device,
                               pi_usm_mem_properties *Properties, size_t Size,
                               pi_uint32 Alignment) {
+
+  return pi2ur::piextUSMDeviceAlloc(ResultPtr,
+                                    Context,
+                                    Device,
+                                    Properties,
+                                    Size,
+                                    Alignment);
+#if 0
   // L0 supports alignment up to 64KB and silently ignores higher values.
   // We flag alignment > 64KB as an invalid value.
   if (Alignment > 65536)
@@ -4284,6 +4323,7 @@ pi_result piextUSMDeviceAlloc(void **ResultPtr, pi_context Context,
   }
 
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piextUSMSharedAlloc(void **ResultPtr, pi_context Context,
@@ -4977,6 +5017,12 @@ pi_result piextEnqueueDeviceGlobalVariableRead(
 
 pi_result piKernelSetExecInfo(pi_kernel Kernel, pi_kernel_exec_info ParamName,
                               size_t ParamValueSize, const void *ParamValue) {
+
+  return pi2ur::piKernelSetExecInfo(Kernel,
+                                    ParamName,
+                                    ParamValueSize,
+                                    ParamValue);
+#if 0
   (void)ParamValueSize;
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
   PI_ASSERT(ParamValue, PI_ERROR_INVALID_VALUE);
@@ -4998,6 +5044,7 @@ pi_result piKernelSetExecInfo(pi_kernel Kernel, pi_kernel_exec_info ParamName,
   }
 
   return PI_SUCCESS;
+#endif
 }
 
 pi_result piextProgramSetSpecializationConstant(pi_program Prog,

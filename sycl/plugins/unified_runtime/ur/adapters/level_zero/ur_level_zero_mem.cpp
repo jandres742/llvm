@@ -1835,6 +1835,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemBufferCreate(
       (flags & UR_MEM_FLAG_USE_HOST_POINTER) ? reinterpret_cast<char *>(pHost) : nullptr;
   try {
     Buffer = new _pi_buffer(hContext, size, HostPtrOrNull, HostPtrImported);
+    printf("%s %d Buffer %lx\n", __FILE__, __LINE__, (unsigned long int)Buffer);
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -2178,16 +2179,84 @@ UR_APIEXPORT ur_result_t UR_APICALL urUSMHostAlloc(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urUSMDeviceAlloc(
-    ur_context_handle_t hContext, ///< [in] handle of the context object
-    ur_device_handle_t hDevice,   ///< [in] handle of the device object
-    ur_usm_mem_flags_t *pUSMProp, ///< [in] USM memory properties
-    size_t
-        size, ///< [in] size in bytes of the USM memory object to be allocated
-    uint32_t align, ///< [in] alignment of the USM memory object
-    void **ppMem    ///< [out] pointer to USM device memory object
+    ur_context_handle_t Context, ///< [in] handle of the context object
+    ur_device_handle_t Device,   ///< [in] handle of the device object
+    ur_usm_mem_flags_t *USMProp, ///< [in] USM memory properties
+    size_t Size, ///< [in] size in bytes of the USM memory object to be allocated
+    uint32_t Alignment, ///< [in] alignment of the USM memory object
+    void **RetMem    ///< [out] pointer to USM device memory object
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // L0 supports alignment up to 64KB and silently ignores higher values.
+  // We flag alignment > 64KB as an invalid value.
+  if (Alignment > 65536)
+    return UR_RESULT_ERROR_INVALID_VALUE;
+
+  ur_platform_handle_t Plt = Device->Platform;
+
+  // If indirect access tracking is enabled then lock the mutex which is
+  // guarding contexts container in the platform. This prevents new kernels from
+  // being submitted in any context while we are in the process of allocating a
+  // memory, this is needed to properly capture allocations by kernels with
+  // indirect access. This lock also protects access to the context's data
+  // structures. If indirect access tracking is not enabled then lock context
+  // mutex to protect access to context's data structures.
+  std::shared_lock<pi_shared_mutex> ContextLock(Context->Mutex,
+                                                std::defer_lock);
+  std::unique_lock<pi_shared_mutex> IndirectAccessTrackingLock(
+      Plt->ContextsMutex, std::defer_lock);
+  if (IndirectAccessTrackingEnabled) {
+    IndirectAccessTrackingLock.lock();
+    // We are going to defer memory release if there are kernels with indirect
+    // access, that is why explicitly retain context to be sure that it is
+    // released after all memory allocations in this context are released.
+#if 0
+    UR_CALL(urContextRetain(Context));
+#endif
+  } else {
+    ContextLock.lock();
+  }
+
+  if (!UseUSMAllocator ||
+      // L0 spec says that allocation fails if Alignment != 2^n, in order to
+      // keep the same behavior for the allocator, just call L0 API directly and
+      // return the error code.
+      ((Alignment & (Alignment - 1)) != 0)) {
+    ur_result_t Res = USMDeviceAllocImpl(RetMem,
+                                         Context,
+                                         Device,
+                                         nullptr,
+                                         Size,
+                                         Alignment);
+    if (IndirectAccessTrackingEnabled) {
+      // Keep track of all memory allocations in the context
+      Context->MemAllocs.emplace(std::piecewise_construct,
+                                 std::forward_as_tuple(*RetMem),
+                                 std::forward_as_tuple(reinterpret_cast<ur_context_handle_t>(Context)));
+    }
+    return Res;
+  }
+
+  try {
+    auto It = Context->DeviceMemAllocContexts.find(Device->ZeDevice);
+    if (It == Context->DeviceMemAllocContexts.end())
+      return UR_RESULT_ERROR_INVALID_VALUE;
+
+    *RetMem = It->second.allocate(Size, Alignment);
+    if (IndirectAccessTrackingEnabled) {
+      // Keep track of all memory allocations in the context
+      Context->MemAllocs.emplace(std::piecewise_construct,
+                                 std::forward_as_tuple(*RetMem),
+                                 std::forward_as_tuple(reinterpret_cast<ur_context_handle_t>(Context)));
+    }
+
+  } catch (const UsmAllocationException &Ex) {
+    *RetMem = nullptr;
+    return Ex.getError();
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urUSMSharedAlloc(
@@ -2288,10 +2357,12 @@ ur_result_t USMHostMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
   return USMHostAllocImpl(ResultPtr, Context, nullptr, Size, Alignment);
 }
 
-ur_result_t USMDeviceAllocImpl(void **ResultPtr, ur_context_handle_t Context,
-                                    ur_device_handle_t Device,
-                                    pi_usm_mem_properties *Properties,
-                                    size_t Size, uint32_t Alignment) {
+ur_result_t USMDeviceAllocImpl(void **ResultPtr,
+                               ur_context_handle_t Context,
+                               ur_device_handle_t Device,
+                               pi_usm_mem_properties *Properties,
+                               size_t Size,
+                               uint32_t Alignment) {
   // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
   // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
 
@@ -2721,6 +2792,8 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
         NeedCopy = false;
     }
 
+    printf("%s %d\n", __FILE__, __LINE__);
+
     if (NeedCopy) {
       // Copy valid buffer data to this allocation.
       // TODO: see if we should better use peer's device allocation used
@@ -2735,13 +2808,16 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
                                         LastDeviceWithValidAllocation->ZeDevice,
                                         &P2P));
       if (!P2P) {
+        printf("%s %d\n", __FILE__, __LINE__);
         // P2P copy is not possible, so copy through the host.
         auto &HostAllocation = Allocations[nullptr];
         // The host allocation may already exists, e.g. with imported
         // host ptr, or in case of interop buffer.
+        printf("%s %d\n", __FILE__, __LINE__);
         if (!HostAllocation.ZeHandle) {
           void *ZeHandleHost;
           if (USMAllocatorConfigInstance.EnableBuffers) {
+            printf("%s %d\n", __FILE__, __LINE__);
             HostAllocation.ReleaseAction = allocation_t::free;
             UR_CALL(urUSMHostAlloc(UrContext,
                                    nullptr,
@@ -2749,12 +2825,15 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
                                    getAlignment(),
                                    &ZeHandleHost));
           } else {
+            printf("%s %d\n", __FILE__, __LINE__);
             HostAllocation.ReleaseAction = allocation_t::free_native;
             UR_CALL(ZeHostMemAllocHelper(&ZeHandleHost, UrContext, Size));
           }
+          printf("%s %d\n", __FILE__, __LINE__);
           HostAllocation.ZeHandle = reinterpret_cast<char *>(ZeHandleHost);
           HostAllocation.Valid = false;
         }
+        printf("%s %d\n", __FILE__, __LINE__);
         std::scoped_lock<pi_mutex> Lock(UrContext->ImmediateCommandListMutex);
         if (!HostAllocation.Valid) {
           ZE2UR_CALL(zeCommandListAppendMemoryCopy,(UrContext->ZeCommandListInit,
@@ -2769,6 +2848,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
           // read-only.
           HostAllocation.Valid = true;
         }
+        printf("%s %d\n", __FILE__, __LINE__);
         ZE2UR_CALL(zeCommandListAppendMemoryCopy,(UrContext->ZeCommandListInit,
                                                ZeHandle,
                                                HostAllocation.ZeHandle,
@@ -2777,6 +2857,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
                                                0,
                                                nullptr));
       } else {
+        printf("%s %d\n", __FILE__, __LINE__);
         // Perform P2P copy.
         std::scoped_lock<pi_mutex> Lock(UrContext->ImmediateCommandListMutex);
         ZE2UR_CALL(zeCommandListAppendMemoryCopy,
@@ -2792,6 +2873,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
     Allocation.Valid = true;
     LastDeviceWithValidAllocation = Device;
   }
+  printf("%s %d\n", __FILE__, __LINE__);
 
   // Invalidate other allocations that would become not valid if
   // this access is not read-only.

@@ -162,17 +162,50 @@ __SYCL_EXPORT pi_result piKernelCreate(pi_program Program, const char *KernelNam
 }
 
 // Special version of piKernelSetArg to accept pi_mem.
-__SYCL_EXPORT pi_result piextKernelSetArgMemObj(pi_kernel Kernel, pi_uint32 ArgIndex,
-                                  const pi_mem *ArgValue) {
+__SYCL_EXPORT pi_result
+piextKernelSetArgMemObj(pi_kernel Kernel,
+                        pi_uint32 ArgIndex,
+                        const pi_mem *ArgValue) {
 
   return pi2ur::piextKernelSetArgMemObj(Kernel,
                                         ArgIndex,
                                         ArgValue);
 }
 
-__SYCL_EXPORT pi_result piMemBufferCreate(pi_context Context, pi_mem_flags Flags, size_t Size,
-                            void *HostPtr, pi_mem *RetMem,
-                            const pi_mem_properties *properties) {
+__SYCL_EXPORT pi_result 
+piKernelSetArg(pi_kernel Kernel,
+               pi_uint32 ArgIndex,
+               size_t ArgSize,
+               const void *ArgValue) {
+
+  return pi2ur::piKernelSetArg(Kernel,
+                               ArgIndex,
+                               ArgSize,
+                               ArgValue);
+}
+
+__SYCL_EXPORT pi_result 
+piKernelGetGroupInfo(pi_kernel Kernel,
+                     pi_device Device,
+                     pi_kernel_group_info ParamName,
+                     size_t ParamValueSize,
+                     void *ParamValue,
+                     size_t *ParamValueSizeRet) {
+  return pi2ur::piKernelGetGroupInfo(Kernel,
+                                     Device,
+                                     ParamName,
+                                     ParamValueSize,
+                                     ParamValue,
+                                     ParamValueSizeRet);
+}
+
+__SYCL_EXPORT pi_result
+piMemBufferCreate(pi_context Context,
+                  pi_mem_flags Flags,
+                  size_t Size,
+                  void *HostPtr,
+                  pi_mem *RetMem,
+                  const pi_mem_properties *properties) {
 
   return pi2ur::piMemBufferCreate(Context,
                                   Flags,
@@ -400,6 +433,27 @@ piEnqueueMemBufferFill(pi_queue Queue, pi_mem Buffer,
                                        Event);
 }
 
+__SYCL_EXPORT pi_result
+piextUSMDeviceAlloc(void **ResultPtr,
+                    pi_context Context,
+                    pi_device Device,
+                    pi_usm_mem_properties *Properties,
+                    size_t Size,
+                    pi_uint32 Alignment) {
+
+  return pi2ur::piextUSMDeviceAlloc(ResultPtr,
+                                    Context,
+                                    Device,
+                                    Properties,
+                                    Size,
+                                    Alignment);
+}
+
+__SYCL_EXPORT pi_result
+piKernelRetain(pi_kernel Kernel) {
+  return pi2ur::piKernelRetain(Kernel);
+}
+
 /// USM Memset API
 ///
 /// @param Queue is the queue to submit to
@@ -619,6 +673,36 @@ piEventGetProfilingInfo(pi_event Event,
                                         ParamValueSizeRet);
 }
 
+__SYCL_EXPORT pi_result
+piProgramRetain(pi_program Program) {
+  return pi2ur::piProgramRetain(Program);
+}
+
+__SYCL_EXPORT pi_result
+piKernelSetExecInfo(pi_kernel Kernel,
+                    pi_kernel_exec_info ParamName,
+                    size_t ParamValueSize,
+                    const void *ParamValue) {
+
+  return pi2ur::piKernelSetExecInfo(Kernel,
+                                    ParamName,
+                                    ParamValueSize,
+                                    ParamValue);
+}
+
+__SYCL_EXPORT pi_result
+piKernelGetInfo(pi_kernel Kernel,
+                pi_kernel_info ParamName,
+                size_t ParamValueSize,
+                void *ParamValue,
+                size_t *ParamValueSizeRet) {
+  return pi2ur::piKernelGetInfo(Kernel,
+                                ParamName,
+                                ParamValueSize,
+                                ParamValue,
+                                ParamValueSizeRet);
+}
+
 __SYCL_EXPORT pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
                                   uint64_t *HostTime) {
   return pi2ur::piGetDeviceAndHostTimer(Device, DeviceTime, HostTime);
@@ -678,6 +762,12 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piKernelCreate)
   _PI_API(piextKernelSetArgMemObj)
   _PI_API(piextKernelCreateWithNativeHandle)
+  _PI_API(piProgramRetain)
+  _PI_API(piKernelSetExecInfo)
+  _PI_API(piKernelGetInfo)
+  _PI_API(piKernelSetArg)
+  _PI_API(piKernelGetGroupInfo)
+  _PI_API(piKernelRetain)
 
   _PI_API(piMemBufferCreate)
   _PI_API(piextUSMHostAlloc)
@@ -686,6 +776,7 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piEnqueueMemImageCopy)
   _PI_API(piextMemGetNativeHandle)
   _PI_API(piextMemCreateWithNativeHandle)
+  _PI_API(piextUSMDeviceAlloc)
 
   _PI_API(piEnqueueKernelLaunch)
   _PI_API(piEnqueueMemImageWrite)

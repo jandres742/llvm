@@ -1151,6 +1151,8 @@ inline pi_result piKernelCreate(pi_program ProgramIn, const char *KernelName,
   try {
     _pi_kernel *PiKernel = new _pi_kernel(UrKernel);
     *RetKernel = reinterpret_cast<pi_kernel>(PiKernel);
+    printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
+    printf("%s %d *RetKernel %lx\n", __FILE__, __LINE__, (unsigned long int)*RetKernel);
   } catch (const std::bad_alloc &) {
     return PI_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -1171,11 +1173,42 @@ inline pi_result piextKernelSetArgMemObj(pi_kernel Kernel, pi_uint32 ArgIndex,
 
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
 
+  _pi_mem **PiArg = reinterpret_cast<_pi_mem **>(const_cast<pi_mem *>(ArgValue));
+  ur_mem_handle_t UrMemory = (*PiArg)->UrMemory;
+
+  // We don't yet know the device where this kernel will next be run on.
+  // Thus we can't know the actual memory allocation that needs to be used.
+  // Remember the memory object being used as an argument for this kernel
+  // to process it later when the device is known (at the kernel enqueue).
+  //
+  // TODO: for now we have to conservatively assume the access as read-write.
+  //       Improve that by passing SYCL buffer accessor type into
+  //       piextKernelSetArgMemObj.
+  //
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+
+  printf("%s %d UrMemory %lx\n", __FILE__, __LINE__, (unsigned long int)UrMemory);
+
+  HANDLE_ERRORS(urKernelSetArgMemObj(PiKernel->UrKernel,
+                                     ArgIndex,
+                                     UrMemory));
+  return PI_SUCCESS;
+}
+
+inline pi_result 
+piKernelSetArg(pi_kernel Kernel,
+               pi_uint32 ArgIndex,
+               size_t ArgSize,
+               const void *ArgValue) {
+
+   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+
   _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
 
   HANDLE_ERRORS(urKernelSetArgValue(PiKernel->UrKernel,
                                     ArgIndex,
-                                    sizeof(ArgValue),
+                                    ArgSize,
                                     ArgValue));
   return PI_SUCCESS;
 }
@@ -1215,6 +1248,174 @@ piextKernelCreateWithNativeHandle(pi_native_handle NativeHandle,
   return PI_SUCCESS;
 }
 
+inline pi_result
+piProgramRetain(pi_program Program) {
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+  
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  HANDLE_ERRORS(urProgramRetain(reinterpret_cast<ur_program_handle_t>(UrProgram)));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piKernelSetExecInfo(pi_kernel Kernel,
+                    pi_kernel_exec_info ParamName,
+                    size_t ParamValueSize,
+                    const void *ParamValue) {
+
+  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+  PI_ASSERT(ParamValue, PI_ERROR_INVALID_VALUE);
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t hKernel = PiKernel->UrKernel;
+  ur_kernel_exec_info_t propName {};
+  switch(ParamName) {
+    case   PI_USM_INDIRECT_ACCESS: {
+      propName = UR_KERNEL_EXEC_INFO_USM_INDIRECT_ACCESS;
+      break;
+    }
+    case PI_USM_PTRS: {
+      propName = UR_KERNEL_EXEC_INFO_USM_PTRS;
+      break;
+    }
+    default:
+      return PI_ERROR_INVALID_PROPERTY;
+  }
+  HANDLE_ERRORS(urKernelSetExecInfo(hKernel,
+                                    propName,
+                                    ParamValueSize,
+                                    ParamValue));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piKernelGetInfo(pi_kernel Kernel,
+                pi_kernel_info ParamName,
+                size_t ParamValueSize,
+                void *ParamValue,
+                size_t *ParamValueSizeRet) {
+  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+  ur_kernel_info_t UrParamName {};
+  switch(ParamName) {
+    case  PI_KERNEL_INFO_FUNCTION_NAME: {
+      UrParamName = UR_KERNEL_INFO_FUNCTION_NAME;
+      break;
+    }
+    case PI_KERNEL_INFO_NUM_ARGS: {
+      UrParamName = UR_KERNEL_INFO_NUM_ARGS;
+      break;
+    }
+    case PI_KERNEL_INFO_REFERENCE_COUNT: {
+      UrParamName = UR_KERNEL_INFO_REFERENCE_COUNT;
+      break;
+    }
+    case PI_KERNEL_INFO_CONTEXT: {
+      UrParamName = UR_KERNEL_INFO_CONTEXT;
+      break;
+    }
+    case PI_KERNEL_INFO_PROGRAM: {
+      UrParamName = UR_KERNEL_INFO_PROGRAM;
+      break;
+    }
+    case PI_KERNEL_INFO_ATTRIBUTES: {
+      UrParamName = UR_KERNEL_INFO_ATTRIBUTES;
+      break;
+    }
+    default:
+      return PI_ERROR_INVALID_PROPERTY;
+  }
+
+  HANDLE_ERRORS(urKernelGetInfo(UrKernel,
+                                UrParamName,
+                                ParamValueSize,
+                                ParamValue,
+                                ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result 
+piKernelGetGroupInfo(pi_kernel Kernel,
+                     pi_device Device,
+                     pi_kernel_group_info ParamName,
+                     size_t ParamValueSize,
+                     void *ParamValue,
+                     size_t *ParamValueSizeRet) {
+  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+  PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  
+  ur_kernel_group_info_t UrParamName {};
+  switch (ParamName) {
+    case PI_KERNEL_GROUP_INFO_GLOBAL_WORK_SIZE: {
+      UrParamName = UR_KERNEL_GROUP_INFO_GLOBAL_WORK_SIZE;
+      break;
+    }
+    case PI_KERNEL_GROUP_INFO_WORK_GROUP_SIZE: {
+      UrParamName = UR_KERNEL_GROUP_INFO_WORK_GROUP_SIZE;
+      break;
+    }
+    case PI_KERNEL_GROUP_INFO_COMPILE_WORK_GROUP_SIZE: {
+      UrParamName = UR_KERNEL_GROUP_INFO_COMPILE_WORK_GROUP_SIZE;
+      break;
+    }
+    case PI_KERNEL_GROUP_INFO_LOCAL_MEM_SIZE: {
+      UrParamName = UR_KERNEL_GROUP_INFO_LOCAL_MEM_SIZE;
+      break;
+    }
+    case PI_KERNEL_GROUP_INFO_PREFERRED_WORK_GROUP_SIZE_MULTIPLE: {
+      UrParamName = UR_KERNEL_GROUP_INFO_PREFERRED_WORK_GROUP_SIZE_MULTIPLE;
+      break;
+    }
+    case PI_KERNEL_GROUP_INFO_PRIVATE_MEM_SIZE: {
+      UrParamName = UR_KERNEL_GROUP_INFO_PRIVATE_MEM_SIZE;
+      break;
+    }
+    // The number of registers used by the compiled kernel (device specific)
+    case PI_KERNEL_GROUP_INFO_NUM_REGS: {
+      die("PI_KERNEL_GROUP_INFO_NUM_REGS in piKernelGetGroupInfo not "
+        "implemented\n");
+      break;
+    }
+    default: {
+      printf("Unknown ParamName in piKernelGetGroupInfo: ParamName=%d(0x%x)\n",
+            ParamName, ParamName);
+      return PI_ERROR_INVALID_VALUE;
+    }
+  }
+
+  HANDLE_ERRORS(urKernelGetGroupInfo(UrKernel,
+                                     UrDevice,
+                                     UrParamName,
+                                     ParamValueSize,
+                                     ParamValue,
+                                     ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piKernelRetain(pi_kernel Kernel) {
+
+  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+
+  HANDLE_ERRORS(urKernelRetain(UrKernel));
+
+  return PI_SUCCESS;
+}
 
 // Program
 ///////////////////////////////////////////////////////////////////////////////
@@ -1238,7 +1439,18 @@ inline pi_result piMemBufferCreate(pi_context Context, pi_mem_flags Flags, size_
                                   HostPtr,
                                   &UrBuffer));
 
-  *RetMem = reinterpret_cast<pi_mem>(UrBuffer);
+  try {
+    _pi_mem *PiMem = new _pi_mem(UrContext);
+    PiMem->UrMemory = UrBuffer;
+    *RetMem = reinterpret_cast<pi_mem>(PiMem);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  printf("%s %d *RetMem %lx\n", __FILE__, __LINE__, (unsigned long int)*RetMem);
+  printf("%s %d UrBuffer %lx\n", __FILE__, __LINE__, (unsigned long int)UrBuffer);
 
   return PI_SUCCESS;
 }
@@ -1459,6 +1671,41 @@ piextMemCreateWithNativeHandle(pi_native_handle NativeHandle,
   return PI_SUCCESS;
 }
 
+inline pi_result
+piextUSMDeviceAlloc(void **ResultPtr,
+                    pi_context Context,
+                    pi_device Device,
+                    pi_usm_mem_properties *Properties,
+                    size_t Size,
+                    pi_uint32 Alignment) {
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  ur_device_handle_t UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
+  ur_usm_mem_flags_t USMProp {};
+  HANDLE_ERRORS(urUSMDeviceAlloc(UrContext,
+                                 UrDevice,
+                                 &USMProp,
+                                 Size,
+                                 Alignment,
+                                 ResultPtr));
+
+  try {
+    _pi_mem *PiMem = new _pi_mem(UrContext,
+                                 Size,
+                                 nullptr,
+                                 true);
+    *ResultPtr = reinterpret_cast<pi_mem>(PiMem);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+  
+}
+
 // Memory
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -1481,12 +1728,14 @@ piEnqueueKernelLaunch(pi_queue Queue,
   PI_ASSERT((WorkDim > 0) && (WorkDim < 4), PI_ERROR_INVALID_WORK_DIMENSION);
 
   ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
-  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Queue);
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
   ur_kernel_handle_t hKernel = PiKernel->UrKernel;
   uint32_t workDim = reinterpret_cast<uint32_t>(WorkDim);
   uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
   const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
   ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
+
+  // printf("%s %d *RetKernel %lx\n", __FILE__, __LINE__, (unsigned long int)*RetKernel);
 
   HANDLE_ERRORS(urEnqueueKernelLaunch(hQueue,
                                       hKernel,
@@ -1499,7 +1748,6 @@ piEnqueueKernelLaunch(pi_queue Queue,
                                       phEvent));
 
   return PI_SUCCESS;
-
 }
 
 inline pi_result

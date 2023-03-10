@@ -48,6 +48,14 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   _ur_queue_handle_t *UrQueue = ur_cast<_ur_queue_handle_t *>(hQueue);
   _ur_kernel_handle_t *UrKernel = ur_cast<_ur_kernel_handle_t *>(hKernel);
 
+  printf("%s %d UrQueue %lx\n", __FILE__, __LINE__, (unsigned long int)UrQueue);
+  printf("%s %d UrQueue->Device %lx\n", __FILE__, __LINE__, (unsigned long int)UrQueue->Device);
+  printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
+  if (UrKernel) {
+    printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
+  }
+  
+
   // Lock automatically releases when this goes out of scope.
   std::scoped_lock<pi_shared_mutex, pi_shared_mutex, pi_shared_mutex> Lock(
       UrQueue->Mutex, UrKernel->Mutex, UrKernel->Program->Mutex);
@@ -69,19 +77,25 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     // the kernel argument declared as a pointer to global or constant memory.
     char **ZeHandlePtr = nullptr;
     if (Arg.Value) {
+        printf("%s %d Arg.Value %lx\n", __FILE__, __LINE__, (unsigned long int)Arg.Value);
+    //   _pi_buffer *ArgumentBuffer = reinterpret_cast<_pi_buffer *>(Arg.Value);
       UR_CALL(Arg.Value->getZeHandlePtr(ZeHandlePtr,
                                         Arg.AccessMode,
                                         UrQueue->Device));
+        printf("%s %d\n", __FILE__, __LINE__);
     }
+    printf("%s %d\n", __FILE__, __LINE__);
     ZE2UR_CALL(zeKernelSetArgumentValue, (UrKernel->ZeKernel,
                                           Arg.Index,
                                           Arg.Size,
                                           ZeHandlePtr));
   }
+  printf("%s %d\n", __FILE__, __LINE__);
   UrKernel->PendingArguments.clear();
 
   ze_group_count_t ZeThreadGroupDimensions{1, 1, 1};
   uint32_t WG[3] {};
+  printf("%s %d\n", __FILE__, __LINE__);
 
 #if 0
   // global_work_size of unused dimensions must be set to 1
@@ -135,26 +149,29 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     }
   }
 
+  printf("%s %d\n", __FILE__, __LINE__);
+
   // TODO: assert if sizes do not fit into 32-bit?
+
   switch (workDim) {
   case 3:
     ZeThreadGroupDimensions.groupCountX =
-        ur_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
+        static_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
     ZeThreadGroupDimensions.groupCountY =
-        ur_cast<uint32_t>(pGlobalWorkSize[1] / WG[1]);
+        static_cast<uint32_t>(pGlobalWorkSize[1] / WG[1]);
     ZeThreadGroupDimensions.groupCountZ =
-        ur_cast<uint32_t>(pGlobalWorkSize[2] / WG[2]);
+        static_cast<uint32_t>(pGlobalWorkSize[2] / WG[2]);
     break;
   case 2:
     ZeThreadGroupDimensions.groupCountX =
-        ur_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
+        static_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
     ZeThreadGroupDimensions.groupCountY =
-        ur_cast<uint32_t>(pGlobalWorkSize[1] / WG[1]);
+        static_cast<uint32_t>(pGlobalWorkSize[1] / WG[1]);
     WG[2] = 1;
     break;
   case 1:
     ZeThreadGroupDimensions.groupCountX =
-        ur_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
+        static_cast<uint32_t>(pGlobalWorkSize[0] / WG[0]);
     WG[1] = WG[2] = 1;
     break;
 
@@ -162,6 +179,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     zePrint("piEnqueueKernelLaunch: unsupported work_dim\n");
     return UR_RESULT_ERROR_INVALID_VALUE;
   }
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   // Error handling for non-uniform group size case
   if (pGlobalWorkSize[0] !=
@@ -183,6 +202,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     return UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE;
   }
 
+  printf("%s %d\n", __FILE__, __LINE__);
+
   ZE2UR_CALL(zeKernelSetGroupSize, (UrKernel->ZeKernel,
                                     WG[0],
                                     WG[1],
@@ -190,19 +211,18 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
 
   bool UseCopyEngine = false;
   _pi_ze_event_list_t TmpWaitList;
-  if (auto Res = TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
+  printf("%s %d\n", __FILE__, __LINE__);
+  UR_CALL(TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
                                                           reinterpret_cast<const ur_event_handle_t *>(phEventWaitList),
                                                           reinterpret_cast<ur_queue_handle_t>(UrQueue), 
-                                                          UseCopyEngine))
-    return Res;
+                                                          UseCopyEngine));
 
   // Get a new command list to be used on this call
   pi_command_list_ptr_t CommandList{};
-  if (auto Res = UrQueue->Context->getAvailableCommandList(hQueue,
+  UR_CALL(UrQueue->Context->getAvailableCommandList(hQueue,
                                                            CommandList,
                                                            UseCopyEngine,
-                                                           true /* AllowBatching */))
-    return Res;
+                                                           true /* AllowBatching */));
 
   ze_event_handle_t ZeEvent = nullptr;
   ur_event_handle_t InternalEvent;
@@ -214,7 +234,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
                                        CommandList,
                                        IsInternal));
   
-
+printf("%s %d\n", __FILE__, __LINE__);
   _ur_event_handle_t **pUrEvent = reinterpret_cast<_ur_event_handle_t **>(hEvent);
   ZeEvent = (*pUrEvent)->ZeEvent;
   (*pUrEvent)->WaitList = TmpWaitList;
@@ -270,6 +290,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
                                                  (*pUrEvent)->WaitList.ZeEventList));
   }
 
+  printf("%s %d\n", __FILE__, __LINE__);
+
   zePrint("calling zeCommandListAppendLaunchKernel() with"
           "  ZeEvent %#llx\n", ur_cast<std::uintptr_t>(ZeEvent));
 #if 0
@@ -278,8 +300,9 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
 
   // Execute command list asynchronously, as the event will be used
   // to track down its completion.
-  if (auto Res = UrQueue->executeCommandList(CommandList, false, true))
-    return Res;
+  UR_CALL(UrQueue->executeCommandList(CommandList, false, true));
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   return UR_RESULT_SUCCESS;
 }
@@ -361,6 +384,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelCreate(
   try {
     _ur_kernel_handle_t *UrKernel = new _ur_kernel_handle_t(ZeKernel, true, hProgram);
     *phKernel = reinterpret_cast<ur_kernel_handle_t>(UrKernel);
+    printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
+    printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -373,38 +398,29 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelCreate(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgValue(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the kernel object
-    uint32_t argIndex, ///< [in] argument index in range [0, num args - 1]
-    size_t argSize,    ///< [in] size of argument type
+    ur_kernel_handle_t Kernel, ///< [in] handle of the kernel object
+    uint32_t ArgIndex, ///< [in] argument index in range [0, num args - 1]
+    size_t ArgSize,    ///< [in] size of argument type
     const void
-        *pArgValue ///< [in] argument value represented as matching arg type.
+        *PArgValue ///< [in] argument value represented as matching arg type.
 ) {
-  // We don't yet know the device where this kernel will next be run on.
-  // Thus we can't know the actual memory allocation that needs to be used.
-  // Remember the memory object being used as an argument for this kernel
-  // to process it later when the device is known (at the kernel enqueue).
+  // OpenCL: "the arg_value pointer can be NULL or point to a NULL value
+  // in which case a NULL value will be used as the value for the argument
+  // declared as a pointer to global or constant memory in the kernel"
   //
-  // TODO: for now we have to conservatively assume the access as read-write.
-  //       Improve that by passing SYCL buffer accessor type into
-  //       piextKernelSetArgMemObj.
-  //
+  // We don't know the type of the argument but it seems that the only time
+  // SYCL RT would send a pointer to NULL in 'arg_value' is when the argument
+  // is a NULL pointer. Treat a pointer to NULL in 'arg_value' as a NULL.
+  if (ArgSize == sizeof(void *) && PArgValue &&
+      *(void **)(const_cast<void *>(PArgValue)) == nullptr) {
+    PArgValue = nullptr;
+  }
 
-  _ur_kernel_handle_t *UrKernel = reinterpret_cast<_ur_kernel_handle_t *>(hKernel);
-
-  pi_mem **ArgValue = reinterpret_cast<pi_mem **>(const_cast<void *>(pArgValue));
-
-  std::scoped_lock<pi_shared_mutex> Guard(UrKernel->Mutex);
-  // The ArgValue may be a NULL pointer in which case a NULL value is used for
-  // the kernel argument declared as a pointer to global or constant memory.
-  auto Arg = ArgValue ? *ArgValue : nullptr;
-  UrKernel->PendingArguments.push_back(
-      {argIndex, sizeof(void *),
-#if 0
-      const_cast<const _ur_mem_handle_t *>(reinterpret_cast<_ur_mem_handle_t *>(Arg)),
-#else
-      reinterpret_cast<_ur_mem_handle_t *>(Arg),
-#endif
-      _ur_mem_handle_t::read_write});
+  std::scoped_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+  ZE2UR_CALL(zeKernelSetArgumentValue, (Kernel->ZeKernel,
+                                        ArgIndex,
+                                        ArgSize,
+                                        PArgValue));
 
   return UR_RESULT_SUCCESS;
 }
@@ -420,8 +436,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgLocal(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetInfo(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the Kernel object
-    ur_kernel_info_t propName,  ///< [in] name of the Kernel property to query
+    ur_kernel_handle_t Kernel, ///< [in] handle of the Kernel object
+    ur_kernel_info_t ParamName,  ///< [in] name of the Kernel property to query
     size_t propSize,            ///< [in] the size of the Kernel property value.
     void *pKernelInfo, ///< [in,out][optional] array of bytes holding the kernel
                        ///< info property. If propSize is not equal to or
@@ -432,23 +448,107 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelGetInfo(
     size_t *pPropSizeRet ///< [out][optional] pointer to the actual size in
                          ///< bytes of data being queried by propName.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+
+  UrL0ReturnHelper ReturnValue(propSize, pKernelInfo, pPropSizeRet);
+
+  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+  switch (ParamName) {
+  case UR_KERNEL_INFO_CONTEXT:
+    return ReturnValue(ur_context_handle_t{Kernel->Program->Context});
+  case UR_KERNEL_INFO_PROGRAM:
+    return ReturnValue(ur_program_handle_t{Kernel->Program});
+  case UR_KERNEL_INFO_FUNCTION_NAME:
+    try {
+      std::string &KernelName = *Kernel->ZeKernelName.operator->();
+      return ReturnValue(static_cast<const char *>(KernelName.c_str()));
+    } catch (const std::bad_alloc &) {
+      return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return UR_RESULT_ERROR_UNKNOWN;
+    }
+  case UR_KERNEL_INFO_NUM_ARGS:
+    return ReturnValue(uint32_t{Kernel->ZeKernelProperties->numKernelArgs});
+  case UR_KERNEL_INFO_REFERENCE_COUNT:
+    return ReturnValue(uint32_t{Kernel->RefCount.load()});
+  case UR_KERNEL_INFO_ATTRIBUTES:
+    try {
+      uint32_t Size;
+      ZE2UR_CALL(zeKernelGetSourceAttributes, (Kernel->ZeKernel,
+                                               &Size,
+                                               nullptr));
+      char *attributes = new char[Size];
+      ZE2UR_CALL(zeKernelGetSourceAttributes,
+              (Kernel->ZeKernel, &Size, &attributes));
+      auto Res = ReturnValue(attributes);
+      delete[] attributes;
+      return Res;
+    } catch (const std::bad_alloc &) {
+      return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return UR_RESULT_ERROR_UNKNOWN;
+    }
+  default:
+    zePrint("Unsupported ParamName in piKernelGetInfo: ParamName=%d(0x%x)\n",
+            ParamName, ParamName);
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetGroupInfo(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the Kernel object
-    ur_device_handle_t hDevice, ///< [in] handle of the Device object
+    ur_kernel_handle_t Kernel, ///< [in] handle of the Kernel object
+    ur_device_handle_t Device, ///< [in] handle of the Device object
     ur_kernel_group_info_t
-        propName,     ///< [in] name of the work Group property to query
-    size_t propSize,  ///< [in] size of the Kernel Work Group property value
-    void *pPropValue, ///< [in,out][optional][range(0, propSize)] value of the
+        ParamName,     ///< [in] name of the work Group property to query
+    size_t ParamValueSize,  ///< [in] size of the Kernel Work Group property value
+    void *ParamValue, ///< [in,out][optional][range(0, propSize)] value of the
                       ///< Kernel Work Group property.
-    size_t *pPropSizeRet ///< [out][optional] pointer to the actual size in
+    size_t *ParamValueSizeRet ///< [out][optional] pointer to the actual size in
                          ///< bytes of data being queried by propName.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  UrL0ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
+
+  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+  switch (ParamName) {
+    case UR_KERNEL_GROUP_INFO_GLOBAL_WORK_SIZE: {
+      // TODO: To revisit after level_zero/issues/262 is resolved
+      struct {
+        size_t Arr[3];
+      } WorkSize = {{Device->ZeDeviceComputeProperties->maxGroupSizeX,
+                    Device->ZeDeviceComputeProperties->maxGroupSizeY,
+                    Device->ZeDeviceComputeProperties->maxGroupSizeZ}};
+      return ReturnValue(WorkSize);
+    }
+    case UR_KERNEL_GROUP_INFO_WORK_GROUP_SIZE: {
+      // As of right now, L0 is missing API to query kernel and device specific
+      // max work group size.
+      return ReturnValue(
+          pi_uint64{Device->ZeDeviceComputeProperties->maxTotalGroupSize});
+    }
+    case UR_KERNEL_GROUP_INFO_COMPILE_WORK_GROUP_SIZE: {
+      struct {
+        size_t Arr[3];
+      } WgSize = {{Kernel->ZeKernelProperties->requiredGroupSizeX,
+                  Kernel->ZeKernelProperties->requiredGroupSizeY,
+                  Kernel->ZeKernelProperties->requiredGroupSizeZ}};
+      return ReturnValue(WgSize);
+    }
+    case UR_KERNEL_GROUP_INFO_LOCAL_MEM_SIZE:
+      return ReturnValue(pi_uint32{Kernel->ZeKernelProperties->localMemSize});
+    case UR_KERNEL_GROUP_INFO_PREFERRED_WORK_GROUP_SIZE_MULTIPLE: {
+      return ReturnValue(size_t{Device->ZeDeviceProperties->physicalEUSimdWidth});
+    }
+    case UR_KERNEL_GROUP_INFO_PRIVATE_MEM_SIZE: {
+      return ReturnValue(pi_uint32{Kernel->ZeKernelProperties->privateMemSize});
+    }
+    default: {
+      zePrint("Unknown ParamName in urKernelGetGroupInfo: ParamName=%d(0x%x)\n",
+              ParamName, ParamName);
+      return UR_RESULT_ERROR_INVALID_VALUE;
+    }
+  }
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetSubGroupInfo(
@@ -467,10 +567,11 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelGetSubGroupInfo(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelRetain(
-    ur_kernel_handle_t hKernel ///< [in] handle for the Kernel to retain
+    ur_kernel_handle_t Kernel ///< [in] handle for the Kernel to retain
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  Kernel->RefCount.increment();
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelRelease(
@@ -499,8 +600,24 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetExecInfo(
     const void *pPropValue ///< [in][range(0, propSize)] pointer to memory
                            ///< location holding the property value.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::scoped_lock<pi_shared_mutex> Guard(hKernel->Mutex);
+  if (propName == UR_KERNEL_EXEC_INFO_USM_INDIRECT_ACCESS &&
+      *(static_cast<const pi_bool *>(pPropValue)) == PI_TRUE) {
+    // The whole point for users really was to not need to know anything
+    // about the types of allocations kernel uses. So in DPC++ we always
+    // just set all 3 modes for each kernel.
+    ze_kernel_indirect_access_flags_t IndirectFlags =
+        ZE_KERNEL_INDIRECT_ACCESS_FLAG_HOST |
+        ZE_KERNEL_INDIRECT_ACCESS_FLAG_DEVICE |
+        ZE_KERNEL_INDIRECT_ACCESS_FLAG_SHARED;
+    ZE2UR_CALL(zeKernelSetIndirectAccess, (hKernel->ZeKernel,
+                                           IndirectFlags));
+  } else {
+    zePrint("urKernelSetExecInfo: unsupported ParamName\n");
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgSampler(
@@ -513,12 +630,23 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgSampler(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgMemObj(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the kernel object
-    uint32_t argIndex, ///< [in] argument index in range [0, num args - 1]
-    ur_mem_handle_t hArgValue ///< [in][optional] handle of Memory object.
+    ur_kernel_handle_t Kernel, ///< [in] handle of the kernel object
+    uint32_t ArgIndex, ///< [in] argument index in range [0, num args - 1]
+    ur_mem_handle_t ArgValue ///< [in][optional] handle of Memory object.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::scoped_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+  // The ArgValue may be a NULL pointer in which case a NULL value is used for
+  // the kernel argument declared as a pointer to global or constant memory.
+
+  _ur_mem_handle_t *UrMem = ur_cast<_ur_mem_handle_t *>(ArgValue);
+
+  printf("%s %d ArgValue %lx\n", __FILE__, __LINE__, (unsigned long int)ArgValue);
+
+  auto Arg = UrMem ? UrMem : nullptr;
+  Kernel->PendingArguments.push_back(
+      {ArgIndex, sizeof(void *), Arg, _ur_mem_handle_t::read_write});
+
+  return UR_RESULT_SUCCESS; 
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetNativeHandle(
