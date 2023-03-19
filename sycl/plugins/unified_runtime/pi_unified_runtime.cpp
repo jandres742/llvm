@@ -465,6 +465,91 @@ piProgramRelease(pi_program Program) {
   return pi2ur::piProgramRelease(Program);
 }
 
+__SYCL_EXPORT pi_result
+piextUSMSharedAlloc(void **ResultPtr,
+                    pi_context Context,
+                    pi_device Device,
+                    pi_usm_mem_properties *Properties,
+                    size_t Size,
+                    pi_uint32 Alignment) {
+
+  return pi2ur::piextUSMSharedAlloc(ResultPtr,
+                                    Context,
+                                    Device,
+                                    Properties,
+                                    Size,
+                                    Alignment);
+}
+
+__SYCL_EXPORT pi_result
+piextUSMFree(pi_context Context,
+             void *Ptr) {
+
+  return pi2ur::piextUSMFree(Context,
+                             Ptr);
+}
+
+__SYCL_EXPORT pi_result
+piContextRetain(pi_context Context) {
+  return pi2ur::piContextRetain(Context);
+}
+
+__SYCL_EXPORT pi_result
+piextKernelSetArgPointer(pi_kernel Kernel,
+                         pi_uint32 ArgIndex,
+                         size_t ArgSize,
+                         const void *ArgValue) {
+  return pi2ur::piextKernelSetArgPointer(Kernel,
+                                         ArgIndex,
+                                         ArgSize,
+                                         ArgValue);
+}
+
+// Special version of piKernelSetArg to accept pi_sampler.
+__SYCL_EXPORT pi_result
+piextKernelSetArgSampler(pi_kernel Kernel,
+                         pi_uint32 ArgIndex,
+                         const pi_sampler *ArgValue) {
+
+  return pi2ur::piextKernelSetArgSampler(Kernel,
+                                         ArgIndex,
+                                         ArgValue);
+}
+
+__SYCL_EXPORT pi_result
+piKernelGetSubGroupInfo(pi_kernel Kernel,
+                        pi_device Device,
+                        pi_kernel_sub_group_info ParamName,
+                        size_t InputValueSize,
+                        const void *InputValue,
+                        size_t ParamValueSize,
+                        void *ParamValue,
+                        size_t *ParamValueSizeRet) {
+
+  return pi2ur::piKernelGetSubGroupInfo(Kernel,
+                                        Device,
+                                        ParamName,
+                                        InputValueSize,
+                                        InputValue,
+                                        ParamValueSize,
+                                        ParamValue,
+                                        ParamValueSizeRet);
+}
+
+__SYCL_EXPORT pi_result
+piQueueGetInfo(pi_queue Queue,
+               pi_queue_info ParamName,
+               size_t ParamValueSize,
+               void *ParamValue,
+               size_t *ParamValueSizeRet) {
+
+  return pi2ur::piQueueGetInfo(Queue,
+                               ParamName,
+                               ParamValueSize,
+                               ParamValue,
+                               ParamValueSizeRet);
+}
+
 /// USM Memset API
 ///
 /// @param Queue is the queue to submit to
@@ -714,6 +799,616 @@ piKernelGetInfo(pi_kernel Kernel,
                                 ParamValueSizeRet);
 }
 
+__SYCL_EXPORT pi_result
+piQueueRetain(pi_queue Queue) {
+  return pi2ur::piQueueRetain(Queue);
+}
+
+__SYCL_EXPORT pi_result
+piQueueFlush(pi_queue Queue) {
+  return pi2ur::piQueueFlush(Queue);
+}
+
+__SYCL_EXPORT pi_result
+piMemRetain(pi_mem Mem) {
+  return pi2ur::piMemRetain(Mem);
+}
+
+__SYCL_EXPORT pi_result
+piProgramCreateWithBinary(pi_context Context,
+                          pi_uint32 NumDevices,
+                          const pi_device *DeviceList,
+                          const size_t *Lengths,
+                          const unsigned char **Binaries,
+                          size_t NumMetadataEntries,
+                          const pi_device_binary_property *Metadata,
+                          pi_int32 *BinaryStatus,
+                          pi_program *Program) {
+
+  return pi2ur::piProgramCreateWithBinary(Context,
+                                          NumDevices,
+                                          DeviceList,
+                                          Lengths,
+                                          Binaries,
+                                          NumMetadataEntries,
+                                          Metadata,
+                                          BinaryStatus,
+                                          Program);
+}
+
+__SYCL_EXPORT pi_result
+piclProgramCreateWithSource(pi_context Context, pi_uint32 Count,
+                            const char **Strings,
+                            const size_t *Lengths,
+                            pi_program *RetProgram) {
+  return pi2ur::piclProgramCreateWithSource(Context,
+                                            Count,
+                                            Strings,
+                                            Lengths,
+                                            RetProgram);
+}
+
+__SYCL_EXPORT pi_result
+piProgramGetInfo(pi_program Program, pi_program_info ParamName,
+                           size_t ParamValueSize, void *ParamValue,
+                           size_t *ParamValueSizeRet) {
+
+  return pi2ur::piProgramGetInfo(Program,
+                                 ParamName,
+                                 ParamValueSize,
+                                 ParamValue,
+                                 ParamValueSizeRet);
+}
+
+
+__SYCL_EXPORT pi_result
+piProgramCompile(
+    pi_program Program, pi_uint32 NumDevices, const pi_device *DeviceList,
+    const char *Options, pi_uint32 NumInputHeaders,
+    const pi_program *InputHeaders, const char **HeaderIncludeNames,
+    void (*PFnNotify)(pi_program Program, void *UserData), void *UserData) {
+
+  return pi2ur::piProgramCompile(Program,
+                                 NumDevices,
+                                 DeviceList,
+                                 Options,
+                                 NumInputHeaders,
+                                 InputHeaders,
+                                 HeaderIncludeNames,
+                                 PFnNotify, UserData);
+}
+
+__SYCL_EXPORT pi_result
+piProgramGetBuildInfo(pi_program Program, pi_device Device,
+                                pi_program_build_info ParamName,
+                                size_t ParamValueSize, void *ParamValue,
+                                size_t *ParamValueSizeRet) {
+  
+  return pi2ur::piProgramGetBuildInfo(Program,
+                                      Device,
+                                      ParamName,
+                                      ParamValueSize,
+                                      ParamValue,
+                                      ParamValueSizeRet);
+}
+
+__SYCL_EXPORT pi_result
+piEventCreate(pi_context Context, pi_event *RetEvent) {
+
+  return pi2ur::piEventCreate(Context,
+                              RetEvent);
+}
+
+__SYCL_EXPORT pi_result
+piEventSetCallback(pi_event Event, pi_int32 CommandExecCallbackType,
+                             void (*PFnNotify)(pi_event Event,
+                                               pi_int32 EventCommandStatus,
+                                               void *UserData),
+                             void *UserData) {
+  return pi2ur::piEventSetCallback(Event,
+                                   CommandExecCallbackType,
+                                   PFnNotify,
+                                   UserData);
+}
+
+__SYCL_EXPORT pi_result
+piEventSetStatus(pi_event Event, pi_int32 ExecutionStatus) {
+  return pi2ur::piEventSetStatus(Event,
+                                 ExecutionStatus);
+}
+
+__SYCL_EXPORT pi_result
+piEventRetain(pi_event Event) {
+  return pi2ur::piEventRetain(Event);
+}
+
+__SYCL_EXPORT pi_result
+piEventRelease(pi_event Event) {
+  return pi2ur::piEventRelease(Event);
+}
+
+__SYCL_EXPORT pi_result
+piextEventCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                           pi_context Context,
+                                           bool OwnNativeHandle,
+                                           pi_event *Event) {
+  return pi2ur::piextEventCreateWithNativeHandle(NativeHandle,
+                                                 Context,
+                                                 OwnNativeHandle,
+                                                 Event);
+}
+
+__SYCL_EXPORT pi_result
+piEnqueueMemImageFill(pi_queue Queue,
+                      pi_mem Image,
+                      const void *FillColor,
+                      const size_t *Origin,
+                      const size_t *Region,
+                      pi_uint32 NumEventsInWaitList,
+                      const pi_event *EventWaitList,
+                      pi_event *Event) {
+
+  return pi2ur::piEnqueueMemImageFill(Queue,
+                                      Image,
+                                      FillColor,
+                                      Origin,
+                                      Region,
+                                      NumEventsInWaitList,
+                                      EventWaitList,
+                                      Event);
+}
+
+__SYCL_EXPORT pi_result
+piextPlatformGetNativeHandle(pi_platform Platform,
+                             pi_native_handle *NativeHandle) {
+
+  return pi2ur::piextPlatformGetNativeHandle(Platform,
+                                             NativeHandle);
+
+}
+
+__SYCL_EXPORT pi_result
+piextPlatformCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                    pi_platform *Platform) {
+
+  return pi2ur::piextPlatformCreateWithNativeHandle(NativeHandle,
+                                                    Platform);
+}
+
+__SYCL_EXPORT pi_result
+piextDeviceGetNativeHandle(pi_device Device,
+                           pi_native_handle *NativeHandle) {
+
+  return pi2ur::piextDeviceGetNativeHandle(Device,
+                                           NativeHandle);
+}
+
+__SYCL_EXPORT pi_result
+piextDeviceCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                  pi_platform Platform,
+                                  pi_device *Device) {
+
+  return pi2ur::piextDeviceCreateWithNativeHandle(NativeHandle,
+                                                  Platform,
+                                                  Device);
+}
+
+// FIXME: Dummy implementation to prevent link fail
+__SYCL_EXPORT pi_result
+piextContextSetExtendedDeleter(pi_context Context,
+                               pi_context_extended_deleter Function,
+                               void *UserData) {
+  return pi2ur::piextContextSetExtendedDeleter(Context,
+                                               Function,
+                                               UserData);
+}
+
+__SYCL_EXPORT pi_result
+piextContextGetNativeHandle(pi_context Context,
+                            pi_native_handle *NativeHandle) {
+
+  return pi2ur::piextContextGetNativeHandle(Context,
+                                            NativeHandle);
+}
+
+__SYCL_EXPORT pi_result
+piextContextCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                   pi_uint32 NumDevices,
+                                   const pi_device *Devices,
+                                   bool OwnNativeHandle,
+                                   pi_context *RetContext) {
+  return pi2ur::piextContextCreateWithNativeHandle(NativeHandle,
+                                                   NumDevices,
+                                                   Devices,
+                                                   OwnNativeHandle,
+                                                   RetContext);
+}
+
+__SYCL_EXPORT pi_result
+piextQueueGetNativeHandle(pi_queue Queue,
+                          pi_native_handle *NativeHandle) {
+  return pi2ur::piextQueueGetNativeHandle(Queue,
+                                          NativeHandle);
+}
+
+__SYCL_EXPORT pi_result
+piextQueueCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                 pi_context Context, pi_device Device,
+                                 bool OwnNativeHandle,
+                                 pi_queue *Queue) {
+  return pi2ur::piextQueueCreateWithNativeHandle(NativeHandle,
+                                                 Context,
+                                                 Device,
+                                                 OwnNativeHandle,
+                                                 Queue);
+}
+
+__SYCL_EXPORT pi_result
+piMemRelease(pi_mem Mem) {
+  return pi2ur::piMemRelease(Mem);
+}
+
+__SYCL_EXPORT pi_result
+piEnqueueNativeKernel(pi_queue Queue,
+                      void (*UserFunc)(void *),
+                      void *Args,
+                      size_t CbArgs,
+                      pi_uint32 NumMemObjects,
+                      const pi_mem *MemList,
+                      const void **ArgsMemLoc,
+                      pi_uint32 NumEventsInWaitList,
+                      const pi_event *EventWaitList,
+                      pi_event *Event) {
+  return pi2ur::piEnqueueNativeKernel(Queue,
+                                      UserFunc,
+                                      Args,
+                                      CbArgs,
+                                      NumMemObjects,
+                                      MemList,
+                                      ArgsMemLoc,
+                                      NumEventsInWaitList,
+                                      EventWaitList,
+                                      Event);
+}
+
+__SYCL_EXPORT pi_result
+piextGetDeviceFunctionPointer(pi_device Device,
+                              pi_program Program,
+                              const char *FunctionName,
+                              pi_uint64 *FunctionPointerRet) {
+
+  return pi2ur::piextGetDeviceFunctionPointer(Device,
+                                              Program,
+                                              FunctionName,
+                                              FunctionPointerRet);
+}
+
+/// Hint to migrate memory to the device
+///
+/// @param Queue is the queue to submit to
+/// @param Ptr points to the memory to migrate
+/// @param Size is the number of bytes to migrate
+/// @param Flags is a bitfield used to specify memory migration options
+/// @param NumEventsInWaitlist is the number of events to wait on
+/// @param EventsWaitlist is an array of events to wait on
+/// @param Event is the event that represents this operation
+__SYCL_EXPORT pi_result
+piextUSMEnqueuePrefetch(pi_queue Queue,
+                        const void *Ptr,
+                        size_t Size,
+                        pi_usm_migration_flags Flags,
+                        pi_uint32 NumEventsInWaitList,
+                        const pi_event *EventWaitList,
+                        pi_event *OutEvent) {
+
+  return pi2ur::piextUSMEnqueuePrefetch(Queue,
+                                        Ptr,
+                                        Size,
+                                        Flags,
+                                        NumEventsInWaitList,
+                                        EventWaitList,
+                                        OutEvent);
+}
+
+/// USM memadvise API to govern behavior of automatic migration mechanisms
+///
+/// @param Queue is the queue to submit to
+/// @param Ptr is the data to be advised
+/// @param Length is the size in bytes of the meory to advise
+/// @param Advice is device specific advice
+/// @param Event is the event that represents this operation
+///
+__SYCL_EXPORT pi_result
+piextUSMEnqueueMemAdvise(pi_queue Queue,
+                         const void *Ptr,
+                         size_t Length,
+                         pi_mem_advice Advice,
+                         pi_event *OutEvent) {
+  
+  return pi2ur::piextUSMEnqueueMemAdvise(Queue,
+                                         Ptr,
+                                         Length,
+                                         Advice,
+                                         OutEvent);
+}
+
+/// USM 2D Fill API
+///
+/// \param queue is the queue to submit to
+/// \param ptr is the ptr to fill
+/// \param pitch is the total width of the destination memory including padding
+/// \param pattern is a pointer with the bytes of the pattern to set
+/// \param pattern_size is the size in bytes of the pattern
+/// \param width is width in bytes of each row to fill
+/// \param height is height the columns to fill
+/// \param num_events_in_waitlist is the number of events to wait on
+/// \param events_waitlist is an array of events to wait on
+/// \param event is the event that represents this operation
+__SYCL_EXPORT pi_result piextUSMEnqueueFill2D(pi_queue Queue, void *Ptr,
+                                              size_t Pitch, size_t PatternSize,
+                                              const void *Pattern, size_t Width,
+                                              size_t Height,
+                                              pi_uint32 NumEventsWaitList,
+                                              const pi_event *EventsWaitList,
+                                              pi_event *Event) {
+
+  return pi2ur::piextUSMEnqueueFill2D(Queue,
+                                      Ptr,
+                                      Pitch,
+                                      PatternSize,
+                                      Pattern,
+                                      Width,
+                                      Height,
+                                      NumEventsWaitList,
+                                      EventsWaitList,
+                                      Event);                                                
+}
+
+/// USM 2D Memset API
+///
+/// \param queue is the queue to submit to
+/// \param ptr is the ptr to fill
+/// \param pitch is the total width of the destination memory including padding
+/// \param pattern is a pointer with the bytes of the pattern to set
+/// \param pattern_size is the size in bytes of the pattern
+/// \param width is width in bytes of each row to fill
+/// \param height is height the columns to fill
+/// \param num_events_in_waitlist is the number of events to wait on
+/// \param events_waitlist is an array of events to wait on
+/// \param event is the event that represents this operation
+__SYCL_EXPORT pi_result piextUSMEnqueueMemset2D(pi_queue Queue,
+                                                void *Ptr,
+                                                size_t Pitch,
+                                                int Value,
+                                                size_t Width,
+                                                size_t Height,
+                                                pi_uint32 NumEventsWaitList,
+                                                const pi_event *EventsWaitlist,
+                                                pi_event *Event) {
+  return pi2ur::piextUSMEnqueueMemset2D(Queue,
+                                        Ptr,
+                                        Pitch,
+                                        Value,
+                                        Width,
+                                        Height,
+                                        NumEventsWaitList,
+                                        EventsWaitlist,
+                                        Event);
+}
+
+/// API to query information about USM allocated pointers.
+/// Valid Queries:
+///   PI_MEM_ALLOC_TYPE returns host/device/shared pi_usm_type value
+///   PI_MEM_ALLOC_BASE_PTR returns the base ptr of an allocation if
+///                         the queried pointer fell inside an allocation.
+///                         Result must fit in void *
+///   PI_MEM_ALLOC_SIZE returns how big the queried pointer's
+///                     allocation is in bytes. Result is a size_t.
+///   PI_MEM_ALLOC_DEVICE returns the pi_device this was allocated against
+///
+/// @param Context is the pi_context
+/// @param Ptr is the pointer to query
+/// @param ParamName is the type of query to perform
+/// @param ParamValueSize is the size of the result in bytes
+/// @param ParamValue is the result
+/// @param ParamValueRet is how many bytes were written
+__SYCL_EXPORT pi_result
+piextUSMGetMemAllocInfo(pi_context Context,
+                        const void *Ptr,
+                        pi_mem_alloc_info ParamName,
+                        size_t ParamValueSize,
+                        void *ParamValue,
+                        size_t *ParamValueSizeRet) {
+  return pi2ur::piextUSMGetMemAllocInfo(Context,
+                                        Ptr,
+                                        ParamName,
+                                        ParamValueSize,
+                                        ParamValue,
+                                        ParamValueSizeRet);
+}
+
+__SYCL_EXPORT pi_result
+piextPluginGetOpaqueData(void *opaque_data_param,
+                         void **opaque_data_return) {
+  return pi2ur::piextPluginGetOpaqueData(opaque_data_param,
+                                         opaque_data_return);
+}
+
+__SYCL_EXPORT pi_result
+piextProgramGetNativeHandle(pi_program Program,
+                            pi_native_handle *NativeHandle) {
+
+  return pi2ur::piextProgramGetNativeHandle(Program,
+                                            NativeHandle);
+}
+
+__SYCL_EXPORT pi_result
+piextProgramCreateWithNativeHandle(pi_native_handle NativeHandle, // missing
+                                    pi_context Context,
+                                    bool ownNativeHandle,
+                                    pi_program *Program) {
+  return pi2ur::piextProgramCreateWithNativeHandle(NativeHandle,
+                                                   Context,
+                                                   ownNativeHandle,
+                                                   Program);
+}
+
+__SYCL_EXPORT pi_result
+piSamplerCreate(pi_context Context,
+                const pi_sampler_properties *SamplerProperties,
+                pi_sampler *RetSampler) {
+  return pi2ur::piSamplerCreate(Context,
+                                SamplerProperties,
+                                RetSampler);
+}
+
+__SYCL_EXPORT pi_result
+piSamplerGetInfo(pi_sampler Sampler,
+                 pi_sampler_info ParamName,
+                 size_t ParamValueSize,
+                 void *ParamValue,
+                 size_t *ParamValueSizeRet) {
+  return pi2ur::piSamplerGetInfo(Sampler,
+                                 ParamName,
+                                 ParamValueSize,
+                                 ParamValue,
+                                 ParamValueSizeRet);
+}
+
+__SYCL_EXPORT pi_result
+piSamplerRetain(pi_sampler Sampler) {
+  return pi2ur::piSamplerRetain(Sampler);
+}
+
+__SYCL_EXPORT pi_result
+piSamplerRelease(pi_sampler Sampler) {
+  return pi2ur::piSamplerRelease(Sampler);
+}
+
+__SYCL_EXPORT pi_result
+piMemImageGetInfo(pi_mem Image,
+                  pi_image_info ParamName,
+                  size_t ParamValueSize,
+                  void *ParamValue,
+                  size_t *ParamValueSizeRet) {
+  return pi2ur::piMemImageGetInfo(Image,
+                                  ParamName,
+                                  ParamValueSize,
+                                  ParamValue,
+                                  ParamValueSizeRet);
+}
+
+/// USM 2D Memcpy API
+///
+/// \param queue is the queue to submit to
+/// \param blocking is whether this operation should block the host
+/// \param dst_ptr is the location the data will be copied
+/// \param dst_pitch is the total width of the destination memory including
+/// padding
+/// \param src_ptr is the data to be copied
+/// \param dst_pitch is the total width of the source memory including padding
+/// \param width is width in bytes of each row to be copied
+/// \param height is height the columns to be copied
+/// \param num_events_in_waitlist is the number of events to wait on
+/// \param events_waitlist is an array of events to wait on
+/// \param event is the event that represents this operation
+__SYCL_EXPORT pi_result
+piextUSMEnqueueMemcpy2D(pi_queue Queue,
+                        pi_bool Blocking,
+                        void *DstPtr,
+                        size_t DstPitch,
+                        const void *SrcPtr,
+                        size_t SrcPitch,
+                        size_t Width,
+                        size_t Height,
+                        pi_uint32 NumEventsInWaitList,
+                        const pi_event *EventsWaitList,
+                        pi_event *Event) {
+
+  return pi2ur::piextUSMEnqueueMemcpy2D(Queue,
+                                        Blocking,
+                                        DstPtr,
+                                        DstPitch,
+                                        SrcPtr,
+                                        SrcPitch,
+                                        Width,
+                                        Height,
+                                        NumEventsInWaitList,
+                                        EventsWaitList,
+                                        Event);
+}
+
+/// API for writing data from host to a device global variable.
+///
+/// \param Queue is the queue
+/// \param Program is the program containing the device global variable
+/// \param Name is the unique identifier for the device global variable
+/// \param BlockingWrite is true if the write should block
+/// \param Count is the number of bytes to copy
+/// \param Offset is the byte offset into the device global variable to start
+/// copying
+/// \param Src is a pointer to where the data must be copied from
+/// \param NumEventsInWaitList is a number of events in the wait list
+/// \param EventWaitList is the wait list
+/// \param Event is the resulting event
+__SYCL_EXPORT pi_result
+piextEnqueueDeviceGlobalVariableWrite(pi_queue Queue,
+                                      pi_program Program,
+                                      const char *Name,
+                                      pi_bool BlockingWrite,
+                                      size_t Count,
+                                      size_t Offset,
+                                      const void *Src,
+                                      pi_uint32 NumEventsInWaitList,
+                                      const pi_event *EventsWaitList,
+                                      pi_event *Event) {
+  return pi2ur::piextEnqueueDeviceGlobalVariableWrite(Queue,
+                                                      Program,
+                                                      Name,
+                                                      BlockingWrite,
+                                                      Count,
+                                                      Offset,
+                                                      Src,
+                                                      NumEventsInWaitList,
+                                                      EventsWaitList,Event);
+}
+
+/// API reading data from a device global variable to host.
+///
+/// \param Queue is the queue
+/// \param Program is the program containing the device global variable
+/// \param Name is the unique identifier for the device global variable
+/// \param BlockingRead is true if the read should block
+/// \param Count is the number of bytes to copy
+/// \param Offset is the byte offset into the device global variable to start
+/// copying
+/// \param Dst is a pointer to where the data must be copied to
+/// \param NumEventsInWaitList is a number of events in the wait list
+/// \param EventWaitList is the wait list
+/// \param Event is the resulting event
+pi_result piextEnqueueDeviceGlobalVariableRead(pi_queue Queue,
+                                               pi_program Program,
+                                               const char *Name,
+                                               pi_bool BlockingRead,
+                                               size_t Count,
+                                               size_t Offset,
+                                               void *Dst,
+                                               pi_uint32 NumEventsInWaitList,
+                                               const pi_event *EventsWaitList,
+                                               pi_event *Event) {
+
+  return pi2ur::piextEnqueueDeviceGlobalVariableRead(Queue,
+                                                     Program,
+                                                     Name,
+                                                     BlockingRead,
+                                                     Count,
+                                                     Offset,
+                                                     Dst,
+                                                     NumEventsInWaitList,
+                                                     EventsWaitList,
+                                                     Event);
+}
+
 __SYCL_EXPORT pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
                                   uint64_t *HostTime) {
   return pi2ur::piGetDeviceAndHostTimer(Device, DeviceTime, HostTime);
@@ -757,17 +1452,32 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piDevicePartition)
   _PI_API(piextDeviceSelectBinary)
   _PI_API(piGetDeviceAndHostTimer)
+  _PI_API(piextPlatformGetNativeHandle)
+  _PI_API(piextPlatformCreateWithNativeHandle)
+  _PI_API(piextDeviceGetNativeHandle)
+  _PI_API(piextDeviceCreateWithNativeHandle)
 
   _PI_API(piContextCreate)
   _PI_API(piContextRelease)
+  _PI_API(piContextRetain)
+  _PI_API(piextContextSetExtendedDeleter)
+  _PI_API(piextContextGetNativeHandle)
+  _PI_API(piextContextCreateWithNativeHandle)
 
   _PI_API(piQueueCreate)
   _PI_API(piQueueRelease)
   _PI_API(piextQueueCreate)
   _PI_API(piQueueFinish)
+  _PI_API(piQueueGetInfo)
+  _PI_API(piQueueRetain)
+  _PI_API(piQueueFlush)
+  _PI_API(piextQueueGetNativeHandle)
+  _PI_API(piextQueueCreateWithNativeHandle)
 
   _PI_API(piProgramCreate)
   _PI_API(piProgramBuild)
+  _PI_API(piextProgramGetNativeHandle)
+  _PI_API(piextProgramCreateWithNativeHandle)
   _PI_API(piextProgramSetSpecializationConstant)
   _PI_API(piProgramLink)
   _PI_API(piKernelCreate)
@@ -781,15 +1491,38 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piKernelRetain)
   _PI_API(piKernelRelease)
   _PI_API(piProgramRelease)
+  _PI_API(piextKernelSetArgPointer)
+  _PI_API(piextKernelSetArgSampler)
+  _PI_API(piKernelGetSubGroupInfo)
+  _PI_API(piProgramCreateWithBinary)
+  _PI_API(piclProgramCreateWithSource)
+  _PI_API(piProgramGetInfo)
+  _PI_API(piProgramCompile)
+  _PI_API(piProgramGetBuildInfo)
+  _PI_API(piextGetDeviceFunctionPointer)
 
   _PI_API(piMemBufferCreate)
-  _PI_API(piextUSMHostAlloc)
   _PI_API(piMemGetInfo)
   _PI_API(piMemBufferPartition)
   _PI_API(piEnqueueMemImageCopy)
   _PI_API(piextMemGetNativeHandle)
   _PI_API(piextMemCreateWithNativeHandle)
+  _PI_API(piMemRetain)
+  _PI_API(piextUSMGetMemAllocInfo)
+  _PI_API(piextUSMEnqueuePrefetch)
+  _PI_API(piextUSMEnqueueFill2D)
+  _PI_API(piextUSMEnqueueMemset2D)
+  _PI_API(piextUSMEnqueueMemAdvise)
+  _PI_API(piMemRelease)
+  _PI_API(piMemImageGetInfo)
+  _PI_API(piextUSMEnqueueMemcpy2D)
+  _PI_API(piextEnqueueDeviceGlobalVariableWrite)
+  _PI_API(piextEnqueueDeviceGlobalVariableRead)
+
+  _PI_API(piextUSMHostAlloc)
   _PI_API(piextUSMDeviceAlloc)
+  _PI_API(piextUSMSharedAlloc)
+  _PI_API(piextUSMFree)
 
   _PI_API(piEnqueueKernelLaunch)
   _PI_API(piEnqueueMemImageWrite)
@@ -807,12 +1540,26 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piEnqueueMemBufferRead)
   _PI_API(piEnqueueEventsWaitWithBarrier)
   _PI_API(piEnqueueEventsWait)
+  _PI_API(piEnqueueNativeKernel)
+  _PI_API(piEnqueueMemImageFill)
 
+  _PI_API(piEventSetCallback)
+  _PI_API(piEventSetStatus)
+  _PI_API(piEventRetain)
+  _PI_API(piEventRelease)
+  _PI_API(piextEventCreateWithNativeHandle)
   _PI_API(piEventsWait)
   _PI_API(piEventGetInfo)
   _PI_API(piextEventGetNativeHandle)
   _PI_API(piEventGetProfilingInfo)
+  _PI_API(piEventCreate)
 
+  _PI_API(piSamplerCreate)
+  _PI_API(piSamplerGetInfo)
+  _PI_API(piSamplerRetain)
+  _PI_API(piSamplerRelease)
+
+  _PI_API(piextPluginGetOpaqueData)
   _PI_API(piTearDown)
 
   return PI_SUCCESS;

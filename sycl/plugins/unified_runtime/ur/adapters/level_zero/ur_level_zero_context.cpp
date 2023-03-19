@@ -56,11 +56,10 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextCreate(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextRetain(
-    ur_context_handle_t
-        hContext ///< [in] handle of the context to get a reference of.
+    ur_context_handle_t Context ///< [in] handle of the context to get a reference of.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  Context->RefCount.increment();
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextRelease(
@@ -79,39 +78,68 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextRelease(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextGetInfo(
-    ur_context_handle_t hContext,      ///< [in] handle of the context
+    ur_context_handle_t Context,      ///< [in] handle of the context
     ur_context_info_t ContextInfoType, ///< [in] type of the info to retrieve
-    size_t propSize,    ///< [in] the number of bytes of memory pointed to by
+    size_t PropSize,    ///< [in] the number of bytes of memory pointed to by
                         ///< pContextInfo.
-    void *pContextInfo, ///< [out][optional] array of bytes holding the info.
+    void *ContextInfo, ///< [out][optional] array of bytes holding the info.
                         ///< if propSize is not equal to or greater than the
                         ///< real number of bytes needed to return the info then
                         ///< the ::UR_RESULT_ERROR_INVALID_SIZE error is
                         ///< returned and pContextInfo is not used.
-    size_t *pPropSizeRet ///< [out][optional] pointer to the actual size in
+    size_t *PropSizeRet ///< [out][optional] pointer to the actual size in
                          ///< bytes of data queried by ContextInfoType.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::shared_lock<pi_shared_mutex> Lock(Context->Mutex);
+  UrReturnHelper ReturnValue(PropSize, ContextInfo, PropSizeRet);
+  switch ((uint32_t)ContextInfoType) { // cast to avoid warnings on EXT enum values
+  case UR_CONTEXT_INFO_DEVICES:
+    return ReturnValue(&Context->Devices[0], Context->Devices.size());
+  case UR_CONTEXT_INFO_NUM_DEVICES:
+    return ReturnValue(pi_uint32(Context->Devices.size()));
+  case UR_EXT_CONTEXT_INFO_REFERENCE_COUNT:
+    return ReturnValue(pi_uint32{Context->RefCount.load()});
+  case UR_CONTEXT_INFO_USM_MEMCPY2D_SUPPORT:
+    // 2D USM memcpy is supported.
+    return ReturnValue(pi_bool{true});
+  case UR_CONTEXT_INFO_USM_FILL2D_SUPPORT:
+  case UR_CONTEXT_INFO_USM_MEMSET2D_SUPPORT:
+    // 2D USM fill and memset is not supported.
+    return ReturnValue(pi_bool{false});
+  default:
+    // TODO: implement other parameters
+    die("urGetContextInfo: unsuppported ParamName.");
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextGetNativeHandle(
-    ur_context_handle_t hContext,       ///< [in] handle of the context.
-    ur_native_handle_t *phNativeContext ///< [out] a pointer to the native
+    ur_context_handle_t Context,       ///< [in] handle of the context.
+    ur_native_handle_t *NativeContext ///< [out] a pointer to the native
                                         ///< handle of the context.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  *NativeContext = reinterpret_cast<ur_native_handle_t>(Context->ZeContext);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextCreateWithNativeHandle(
-    ur_native_handle_t
-        hNativeContext,            ///< [in] the native handle of the context.
-    ur_context_handle_t *phContext ///< [out] pointer to the handle of the
+    ur_native_handle_t NativeContext,            ///< [in] the native handle of the context.
+    ur_context_handle_t *Context ///< [out] pointer to the handle of the
                                    ///< context object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  try {
+    ze_context_handle_t ZeContext = reinterpret_cast<ze_context_handle_t>(NativeContext);
+    _ur_context_handle_t * UrContext = new _ur_context_handle_t(ZeContext);
+    UrContext->initialize();
+    *Context = reinterpret_cast<ur_context_handle_t>(UrContext);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urContextSetExtendedDeleter(

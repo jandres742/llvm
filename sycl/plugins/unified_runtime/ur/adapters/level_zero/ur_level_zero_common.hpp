@@ -72,6 +72,11 @@ ur_result_t ze2urResult(ze_result_t ZeResult);
       return ze2urResult(Result);                                              \
   }
 
+// Perform traced call to L0 without checking for errors
+#define ZE_CALL_NOCHECK(ZeName, ZeArgs)                                        \
+  ZeCall().doCall(ZeName ZeArgs, #ZeName, #ZeArgs, false)
+
+
 // Record for a memory allocation. This structure is used to keep information
 // for each memory allocation.
 struct MemAllocRecord : _pi_object {

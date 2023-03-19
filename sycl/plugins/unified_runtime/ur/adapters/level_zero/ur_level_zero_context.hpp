@@ -33,6 +33,9 @@ struct _ur_context_handle_t : _pi_object {
                        bool OwnZeContext) :
     ZeContext{ZeContext}, Devices{Devs, Devs + NumDevices}, OwnZeContext{OwnZeContext} {}
 
+  _ur_context_handle_t(ze_context_handle_t ZeContext) :
+    ZeContext{ZeContext} {}
+
   // A L0 context handle is primarily used during creation and management of
   // resources that may be used by multiple devices.
   // This field is only set at _pi_context creation time, and cannot change.

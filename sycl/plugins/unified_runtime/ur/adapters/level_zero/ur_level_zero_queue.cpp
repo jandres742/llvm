@@ -146,16 +146,121 @@ ur_result_t resetCommandLists(ur_queue_handle_t Queue) {
 
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueGetInfo(
-    ur_queue_handle_t hQueue, ///< [in] handle of the queue object
-    ur_queue_info_t propName, ///< [in] name of the queue property to query
-    size_t propValueSize, ///< [in] size in bytes of the queue property value
+    ur_queue_handle_t Queue, ///< [in] handle of the queue object
+    ur_queue_info_t ParamName, ///< [in] name of the queue property to query
+    size_t ParamValueSize, ///< [in] size in bytes of the queue property value
                           ///< provided
-    void *pPropValue,     ///< [out] value of the queue property
+    void *ParamValue,     ///< [out] value of the queue property
     size_t
-        *pPropSizeRet ///< [out] size in bytes returned in queue property value
+        *ParamValueSizeRet ///< [out] size in bytes returned in queue property value
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  
+
+  std::shared_lock<pi_shared_mutex> Lock(Queue->Mutex);
+  UrReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
+  // TODO: consider support for queue properties and size
+  switch ((uint32_t)ParamName) { // cast to avoid warnings on EXT enum values
+  case UR_QUEUE_INFO_CONTEXT:
+    return ReturnValue(Queue->Context);
+  case UR_QUEUE_INFO_DEVICE:
+    return ReturnValue(Queue->Device);
+  case UR_QUEUE_INFO_REFERENCE_COUNT:
+    return ReturnValue(pi_uint32{Queue->RefCount.load()});
+  case UR_QUEUE_INFO_PROPERTIES:
+    die("UR_QUEUE_INFO_PROPERTIES in urQueueGetInfo not implemented\n");
+    break;
+  case UR_QUEUE_INFO_SIZE:
+    die("UR_QUEUE_INFO_SIZE in urQueueGetInfo not implemented\n");
+    break;
+  case UR_QUEUE_INFO_DEVICE_DEFAULT:
+    die("UR_QUEUE_INFO_DEVICE_DEFAULT in urQueueGetInfo not implemented\n");
+    break;
+  case UR_EXT_ONEAPI_QUEUE_INFO_EMPTY: {
+    // We can exit early if we have in-order queue.
+    if (Queue->isInOrderQueue()) {
+      if (!Queue->LastCommandEvent)
+        return ReturnValue(pi_bool{true});
+
+      // We can check status of the event only if it isn't discarded otherwise
+      // it may be reset (because we are free to reuse such events) and
+      // zeEventQueryStatus will hang.
+      // TODO: use more robust way to check that ZeEvent is not owned by
+      // LastCommandEvent.
+      if (!Queue->LastCommandEvent->IsDiscarded) {
+        ze_result_t ZeResult = ZE_CALL_NOCHECK(
+            zeEventQueryStatus, (Queue->LastCommandEvent->ZeEvent));
+        if (ZeResult == ZE_RESULT_NOT_READY) {
+          return ReturnValue(pi_bool{false});
+        } else if (ZeResult != ZE_RESULT_SUCCESS) {
+          return ze2urResult(ZeResult);
+        }
+        return ReturnValue(pi_bool{true});
+      }
+      // For immediate command lists we have to check status of the event
+      // because immediate command lists are not associated with level zero
+      // queue. Conservatively return false in this case because last event is
+      // discarded and we can't check its status.
+      if (Queue->Device->useImmediateCommandLists())
+        return ReturnValue(pi_bool{false});
+    }
+
+    // If we have any open command list which is not empty then return false
+    // because it means that there are commands which are not even submitted for
+    // execution yet.
+    using IsCopy = bool;
+    if (Queue->hasOpenCommandList(IsCopy{true}) ||
+        Queue->hasOpenCommandList(IsCopy{false}))
+      return ReturnValue(pi_bool{false});
+
+    for (const auto &QueueMap :
+         {Queue->ComputeQueueGroupsByTID, Queue->CopyQueueGroupsByTID}) {
+      for (const auto &QueueGroup : QueueMap) {
+        if (Queue->Device->useImmediateCommandLists()) {
+          // Immediate command lists are not associated with any Level Zero
+          // queue, that's why we have to check status of events in each
+          // immediate command list. Start checking from the end and exit early
+          // if some event is not completed.
+          for (const auto &ImmCmdList : QueueGroup.second.ImmCmdLists) {
+            if (ImmCmdList == Queue->CommandListMap.end())
+              continue;
+
+            auto EventList = ImmCmdList->second.EventList;
+            for (auto It = EventList.crbegin(); It != EventList.crend(); It++) {
+              ze_result_t ZeResult =
+                  ZE_CALL_NOCHECK(zeEventQueryStatus, ((*It)->ZeEvent));
+              if (ZeResult == ZE_RESULT_NOT_READY) {
+                return ReturnValue(pi_bool{false});
+              } else if (ZeResult != ZE_RESULT_SUCCESS) {
+                return ze2urResult(ZeResult);
+              }
+            }
+          }
+        } else {
+          for (const auto &ZeQueue : QueueGroup.second.ZeQueues) {
+            if (!ZeQueue)
+              continue;
+            // Provide 0 as the timeout parameter to immediately get the status
+            // of the Level Zero queue.
+            ze_result_t ZeResult = ZE_CALL_NOCHECK(zeCommandQueueSynchronize,
+                                                   (ZeQueue, /* timeout */ 0));
+            if (ZeResult == ZE_RESULT_NOT_READY) {
+              return ReturnValue(pi_bool{false});
+            } else if (ZeResult != ZE_RESULT_SUCCESS) {
+              return ze2urResult(ZeResult);
+            }
+          }
+        }
+      }
+    }
+    return ReturnValue(pi_bool{true});
+  }
+  default:
+    zePrint("Unsupported ParamName in urQueueGetInfo: ParamName=%d(0x%x)\n",
+            ParamName, ParamName);
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 // Controls if we should choose doing eager initialization
@@ -278,10 +383,14 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueRetain(
-    ur_queue_handle_t hQueue ///< [in] handle of the queue object to get access
+    ur_queue_handle_t Queue ///< [in] handle of the queue object to get access
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  {
+    std::scoped_lock<pi_shared_mutex> Lock(Queue->Mutex);
+    Queue->RefCountExternal++;
+  }
+  Queue->RefCount.increment();
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueRelease(
@@ -350,22 +459,70 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueRelease(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueGetNativeHandle(
-    ur_queue_handle_t hQueue, ///< [in] handle of the queue.
-    ur_native_handle_t
-        *phNativeQueue ///< [out] a pointer to the native handle of the queue.
+    ur_queue_handle_t Queue, ///< [in] handle of the queue.
+    ur_native_handle_t *NativeQueue ///< [out] a pointer to the native handle of the queue.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // Lock automatically releases when this goes out of scope.
+  std::shared_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  auto ZeQueue = ur_cast<ze_command_queue_handle_t *>(NativeQueue);
+
+  // Extract a Level Zero compute queue handle from the given PI queue
+  uint32_t QueueGroupOrdinalUnused;
+  auto TID = std::this_thread::get_id();
+  auto &InitialGroup = Queue->ComputeQueueGroupsByTID.begin()->second;
+  const auto &Result =
+      Queue->ComputeQueueGroupsByTID.insert({TID, InitialGroup});
+  auto &ComputeQueueGroupRef = Result.first->second;
+
+  *ZeQueue = ComputeQueueGroupRef.getZeQueue(&QueueGroupOrdinalUnused);
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueCreateWithNativeHandle(
-    ur_native_handle_t hNativeQueue, ///< [in] the native handle of the queue.
-    ur_context_handle_t hContext,    ///< [in] handle of the context object
-    ur_queue_handle_t
-        *phQueue ///< [out] pointer to the handle of the queue object created.
+    ur_native_handle_t NativeQueue, ///< [in] the native handle of the queue.
+    ur_context_handle_t Context,    ///< [in] handle of the context object
+    ur_queue_handle_t *RetQueue ///< [out] pointer to the handle of the queue object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  auto ZeQueue = ur_cast<ze_command_queue_handle_t>(NativeQueue);
+  // Assume this is the "0" index queue in the compute command-group.
+  std::vector<ze_command_queue_handle_t> ZeQueues{ZeQueue};
+
+  // TODO: see what we can do to correctly initialize PI queue for
+  // compute vs. copy Level-Zero queue. Currently we will send
+  // all commands to the "ZeQueue".
+  std::vector<ze_command_queue_handle_t> ZeroCopyQueues;
+
+  // Get the device handle from first device in the platform
+  // Maybe this is not completely correct.
+  uint32_t NumEntries = 1;
+  ur_platform_handle_t Platform {};
+  UR_CALL(urPlatformGet(NumEntries,
+                        &Platform,
+                        nullptr));
+
+  ur_device_handle_t Device;
+  UR_CALL(urDeviceGet(Platform,
+                      UR_DEVICE_TYPE_GPU,
+                      NumEntries,
+                      &Device,
+                      nullptr));
+
+  try {
+    _ur_queue_handle_t *Queue = new _ur_queue_handle_t(ZeQueues,
+                                                      ZeroCopyQueues,
+                                                      Context,
+                                                      Device,
+                                                      false);
+    *RetQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  } catch (const std::bad_alloc &) {
+      return UR_RESULT_ERROR_OUT_OF_RESOURCES;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueFinish(
@@ -435,10 +592,12 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueFinish(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urQueueFlush(
-    ur_queue_handle_t hQueue ///< [in] handle of the queue to be flushed.
+    ur_queue_handle_t Queue ///< [in] handle of the queue to be flushed.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // Flushing cross-queue dependencies is covered by createAndRetainPiZeEventList,
+  // so this can be left as a no-op.
+  (void)Queue;
+  return UR_RESULT_SUCCESS;
 }
 
 // Configuration of the command-list batching.
@@ -1150,26 +1309,35 @@ ur_event_handle_t _ur_queue_handle_t::getEventFromQueueCache(bool HostVisible) {
   return RetEvent;
 }
 
-
-ur_result_t createEventAndAssociateQueue(
-    ur_queue_handle_t Queue, ur_event_handle_t *Event, pi_command_type CommandType,
-    pi_command_list_ptr_t CommandList, bool IsInternal,
-    bool ForceHostVisible) {
+ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
+                                         ur_event_handle_t *Event,
+                                         pi_command_type CommandType,
+                                         pi_command_list_ptr_t CommandList,
+                                         bool IsInternal,
+                                         bool ForceHostVisible) {
 
   if (!ForceHostVisible)
     ForceHostVisible = DeviceEventsSetting == AllHostVisible;
+
+  printf("%s %d Event %lx\n", __FILE__, __LINE__, (unsigned long int)Event);
+  printf("%s %d Queue %lx\n", __FILE__, __LINE__, (unsigned long int)Queue);
 
   // If event is discarded then try to get event from the queue cache.
   *Event =
       IsInternal ? Queue->getEventFromQueueCache(ForceHostVisible) : nullptr;
 
+  printf("%s %d IsInternal %d *Event %lx\n", __FILE__, __LINE__, IsInternal, (unsigned long int)*Event);
+
   if (*Event == nullptr)
     UR_CALL(EventCreate(Queue->Context, Queue, ForceHostVisible, Event));
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   (*Event)->UrQueue = Queue;
   (*Event)->CommandType = CommandType;
   (*Event)->IsDiscarded = IsInternal;
   (*Event)->CommandList = CommandList;
+  printf("%s %d\n", __FILE__, __LINE__);
   // Discarded event doesn't own ze_event, it is used by multiple pi_event
   // objects. We destroy corresponding ze_event by releasing events from the
   // events cache at queue destruction. Event in the cache owns the Level Zero
@@ -1177,11 +1345,15 @@ ur_result_t createEventAndAssociateQueue(
   if (IsInternal)
     (*Event)->OwnZeEvent = false;
 
+  printf("%s %d\n", __FILE__, __LINE__);
+
   // Append this Event to the CommandList, if any
   if (CommandList != Queue->CommandListMap.end()) {
     CommandList->second.append(*Event);
     (*Event)->RefCount.increment();
   }
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   // We need to increment the reference counter here to avoid pi_queue
   // being released before the associated pi_event is released because
@@ -1189,6 +1361,8 @@ ur_result_t createEventAndAssociateQueue(
   // In piEventRelease, the reference counter of the Queue is decremented
   // to release it.
   Queue->RefCount.increment();
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   // SYCL RT does not track completion of the events, so it could
   // release a PI event as soon as that's not being waited in the app.
@@ -1202,6 +1376,8 @@ ur_result_t createEventAndAssociateQueue(
   if (!IsInternal)
     UR_CALL(piEventRetain(*Event));
 #endif
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   return UR_RESULT_SUCCESS;
 }

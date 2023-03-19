@@ -54,6 +54,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   if (UrKernel) {
     printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
   }
+  printf("%s %d phEvent %lx\n", __FILE__, __LINE__, (unsigned long int)phEvent);
   
 
   // Lock automatically releases when this goes out of scope.
@@ -104,9 +105,9 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
 #endif
 
   if (pLocalWorkSize) {
-    WG[0] = ur_cast<uint32_t>(pLocalWorkSize[0]);
-    WG[1] = ur_cast<uint32_t>(pLocalWorkSize[1]);
-    WG[2] = ur_cast<uint32_t>(pLocalWorkSize[2]);
+    WG[0] = static_cast<uint32_t>(pLocalWorkSize[0]);
+    WG[1] = static_cast<uint32_t>(pLocalWorkSize[1]);
+    WG[2] = static_cast<uint32_t>(pLocalWorkSize[2]);
   } else {
     // We can't call to zeKernelSuggestGroupSize if 64-bit GlobalWorkSize
     // values do not fit to 32-bit that the API only supports currently.
@@ -225,17 +226,31 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
                                                            true /* AllowBatching */));
 
   ze_event_handle_t ZeEvent = nullptr;
-  ur_event_handle_t InternalEvent;
+#if 0
+  ur_event_handle_t InternalEvent {};
   bool IsInternal = phEvent == nullptr;
   ur_event_handle_t *hEvent = phEvent ? phEvent : &InternalEvent;
+#else
+  ur_event_handle_t InternalEvent {};
+  bool IsInternal = phEvent == nullptr;
+  ur_event_handle_t *hEvent = phEvent ? phEvent : &InternalEvent;
+#endif
+
+  printf("%s %d IsInternal %d phEvent %lx hEvent %lx\n",
+    __FILE__, __LINE__,
+    IsInternal,
+    (unsigned long int)phEvent,
+    (unsigned long int)hEvent);
+
   UR_CALL(createEventAndAssociateQueue(hQueue,
                                        hEvent,
                                        PI_COMMAND_TYPE_NDRANGE_KERNEL,
                                        CommandList,
                                        IsInternal));
   
-printf("%s %d\n", __FILE__, __LINE__);
-  _ur_event_handle_t **pUrEvent = reinterpret_cast<_ur_event_handle_t **>(hEvent);
+  printf("%s %d\n", __FILE__, __LINE__);
+  _ur_event_handle_t **pUrEvent = reinterpret_cast<_ur_event_handle_t **>(phEvent);
+  
   ZeEvent = (*pUrEvent)->ZeEvent;
   (*pUrEvent)->WaitList = TmpWaitList;
 
@@ -308,55 +323,116 @@ printf("%s %d\n", __FILE__, __LINE__);
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueDeviceGlobalVariableWrite(
-    ur_queue_handle_t hQueue,     ///< [in] handle of the queue to submit to.
-    ur_program_handle_t hProgram, ///< [in] handle of the program containing the
+    ur_queue_handle_t Queue,     ///< [in] handle of the queue to submit to.
+    ur_program_handle_t Program, ///< [in] handle of the program containing the
                                   ///< device global variable.
     const char
-        *name, ///< [in] the unique identifier for the device global variable.
-    bool blockingWrite, ///< [in] indicates if this operation should block.
-    size_t count,       ///< [in] the number of bytes to copy.
-    size_t offset, ///< [in] the byte offset into the device global variable to
+        *Name, ///< [in] the unique identifier for the device global variable.
+    bool BlockingWrite, ///< [in] indicates if this operation should block.
+    size_t Count,       ///< [in] the number of bytes to copy.
+    size_t Offset, ///< [in] the byte offset into the device global variable to
                    ///< start copying.
-    const void *pSrc, ///< [in] pointer to where the data must be copied from.
-    uint32_t numEventsInWaitList, ///< [in] size of the event wait list.
+    const void *Src, ///< [in] pointer to where the data must be copied from.
+    uint32_t NumEventsInWaitList, ///< [in] size of the event wait list.
     const ur_event_handle_t
-        *phEventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
+        *EventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
                           ///< pointer to a list of events that must be complete
                           ///< before the kernel execution. If nullptr, the
                           ///< numEventsInWaitList must be 0, indicating that no
                           ///< wait event.
     ur_event_handle_t
-        *phEvent ///< [in,out][optional] return an event object that identifies
+        *Event ///< [in,out][optional] return an event object that identifies
                  ///< this particular kernel execution instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  // Find global variable pointer
+  size_t GlobalVarSize = 0;
+  void *GlobalVarPtr = nullptr;
+  ZE2UR_CALL(zeModuleGetGlobalPointer, (Program->ZeModule,
+                                        Name,
+                                        &GlobalVarSize,
+                                        &GlobalVarPtr));
+  if (GlobalVarSize < Offset + Count) {
+    setErrorMessage("Write device global variable is out of range.",
+                    UR_RESULT_ERROR_INVALID_VALUE);
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  // Copy engine is preferred only for host to device transfer.
+  // Device to device transfers run faster on compute engines.
+  bool PreferCopyEngine = !IsDevicePointer(Queue->Context, Src);
+
+  // Temporary option added to use copy engine for D2D copy
+  PreferCopyEngine |= UseCopyEngineForD2DCopy;
+
+  return enqueueMemCopyHelper(PI_COMMAND_TYPE_DEVICE_GLOBAL_VARIABLE_WRITE,
+                              Queue,
+                              ur_cast<char *>(GlobalVarPtr) + Offset,
+                              BlockingWrite,
+                              Count,
+                              Src,
+                              NumEventsInWaitList,
+                              EventWaitList,
+                              Event,
+                              PreferCopyEngine);
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueDeviceGlobalVariableRead(
-    ur_queue_handle_t hQueue,     ///< [in] handle of the queue to submit to.
-    ur_program_handle_t hProgram, ///< [in] handle of the program containing the
+    ur_queue_handle_t Queue,     ///< [in] handle of the queue to submit to.
+    ur_program_handle_t Program, ///< [in] handle of the program containing the
                                   ///< device global variable.
     const char
-        *name, ///< [in] the unique identifier for the device global variable.
-    bool blockingRead, ///< [in] indicates if this operation should block.
-    size_t count,      ///< [in] the number of bytes to copy.
-    size_t offset, ///< [in] the byte offset into the device global variable to
+        *Name, ///< [in] the unique identifier for the device global variable.
+    bool BlockingRead, ///< [in] indicates if this operation should block.
+    size_t Count,      ///< [in] the number of bytes to copy.
+    size_t Offset, ///< [in] the byte offset into the device global variable to
                    ///< start copying.
-    void *pDst,    ///< [in] pointer to where the data must be copied to.
-    uint32_t numEventsInWaitList, ///< [in] size of the event wait list.
+    void *Dst,    ///< [in] pointer to where the data must be copied to.
+    uint32_t NumEventsInWaitList, ///< [in] size of the event wait list.
     const ur_event_handle_t
-        *phEventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
+        *EventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
                           ///< pointer to a list of events that must be complete
                           ///< before the kernel execution. If nullptr, the
                           ///< numEventsInWaitList must be 0, indicating that no
                           ///< wait event.
     ur_event_handle_t
-        *phEvent ///< [in,out][optional] return an event object that identifies
+        *Event ///< [in,out][optional] return an event object that identifies
                  ///< this particular kernel execution instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  
+  std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  // Find global variable pointer
+  size_t GlobalVarSize = 0;
+  void *GlobalVarPtr = nullptr;
+  ZE2UR_CALL(zeModuleGetGlobalPointer, (Program->ZeModule,
+                                        Name,
+                                        &GlobalVarSize,
+                                        &GlobalVarPtr));
+  if (GlobalVarSize < Offset + Count) {
+    setErrorMessage("Read from device global variable is out of range.",
+                    UR_RESULT_ERROR_INVALID_VALUE);
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  // Copy engine is preferred only for host to device transfer.
+  // Device to device transfers run faster on compute engines.
+  bool PreferCopyEngine = !IsDevicePointer(Queue->Context, Dst);
+
+  // Temporary option added to use copy engine for D2D copy
+  PreferCopyEngine |= UseCopyEngineForD2DCopy;
+
+  return enqueueMemCopyHelper(PI_COMMAND_TYPE_DEVICE_GLOBAL_VARIABLE_READ,
+                              Queue,
+                              Dst,
+                              BlockingRead,
+                              Count,
+                              ur_cast<char *>(GlobalVarPtr) + Offset,
+                              NumEventsInWaitList,
+                              EventWaitList,
+                              Event,
+                              PreferCopyEngine);
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelCreate(
@@ -552,18 +628,34 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelGetGroupInfo(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetSubGroupInfo(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the Kernel object
-    ur_device_handle_t hDevice, ///< [in] handle of the Device object
+    ur_kernel_handle_t Kernel, ///< [in] handle of the Kernel object
+    ur_device_handle_t Device, ///< [in] handle of the Device object
     ur_kernel_sub_group_info_t
-        propName,     ///< [in] name of the SubGroup property to query
-    size_t propSize,  ///< [in] size of the Kernel SubGroup property value
-    void *pPropValue, ///< [in,out][range(0, propSize)][optional] value of the
+        PropName,     ///< [in] name of the SubGroup property to query
+    size_t PropSize,  ///< [in] size of the Kernel SubGroup property value
+    void *PropValue, ///< [in,out][range(0, propSize)][optional] value of the
                       ///< Kernel SubGroup property.
-    size_t *pPropSizeRet ///< [out][optional] pointer to the actual size in
+    size_t *PropSizeRet ///< [out][optional] pointer to the actual size in
                          ///< bytes of data being queried by propName.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  (void)Device;
+
+  UrReturnHelper ReturnValue(PropSize, PropValue, PropSizeRet);
+
+  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+  if (PropName == UR_KERNEL_SUB_GROUP_INFO_MAX_SUB_GROUP_SIZE) {
+    ReturnValue(uint32_t{Kernel->ZeKernelProperties->maxSubgroupSize});
+  } else if (PropName == UR_KERNEL_SUB_GROUP_INFO_MAX_NUM_SUB_GROUPS) {
+    ReturnValue(uint32_t{Kernel->ZeKernelProperties->maxNumSubgroups});
+  } else if (PropName == UR_KERNEL_SUB_GROUP_INFO_COMPILE_NUM_SUB_GROUPS) {
+    ReturnValue(uint32_t{Kernel->ZeKernelProperties->requiredNumSubGroups});
+  } else if (PropName == UR_KERNEL_SUB_GROUP_INFO_SUB_GROUP_SIZE_INTEL) {
+    ReturnValue(uint32_t{Kernel->ZeKernelProperties->requiredSubgroupSize});
+  } else {
+    die("urKernelGetSubGroupInfo: parameter not implemented");
+    return {};
+  }
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelRetain(
@@ -594,15 +686,15 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelRelease(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgPointer(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the kernel object
-    uint32_t argIndex,    ///< [in] argument index in range [0, num args - 1]
-    size_t argSize,       ///< [in] size of argument type
-    const void *pArgValue ///< [in][optional] SVM pointer to memory location
+    ur_kernel_handle_t Kernel, ///< [in] handle of the kernel object
+    uint32_t ArgIndex,    ///< [in] argument index in range [0, num args - 1]
+    size_t ArgSize,       ///< [in] size of argument type
+    const void *ArgValue ///< [in][optional] SVM pointer to memory location
                           ///< holding the argument value. If null then argument
                           ///< value is considered null.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  UR_CALL(urKernelSetArgValue(Kernel, ArgIndex, ArgSize, ArgValue));
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetExecInfo(
@@ -633,12 +725,17 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetExecInfo(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgSampler(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the kernel object
-    uint32_t argIndex, ///< [in] argument index in range [0, num args - 1]
-    ur_sampler_handle_t hArgValue ///< [in] handle of Sampler object.
+    ur_kernel_handle_t Kernel, ///< [in] handle of the kernel object
+    uint32_t ArgIndex, ///< [in] argument index in range [0, num args - 1]
+    ur_sampler_handle_t ArgValue ///< [in] handle of Sampler object.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::scoped_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+  ZE2UR_CALL(zeKernelSetArgumentValue, (ur_cast<ze_kernel_handle_t>(Kernel->ZeKernel),
+                                        ur_cast<uint32_t>(ArgIndex),
+                                        sizeof(void *),
+                                        &ArgValue->ZeSampler));
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgMemObj(
@@ -662,12 +759,13 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgMemObj(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetNativeHandle(
-    ur_kernel_handle_t hKernel, ///< [in] handle of the kernel.
-    ur_native_handle_t
-        *phNativeKernel ///< [out] a pointer to the native handle of the kernel.
+    ur_kernel_handle_t Kernel, ///< [in] handle of the kernel.
+    ur_native_handle_t *NativeKernel ///< [out] a pointer to the native handle of the kernel.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
+
+  *NativeKernel = reinterpret_cast<ur_native_handle_t>(Kernel->ZeKernel);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urKernelCreateWithNativeHandle(
@@ -807,13 +905,11 @@ UR_APIEXPORT ur_result_t UR_APICALL urModuleCreateWithNativeHandle(
 
 ur_result_t _ur_kernel_handle_t::initialize() {
   // Retain the program and context to show it's used by this kernel.
-#if 0
-  PI_CALL(piProgramRetain(Program));
+  UR_CALL(urProgramRetain(Program));
 
   if (IndirectAccessTrackingEnabled)
     // TODO: do piContextRetain without the guard
-    UR_CALL(piContextRetain(Program->Context));
-#endif
+    UR_CALL(urContextRetain(Program->Context));
 
   // Set up how to obtain kernel properties when needed.
   ZeKernelProperties.Compute = [this](ze_kernel_properties_t &Properties) {

@@ -22,16 +22,8 @@ static bool PreferCopyEngine = [] {
   return Env ? std::stoi(Env) != 0 : false;
 }();
 
-// This is an experimental option to test performance of device to device copy
-// operations on copy engines (versus compute engine)
-static const bool UseCopyEngineForD2DCopy = [] {
-  const char *CopyEngineForD2DCopy =
-      std::getenv("SYCL_PI_LEVEL_ZERO_USE_COPY_ENGINE_FOR_D2D_COPY");
-  return (CopyEngineForD2DCopy && (std::stoi(CopyEngineForD2DCopy) != 0));
-}();
-
 // Helper function to check if a pointer is a device pointer.
-static bool IsDevicePointer(ur_context_handle_t Context, const void *Ptr) {
+bool IsDevicePointer(ur_context_handle_t Context, const void *Ptr) {
   ze_device_handle_t ZeDeviceHandle;
   ZeStruct<ze_memory_allocation_properties_t> ZeMemoryAllocationProperties;
 
@@ -48,7 +40,7 @@ static bool IsDevicePointer(ur_context_handle_t Context, const void *Ptr) {
 // Shared by all memory read/write/copy PI interfaces.
 // PI interfaces must have queue's and destination buffer's mutexes locked for
 // exclusive use and source buffer's mutex locked for shared use on entry.
-static ur_result_t
+ur_result_t
 enqueueMemCopyHelper(pi_command_type CommandType,
                      ur_queue_handle_t Queue,
                      void *Dst,
@@ -1489,37 +1481,143 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMMemcpy(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMPrefetch(
-    ur_queue_handle_t hQueue,       ///< [in] handle of the queue object
-    const void *pMem,               ///< [in] pointer to the USM memory object
-    size_t size,                    ///< [in] size in bytes to be fetched
-    ur_usm_migration_flags_t flags, ///< [in] USM prefetch flags
-    uint32_t numEventsInWaitList,   ///< [in] size of the event wait list
-    const ur_event_handle_t
-        *phEventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
+    ur_queue_handle_t Queue,       ///< [in] handle of the queue object
+    const void *Mem,               ///< [in] pointer to the USM memory object
+    size_t Size,                    ///< [in] size in bytes to be fetched
+    ur_usm_migration_flags_t Flags, ///< [in] USM prefetch flags
+    uint32_t NumEventsInWaitList,   ///< [in] size of the event wait list
+    const ur_event_handle_t *EventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
                           ///< pointer to a list of events that must be complete
                           ///< before this command can be executed. If nullptr,
                           ///< the numEventsInWaitList must be 0, indicating
                           ///< that this command does not wait on any event to
                           ///< complete.
-    ur_event_handle_t
-        *phEvent ///< [in,out][optional] return an event object that identifies
+    ur_event_handle_t *OutEvent ///< [in,out][optional] return an event object that identifies
                  ///< this particular command instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // Lock automatically releases when this goes out of scope.
+  std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  bool UseCopyEngine = false;
+
+  // Please note that the following code should be run before the
+  // subsequent getAvailableCommandList() call so that there is no
+  // dead-lock from waiting unsubmitted events in an open batch.
+  // The createAndRetainPiZeEventList() has the proper side-effect
+  // of submitting batches with dependent events.
+  //
+  _pi_ze_event_list_t TmpWaitList;
+  UR_CALL(TmpWaitList.createAndRetainPiZeEventList(NumEventsInWaitList,
+                                                   EventWaitList,
+                                                   Queue,
+                                                   UseCopyEngine));
+
+  // Get a new command list to be used on this call
+  pi_command_list_ptr_t CommandList{};
+  // TODO: Change UseCopyEngine argument to 'true' once L0 backend
+  // support is added
+  UR_CALL(Queue->Context->getAvailableCommandList(Queue,
+                                                  CommandList,
+                                                  UseCopyEngine));
+
+  // TODO: do we need to create a unique command type for this?
+  ze_event_handle_t ZeEvent = nullptr;
+  ur_event_handle_t InternalEvent;
+  bool IsInternal = OutEvent == nullptr;
+  ur_event_handle_t *Event = OutEvent ? OutEvent : &InternalEvent;
+  UR_CALL(createEventAndAssociateQueue(Queue,
+                                       Event,
+                                       PI_COMMAND_TYPE_USER,
+                                       CommandList,
+                                       IsInternal));
+  ZeEvent = (*Event)->ZeEvent;
+  (*Event)->WaitList = TmpWaitList;
+
+  const auto &WaitList = (*Event)->WaitList;
+  const auto &ZeCommandList = CommandList->first;
+  if (WaitList.Length) {
+    ZE2UR_CALL(zeCommandListAppendWaitOnEvents, (ZeCommandList,
+                                                 WaitList.Length,
+                                                 WaitList.ZeEventList));
+  }
+  // TODO: figure out how to translate "flags"
+  ZE2UR_CALL(zeCommandListAppendMemoryPrefetch, (ZeCommandList, Mem, Size));
+
+  // TODO: Level Zero does not have a completion "event" with the prefetch API,
+  // so manually add command to signal our event.
+  ZE2UR_CALL(zeCommandListAppendSignalEvent, (ZeCommandList, ZeEvent));
+
+  UR_CALL(Queue->executeCommandList(CommandList, false));
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMMemAdvise(
-    ur_queue_handle_t hQueue, ///< [in] handle of the queue object
-    const void *pMem,         ///< [in] pointer to the USM memory object
-    size_t size,              ///< [in] size in bytes to be advised
-    ur_mem_advice_t advice,   ///< [in] USM memory advice
-    ur_event_handle_t
-        *phEvent ///< [in,out][optional] return an event object that identifies
+    ur_queue_handle_t Queue, ///< [in] handle of the queue object
+    const void *Mem,         ///< [in] pointer to the USM memory object
+    size_t Size,              ///< [in] size in bytes to be advised
+    ur_mem_advice_t Advice,   ///< [in] USM memory advice
+    ur_event_handle_t *OutEvent ///< [in,out][optional] return an event object that identifies
                  ///< this particular command instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // Lock automatically releases when this goes out of scope.
+  std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  auto ZeAdvice = ur_cast<ze_memory_advice_t>(Advice);
+
+  bool UseCopyEngine = false;
+
+  _pi_ze_event_list_t TmpWaitList;
+  UR_CALL(TmpWaitList.createAndRetainPiZeEventList(0,
+                                                   nullptr,
+                                                   Queue,
+                                                   UseCopyEngine));
+
+  // Get a new command list to be used on this call
+  pi_command_list_ptr_t CommandList{};
+  // UseCopyEngine is set to 'false' here.
+  // TODO: Additional analysis is required to check if this operation will
+  // run faster on copy engines.
+  UR_CALL(Queue->Context->getAvailableCommandList(Queue,
+                                                  CommandList,
+                                                  UseCopyEngine));
+
+  // TODO: do we need to create a unique command type for this?
+  ze_event_handle_t ZeEvent = nullptr;
+  ur_event_handle_t InternalEvent {};
+  bool IsInternal = OutEvent == nullptr;
+  ur_event_handle_t *Event = OutEvent ? OutEvent : &InternalEvent;
+  UR_CALL(createEventAndAssociateQueue(Queue,
+                                       Event,
+                                       PI_COMMAND_TYPE_USER,
+                                       CommandList,
+                                       IsInternal));
+  ZeEvent = (*Event)->ZeEvent;
+  (*Event)->WaitList = TmpWaitList;
+
+  const auto &ZeCommandList = CommandList->first;
+  const auto &WaitList = (*Event)->WaitList;
+
+  if (WaitList.Length) {
+    ZE2UR_CALL(zeCommandListAppendWaitOnEvents, (ZeCommandList,
+                                                 WaitList.Length,
+                                                 WaitList.ZeEventList));
+  }
+
+  ZE2UR_CALL(zeCommandListAppendMemAdvise, (ZeCommandList,
+                                            Queue->Device->ZeDevice,
+                                            Mem,
+                                            Size,
+                                            ZeAdvice));
+
+  // TODO: Level Zero does not have a completion "event" with the advise API,
+  // so manually add command to signal our event.
+  ZE2UR_CALL(zeCommandListAppendSignalEvent, (ZeCommandList,
+                                              ZeEvent));
+
+  Queue->executeCommandList(CommandList, false);
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMFill2D(
@@ -1571,29 +1669,58 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMMemset2D(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMMemcpy2D(
-    ur_queue_handle_t hQueue, ///< [in] handle of the queue to submit to.
-    bool blocking, ///< [in] indicates if this operation should block the host.
-    void *pDst,    ///< [in] pointer to memory where data will be copied.
-    size_t dstPitch,  ///< [in] the total width of the source memory including
+    ur_queue_handle_t Queue, ///< [in] handle of the queue to submit to.
+    bool Blocking, ///< [in] indicates if this operation should block the host.
+    void *Dst,    ///< [in] pointer to memory where data will be copied.
+    size_t DstPitch,  ///< [in] the total width of the source memory including
                       ///< padding.
-    const void *pSrc, ///< [in] pointer to memory to be copied.
-    size_t srcPitch,  ///< [in] the total width of the source memory including
+    const void *Src, ///< [in] pointer to memory to be copied.
+    size_t SrcPitch,  ///< [in] the total width of the source memory including
                       ///< padding.
-    size_t width,     ///< [in] the width in bytes of each row to be copied.
-    size_t height,    ///< [in] the height of columns to be copied.
-    uint32_t numEventsInWaitList, ///< [in] size of the event wait list
+    size_t Width,     ///< [in] the width in bytes of each row to be copied.
+    size_t Height,    ///< [in] the height of columns to be copied.
+    uint32_t NumEventsInWaitList, ///< [in] size of the event wait list
     const ur_event_handle_t
-        *phEventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
+        *EventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
                           ///< pointer to a list of events that must be complete
                           ///< before the kernel execution. If nullptr, the
                           ///< numEventsInWaitList must be 0, indicating that no
                           ///< wait event.
     ur_event_handle_t
-        *phEvent ///< [in,out][optional] return an event object that identifies
+        *Event ///< [in,out][optional] return an event object that identifies
                  ///< this particular kernel execution instance.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+
+  ur_rect_offset_t ZeroOffset{0, 0, 0};
+  ur_rect_region_t Region{Width, Height, 0};
+
+  std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
+
+  // Device to Device copies are found to execute slower on copy engine
+  // (versus compute engine).
+  bool PreferCopyEngine = !IsDevicePointer(Queue->Context, Src) ||
+                          !IsDevicePointer(Queue->Context, Dst);
+
+  // Temporary option added to use copy engine for D2D copy
+  PreferCopyEngine |= UseCopyEngineForD2DCopy;
+
+  return enqueueMemCopyRectHelper(// TODO: do we need a new command type for this?
+                                  PI_COMMAND_TYPE_MEM_BUFFER_COPY_RECT,
+                                  Queue,
+                                  Src,
+                                  Dst,
+                                  ZeroOffset,
+                                  ZeroOffset,
+                                  Region,
+                                  SrcPitch,
+                                  DstPitch,
+                                  0, /*SrcSlicePitch=*/
+                                  0, /*DstSlicePitch=*/
+                                  Blocking,
+                                  NumEventsInWaitList,
+                                  EventWaitList,
+                                  Event,
+                                  PreferCopyEngine);
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemImageCreate(
@@ -1877,17 +2004,29 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemBufferCreate(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemRetain(
-    ur_mem_handle_t hMem ///< [in] handle of the memory object to get access
+    ur_mem_handle_t Mem ///< [in] handle of the memory object to get access
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  Mem->RefCount.increment();
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemRelease(
-    ur_mem_handle_t hMem ///< [in] handle of the memory object to release
+    ur_mem_handle_t Mem ///< [in] handle of the memory object to release
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  if (!Mem->RefCount.decrementAndTest())
+    return UR_RESULT_SUCCESS;
+
+  if (Mem->isImage()) {
+    char *ZeHandleImage;
+    UR_CALL(Mem->getZeHandle(ZeHandleImage, _ur_mem_handle_t::write_only));
+    ZE2UR_CALL(zeImageDestroy, (ur_cast<ze_image_handle_t>(ZeHandleImage)));
+  } else {
+    auto Buffer = reinterpret_cast<_pi_buffer *>(Mem);
+    Buffer->free();
+  }
+  delete Mem;
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemBufferPartition(
@@ -2141,7 +2280,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urUSMHostAlloc(
       // keep the same behavior for the allocator, just call L0 API directly and
       // return the error code.
       ((align & (align - 1)) != 0)) {
-      pi_usm_mem_properties Properties {};
+      ur_usm_mem_flags_t Properties {};
       ur_result_t Res =  USMHostAllocImpl(ppMem,
                                           reinterpret_cast<ur_context_handle_t>(UrContext),
                                           &Properties,
@@ -2260,42 +2399,172 @@ UR_APIEXPORT ur_result_t UR_APICALL urUSMDeviceAlloc(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urUSMSharedAlloc(
-    ur_context_handle_t hContext, ///< [in] handle of the context object
-    ur_device_handle_t hDevice,   ///< [in] handle of the device object
-    ur_usm_mem_flags_t *pUSMProp, ///< [in] USM memory properties
-    size_t
-        size, ///< [in] size in bytes of the USM memory object to be allocated
-    uint32_t align, ///< [in] alignment of the USM memory object
-    void **ppMem    ///< [out] pointer to USM shared memory object
+    ur_context_handle_t Context, ///< [in] handle of the context object
+    ur_device_handle_t Device,   ///< [in] handle of the device object
+    ur_usm_mem_flags_t *Properties, ///< [in] USM memory properties
+    size_t Size, ///< [in] size in bytes of the USM memory object to be allocated
+    uint32_t Alignment, ///< [in] alignment of the USM memory object
+    void **RetMem    ///< [out] pointer to USM shared memory object
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // See if the memory is going to be read-only on the device.
+  bool DeviceReadOnly = false;
+  // Check that incorrect bits are not set in the properties.
+  if (Properties && *Properties != 0) {
+    DeviceReadOnly = *(Properties + 1) & UR_MEM_FLAG_READ_ONLY;
+  }
+
+  // L0 supports alignment up to 64KB and silently ignores higher values.
+  // We flag alignment > 64KB as an invalid value.
+  if (Alignment > 65536)
+    return UR_RESULT_ERROR_INVALID_VALUE;
+
+  ur_platform_handle_t Plt = Device->Platform;
+
+  // If indirect access tracking is enabled then lock the mutex which is
+  // guarding contexts container in the platform. This prevents new kernels from
+  // being submitted in any context while we are in the process of allocating a
+  // memory, this is needed to properly capture allocations by kernels with
+  // indirect access. This lock also protects access to the context's data
+  // structures. If indirect access tracking is not enabled then lock context
+  // mutex to protect access to context's data structures.
+  std::scoped_lock<pi_shared_mutex> Lock(
+      IndirectAccessTrackingEnabled ? Plt->ContextsMutex : Context->Mutex);
+
+  if (IndirectAccessTrackingEnabled) {
+    // We are going to defer memory release if there are kernels with indirect
+    // access, that is why explicitly retain context to be sure that it is
+    // released after all memory allocations in this context are released.
+    UR_CALL(urContextRetain(Context));
+  }
+
+  if (!UseUSMAllocator ||
+      // L0 spec says that allocation fails if Alignment != 2^n, in order to
+      // keep the same behavior for the allocator, just call L0 API directly and
+      // return the error code.
+      ((Alignment & (Alignment - 1)) != 0)) {
+    ur_result_t Res = USMSharedAllocImpl(RetMem,
+                                          Context,
+                                          Device,
+                                          Properties,
+                                          Size, Alignment);
+    if (IndirectAccessTrackingEnabled) {
+      // Keep track of all memory allocations in the context
+      Context->MemAllocs.emplace(std::piecewise_construct,
+                                 std::forward_as_tuple(*RetMem),
+                                 std::forward_as_tuple(Context));
+    }
+    return Res;
+  }
+
+  try {
+    auto &Allocator = (DeviceReadOnly ? Context->SharedReadOnlyMemAllocContexts
+                                      : Context->SharedMemAllocContexts);
+    auto It = Allocator.find(Device->ZeDevice);
+    if (It == Allocator.end())
+      return UR_RESULT_ERROR_INVALID_VALUE;
+
+    *RetMem = It->second.allocate(Size, Alignment);
+    if (DeviceReadOnly) {
+      Context->SharedReadOnlyAllocs.insert(*RetMem);
+    }
+    if (IndirectAccessTrackingEnabled) {
+      // Keep track of all memory allocations in the context
+      Context->MemAllocs.emplace(std::piecewise_construct,
+                                 std::forward_as_tuple(*RetMem),
+                                 std::forward_as_tuple(reinterpret_cast<ur_context_handle_t>(Context)));
+    }
+  } catch (const UsmAllocationException &Ex) {
+    *RetMem = nullptr;
+    return Ex.getError();
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urUSMFree(
-    ur_context_handle_t hContext, ///< [in] handle of the context object
-    void *pMem                    ///< [in] pointer to USM memory object
+    ur_context_handle_t Context, ///< [in] handle of the context object
+    void *Mem                    ///< [in] pointer to USM memory object
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  ur_platform_handle_t Plt = Context->getPlatform();
+
+  std::scoped_lock<pi_shared_mutex> Lock(
+      IndirectAccessTrackingEnabled ? Plt->ContextsMutex : Context->Mutex);
+
+  return USMFreeHelper(Context,
+                       Mem,
+                       true /* OwnZeMemHandle */);
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urUSMGetMemAllocInfo(
-    ur_context_handle_t hContext, ///< [in] handle of the context object
-    const void *pMem,             ///< [in] pointer to USM memory object
-    ur_usm_alloc_info_t
-        propName, ///< [in] the name of the USM allocation property to query
-    size_t propValueSize, ///< [in] size in bytes of the USM allocation property
+    ur_context_handle_t Context, ///< [in] handle of the context object
+    const void *Ptr,             ///< [in] pointer to USM memory object
+    ur_usm_alloc_info_t PropName, ///< [in] the name of the USM allocation property to query
+    size_t PropValueSize, ///< [in] size in bytes of the USM allocation property
                           ///< value
-    void *pPropValue, ///< [out][optional] value of the USM allocation property
-    size_t *pPropValueSizeRet ///< [out][optional] bytes returned in USM
+    void *PropValue, ///< [out][optional] value of the USM allocation property
+    size_t *PropValueSizeRet ///< [out][optional] bytes returned in USM
                               ///< allocation property
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  ze_device_handle_t ZeDeviceHandle;
+  ZeStruct<ze_memory_allocation_properties_t> ZeMemoryAllocationProperties;
+
+  ZE2UR_CALL(zeMemGetAllocProperties, (Context->ZeContext,
+                                       Ptr,
+                                       &ZeMemoryAllocationProperties,
+                                       &ZeDeviceHandle));
+
+  UrReturnHelper ReturnValue(PropValueSize, PropValue, PropValueSizeRet);
+  switch (PropName) {
+  case UR_USM_ALLOC_INFO_TYPE: {
+    pi_usm_type MemAllocaType;
+    switch (ZeMemoryAllocationProperties.type) {
+    case ZE_MEMORY_TYPE_UNKNOWN:
+      MemAllocaType = PI_MEM_TYPE_UNKNOWN;
+      break;
+    case ZE_MEMORY_TYPE_HOST:
+      MemAllocaType = PI_MEM_TYPE_HOST;
+      break;
+    case ZE_MEMORY_TYPE_DEVICE:
+      MemAllocaType = PI_MEM_TYPE_DEVICE;
+      break;
+    case ZE_MEMORY_TYPE_SHARED:
+      MemAllocaType = PI_MEM_TYPE_SHARED;
+      break;
+    default:
+      zePrint("piextUSMGetMemAllocInfo: unexpected usm memory type\n");
+      return UR_RESULT_ERROR_INVALID_VALUE;
+    }
+    return ReturnValue(MemAllocaType);
+  }
+  case UR_USM_ALLOC_INFO_DEVICE:
+    if (ZeDeviceHandle) {
+      auto Platform = Context->getPlatform();
+      auto Device = Platform->getDeviceFromNativeHandle(ZeDeviceHandle);
+      return Device ? ReturnValue(Device) : UR_RESULT_ERROR_INVALID_VALUE;
+    } else {
+      return UR_RESULT_ERROR_INVALID_VALUE;
+    }
+  case UR_USM_ALLOC_INFO_BASE_PTR: {
+    void *Base;
+    ZE2UR_CALL(zeMemGetAddressRange, (Context->ZeContext,
+                                      Ptr,
+                                      &Base,
+                                      nullptr));
+    return ReturnValue(Base);
+  }
+  case UR_USM_ALLOC_INFO_SIZE: {
+    size_t Size;
+    ZE2UR_CALL(zeMemGetAddressRange, (Context->ZeContext, Ptr, nullptr, &Size));
+    return ReturnValue(Size);
+  }
+  default:
+    zePrint("piextUSMGetMemAllocInfo: unsupported ParamName\n");
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+  return UR_RESULT_SUCCESS;
 }
-
-
 
 ur_result_t USMFreeImpl(ur_context_handle_t Context, void *Ptr,
                              bool OwnZeMemHandle) {
@@ -2339,11 +2608,10 @@ ur_result_t USMSharedMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
 }
 
 ur_result_t USMSharedReadOnlyMemoryAlloc::allocateImpl(void **ResultPtr,
-                                                     size_t Size,
-                                                     uint32_t Alignment) {
-  pi_usm_mem_properties Props[] = {PI_MEM_ALLOC_FLAGS,
-                                   PI_MEM_ALLOC_DEVICE_READ_ONLY, 0};
-  return USMSharedAllocImpl(ResultPtr, Context, Device, Props, Size, Alignment);
+                                                       size_t Size,
+                                                       uint32_t Alignment) {
+  ur_usm_mem_flags_t Props = UR_EXT_USM_MEM_FLAG_DEVICE_READ_ONLY;
+  return USMSharedAllocImpl(ResultPtr, Context, Device, &Props, Size, Alignment);
 }
 
 ur_result_t USMDeviceMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
@@ -2360,7 +2628,7 @@ ur_result_t USMHostMemoryAlloc::allocateImpl(void **ResultPtr, size_t Size,
 ur_result_t USMDeviceAllocImpl(void **ResultPtr,
                                ur_context_handle_t Context,
                                ur_device_handle_t Device,
-                               pi_usm_mem_properties *Properties,
+                               ur_usm_mem_flags_t *Properties,
                                size_t Size,
                                uint32_t Alignment) {
   // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
@@ -2393,11 +2661,12 @@ ur_result_t USMDeviceAllocImpl(void **ResultPtr,
   return UR_RESULT_SUCCESS;
 }
 
-ur_result_t USMSharedAllocImpl(void **ResultPtr, ur_context_handle_t Context,
-                                    ur_device_handle_t Device, pi_usm_mem_properties *,
-                                    size_t Size, uint32_t Alignment) {
-  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-  // PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+ur_result_t USMSharedAllocImpl(void **ResultPtr,
+                               ur_context_handle_t Context,
+                               ur_device_handle_t Device,
+                               ur_usm_mem_flags_t *,
+                               size_t Size,
+                               uint32_t Alignment) {
 
   // TODO: translate PI properties to Level Zero flags
   ZeStruct<ze_host_mem_alloc_desc_t> ZeHostDesc;
@@ -2426,7 +2695,7 @@ ur_result_t USMSharedAllocImpl(void **ResultPtr, ur_context_handle_t Context,
 
 ur_result_t USMHostAllocImpl(void **ResultPtr,
                              ur_context_handle_t Context,
-                             pi_usm_mem_properties *Properties,
+                             ur_usm_mem_flags_t *Properties,
                              size_t Size,
                              uint32_t Alignment) {
   // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);

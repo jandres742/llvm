@@ -430,17 +430,69 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetInfo(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventGetProfilingInfo(
-    ur_event_handle_t hEvent, ///< [in] handle of the event object
-    ur_profiling_info_t
-        propName, ///< [in] the name of the profiling property to query
-    size_t
-        propValueSize, ///< [in] size in bytes of the profiling property value
-    void *pPropValue,  ///< [out][optional] value of the profiling property
-    size_t *pPropValueSizeRet ///< [out][optional] pointer to the actual size in
+    ur_event_handle_t Event, ///< [in] handle of the event object
+    ur_profiling_info_t PropName, ///< [in] the name of the profiling property to query
+    size_t PropValueSize, ///< [in] size in bytes of the profiling property value
+    void *PropValue,  ///< [out][optional] value of the profiling property
+    size_t *PropValueSizeRet ///< [out][optional] pointer to the actual size in
                               ///< bytes returned in propValue
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
+  if (Event->UrQueue &&
+      (Event->UrQueue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) == 0) {
+    return UR_RESULT_ERROR_PROFILING_INFO_NOT_AVAILABLE;
+  }
+
+  ur_device_handle_t Device =
+      Event->UrQueue ? Event->UrQueue->Device : Event->Context->Devices[0];
+
+  uint64_t ZeTimerResolution = Device->ZeDeviceProperties->timerResolution;
+  const uint64_t TimestampMaxValue =
+      ((1ULL << Device->ZeDeviceProperties->kernelTimestampValidBits) - 1ULL);
+
+  UrReturnHelper ReturnValue(PropValueSize, PropValue, PropValueSizeRet);
+
+  ze_kernel_timestamp_result_t tsResult;
+
+  switch (PropName) {
+  case UR_PROFILING_INFO_COMMAND_START: {
+    ZE2UR_CALL(zeEventQueryKernelTimestamp, (Event->ZeEvent, &tsResult));
+    uint64_t ContextStartTime =
+        (tsResult.global.kernelStart & TimestampMaxValue) * ZeTimerResolution;
+    return ReturnValue(ContextStartTime);
+  }
+  case UR_PROFILING_INFO_COMMAND_END: {
+    ZE2UR_CALL(zeEventQueryKernelTimestamp, (Event->ZeEvent, &tsResult));
+
+    uint64_t ContextStartTime =
+        (tsResult.global.kernelStart & TimestampMaxValue);
+    uint64_t ContextEndTime = (tsResult.global.kernelEnd & TimestampMaxValue);
+
+    //
+    // Handle a possible wrap-around (the underlying HW counter is < 64-bit).
+    // Note, it will not report correct time if there were multiple wrap
+    // arounds, and the longer term plan is to enlarge the capacity of the
+    // HW timestamps.
+    //
+    if (ContextEndTime <= ContextStartTime) {
+      ContextEndTime += TimestampMaxValue;
+    }
+    ContextEndTime *= ZeTimerResolution;
+    return ReturnValue(ContextEndTime);
+  }
+  case UR_PROFILING_INFO_COMMAND_QUEUED:
+  case UR_PROFILING_INFO_COMMAND_SUBMIT:
+    // Note: No users for this case
+    // TODO: Implement commmand submission time when needed,
+    //        by recording device timestamp (using zeDeviceGetGlobalTimestamps)
+    //        before submitting command to device
+    return ReturnValue(uint64_t{0});
+  default:
+    zePrint("urEventGetProfilingInfo: not supported ParamName\n");
+    return UR_RESULT_ERROR_INVALID_VALUE;
+  }
+
+  return UR_RESULT_SUCCESS;
 }
 
 ur_result_t
@@ -574,17 +626,21 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventWait(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventRetain(
-    ur_event_handle_t hEvent ///< [in] handle of the event object
+    ur_event_handle_t Event ///< [in] handle of the event object
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  Event->RefCountExternal++;
+  Event->RefCount.increment();
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventRelease(
-    ur_event_handle_t hEvent ///< [in] handle of the event object
+    ur_event_handle_t Event ///< [in] handle of the event object
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  Event->RefCountExternal--;
+  UR_CALL(piEventReleaseInternal(Event));
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventGetNativeHandle(
@@ -613,14 +669,69 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetNativeHandle(
   return UR_RESULT_SUCCESS;
 }
 
-UR_APIEXPORT ur_result_t UR_APICALL urEventCreateWithNativeHandle(
-    ur_native_handle_t hNativeEvent, ///< [in] the native handle of the event.
-    ur_context_handle_t hContext,    ///< [in] handle of the context object
+UR_APIEXPORT ur_result_t UR_APICALL urExtEventCreate(
+    ur_context_handle_t Context,    ///< [in] handle of the context object
     ur_event_handle_t
-        *phEvent ///< [out] pointer to the handle of the event object created.
+        *Event ///< [out] pointer to the handle of the event object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  UR_CALL(EventCreate(Context,
+                      nullptr,
+                      true,
+                      Event));
+
+  (*Event)->RefCountExternal++;
+  ZE2UR_CALL(zeEventHostSignal, ((*Event)->ZeEvent));
+  return UR_RESULT_SUCCESS;
+}
+
+UR_APIEXPORT ur_result_t UR_APICALL urEventCreateWithNativeHandle(
+    ur_native_handle_t NativeEvent, ///< [in] the native handle of the event.
+    ur_context_handle_t Context,    ///< [in] handle of the context object
+    ur_event_handle_t *Event ///< [out] pointer to the handle of the event object created.
+) {
+
+  // we dont have urEventCreate, so use this check for now to know that
+  // the call comes from piEventCreate()
+  if (NativeEvent == nullptr) {
+    UR_CALL(EventCreate(Context,
+                        nullptr,
+                        true,
+                        Event));
+
+    (*Event)->RefCountExternal++;
+    ZE2UR_CALL(zeEventHostSignal, ((*Event)->ZeEvent));
+    return UR_RESULT_SUCCESS;
+  }
+
+
+  auto ZeEvent = ur_cast<ze_event_handle_t>(NativeEvent);
+  _ur_event_handle_t *UrEvent {};
+  try {
+    UrEvent = new _ur_event_handle_t(ZeEvent,
+                                     nullptr /* ZeEventPool */,
+                                     Context,
+                                     PI_COMMAND_TYPE_USER,
+                                     true);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  // Assume native event is host-visible, or otherwise we'd
+  // need to create a host-visible proxy for it.
+  UrEvent->HostVisibleEvent = reinterpret_cast<ur_event_handle_t>(UrEvent);
+
+  // Unlike regular events managed by SYCL RT we don't have to wait for interop
+  // events completion, and not need to do the their `cleanup()`. This in
+  // particular guarantees that the extra `piEventRelease` is not called on
+  // them. That release is needed to match the `piEventRetain` of regular events
+  // made for waiting for event completion, but not this interop event.
+  UrEvent->CleanedUp = true;
+
+  *Event = reinterpret_cast<ur_event_handle_t>(UrEvent);
+
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventSetCallback(
@@ -849,8 +960,10 @@ ur_result_t CleanupCompletedEvent(ur_event_handle_t Event, bool QueueLocked) {
 // The "HostVisible" argument specifies if event needs to be allocated from
 // a host-visible pool.
 //
-ur_result_t EventCreate(ur_context_handle_t Context, ur_queue_handle_t Queue,
-                             bool HostVisible, ur_event_handle_t *RetEvent) {
+ur_result_t EventCreate(ur_context_handle_t Context,
+                        ur_queue_handle_t Queue,
+                        bool HostVisible,
+                        ur_event_handle_t *RetEvent) {
   
   bool ProfilingEnabled =
       !Queue || (Queue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) != 0;

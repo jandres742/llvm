@@ -92,10 +92,6 @@ void zePrint(const char *Format, ...);
 // setting environment variables.
 bool setEnvVar(const char *name, const char *value);
 
-// Perform traced call to L0 without checking for errors
-#define ZE_CALL_NOCHECK(ZeName, ZeArgs)                                        \
-  ZeCall().doCall(ZeName ZeArgs, #ZeName, #ZeArgs, false)
-
 struct _ur_platform_handle_t;
 // using ur_platform_handle_t = _ur_platform_handle_t *;
 struct _ur_device_handle_t;

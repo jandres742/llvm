@@ -26,6 +26,31 @@
 
 struct ur_device_handle_t_;
 
+bool IsDevicePointer(ur_context_handle_t Context, const void *Ptr);
+
+// This is an experimental option to test performance of device to device copy
+// operations on copy engines (versus compute engine)
+const bool UseCopyEngineForD2DCopy = [] {
+  const char *CopyEngineForD2DCopy =
+      std::getenv("SYCL_PI_LEVEL_ZERO_USE_COPY_ENGINE_FOR_D2D_COPY");
+  return (CopyEngineForD2DCopy && (std::stoi(CopyEngineForD2DCopy) != 0));
+}();
+
+// Shared by all memory read/write/copy PI interfaces.
+// PI interfaces must have queue's and destination buffer's mutexes locked for
+// exclusive use and source buffer's mutex locked for shared use on entry.
+ur_result_t
+enqueueMemCopyHelper(pi_command_type CommandType,
+                     ur_queue_handle_t Queue,
+                     void *Dst,
+                     pi_bool BlockingWrite,
+                     size_t Size,
+                     const void *Src,
+                     uint32_t NumEventsInWaitList,
+                     const ur_event_handle_t *EventWaitList,
+                     ur_event_handle_t *OutEvent,
+                     bool PreferCopyEngine);
+
 ur_result_t enqueueMemCopyRectHelper(pi_command_type CommandType,
                                      ur_queue_handle_t Queue,
                                      const void *SrcBuffer,
@@ -272,17 +297,23 @@ public:
 };
 
 ur_result_t USMDeviceAllocImpl(void **ResultPtr, ur_context_handle_t Context,
-                                    ur_device_handle_t Device,
-                                    pi_usm_mem_properties *Properties,
-                                    size_t Size, uint32_t Alignment);
+                               ur_device_handle_t Device,
+                               ur_usm_mem_flags_t *Properties,
+                               size_t Size,
+                               uint32_t Alignment);
 
-ur_result_t USMSharedAllocImpl(void **ResultPtr, ur_context_handle_t Context,
-                                    ur_device_handle_t Device, pi_usm_mem_properties *,
-                                    size_t Size, uint32_t Alignment);
+ur_result_t USMSharedAllocImpl(void **ResultPtr,
+                               ur_context_handle_t Context,
+                               ur_device_handle_t Device,
+                               ur_usm_mem_flags_t *,
+                               size_t Size,
+                               uint32_t Alignment);
 
-ur_result_t USMHostAllocImpl(void **ResultPtr, ur_context_handle_t Context,
-                                  pi_usm_mem_properties *Properties,
-                                  size_t Size, uint32_t Alignment);
+ur_result_t USMHostAllocImpl(void **ResultPtr,
+                             ur_context_handle_t Context,
+                             ur_usm_mem_flags_t *Properties,
+                             size_t Size,
+                             uint32_t Alignment);
 
 // If indirect access tracking is not enabled then this functions just performs
 // zeMemFree. If indirect access tracking is enabled then reference counting is

@@ -96,6 +96,11 @@ struct _ur_program_handle_t : _pi_object {
       : Context{Context}, OwnZeModule{OwnZeModule}, State{St},
         ZeModule{ZeModule}, ZeBuildLog{nullptr} {}
 
+  // Construct a program from native handle
+  _ur_program_handle_t(state St, ur_context_handle_t Context, ze_module_handle_t ZeModule)
+      : Context{Context}, OwnZeModule{true}, State{St},
+        ZeModule{ZeModule}, ZeBuildLog{nullptr} {}
+
   // Construct a program in Invalid state with a custom error message.
   _ur_program_handle_t(state St, ur_context_handle_t Context, const std::string &ErrorMessage)
       : Context{Context}, OwnZeModule{true}, ErrorMessage{ErrorMessage},

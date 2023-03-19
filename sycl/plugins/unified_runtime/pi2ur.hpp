@@ -253,6 +253,41 @@ inline pi_result piPlatformsGet(pi_uint32 num_entries, pi_platform *platforms,
   return PI_SUCCESS;
 }
 
+inline pi_result
+piextPlatformGetNativeHandle(pi_platform Platform,
+                             pi_native_handle *NativeHandle) {
+
+  PI_ASSERT(Platform, PI_ERROR_INVALID_PLATFORM);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  auto UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
+
+  ur_native_handle_t UrNativeHandle {};
+  HANDLE_ERRORS(urPlatformGetNativeHandle(UrPlatform, &UrNativeHandle));
+
+  *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeHandle);
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextPlatformCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                    pi_platform *Platform) {
+
+  PI_ASSERT(Platform, PI_ERROR_INVALID_PLATFORM);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  ur_platform_handle_t UrPlatform {};
+  ur_native_handle_t UrNativeHandle = reinterpret_cast<ur_native_handle_t>(NativeHandle);
+  urPlatformCreateWithNativeHandle(UrNativeHandle,
+                                   &UrPlatform);
+                                   
+  *Platform = reinterpret_cast<pi_platform>(UrPlatform);
+
+  return PI_SUCCESS;
+}
+
+
 inline pi_result piPlatformGetInfo(pi_platform platform,
                                    pi_platform_info ParamName,
                                    size_t ParamValueSize, void *ParamValue,
@@ -280,9 +315,21 @@ inline pi_result piPlatformGetInfo(pi_platform platform,
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+inline pi_result
+piextPluginGetOpaqueData(void *opaque_data_param,
+                         void **opaque_data_return) {
+  (void)opaque_data_param;
+  (void)opaque_data_return;
+  return PI_ERROR_UNKNOWN;
+}
+///////////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////////
 // Device
-inline pi_result piDevicesGet(pi_platform Platform, pi_device_type DeviceType,
-                              pi_uint32 NumEntries, pi_device *Devices,
+inline pi_result piDevicesGet(pi_platform Platform,
+                              pi_device_type DeviceType,
+                              pi_uint32 NumEntries,
+                              pi_device *Devices,
                               pi_uint32 *NumDevices) {
 
   static std::unordered_map<pi_device_type, ur_device_type_t> TypeMapping = {
@@ -298,22 +345,41 @@ inline pi_result piDevicesGet(pi_platform Platform, pi_device_type DeviceType,
   }
 
   uint32_t Count = NumEntries;
-  auto hPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
-  auto phDevices = reinterpret_cast<ur_device_handle_t *>(Devices);
-  HANDLE_ERRORS(
-      urDeviceGet(hPlatform, Type->second, Count, phDevices, NumDevices));
+  auto UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
+
+  std::vector<ur_device_handle_t> UrDevices(Count);
+  HANDLE_ERRORS(urDeviceGet(UrPlatform,
+                            Type->second,
+                            Count,
+                            UrDevices.data(),
+                            NumDevices));
+
+  for (uint32_t DeviceCount = 0; DeviceCount < Count; DeviceCount++){
+    _pi_device *PiDevice = nullptr;
+    try {
+      PiDevice = new _pi_device(UrDevices[DeviceCount]);
+    } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return PI_ERROR_UNKNOWN;
+    }
+    Devices[DeviceCount] = reinterpret_cast<pi_device>(PiDevice);
+  }
+
   return PI_SUCCESS;
 }
 
 inline pi_result piDeviceRetain(pi_device Device) {
-  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceRetain(hDevice));
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  HANDLE_ERRORS(urDeviceRetain(UrDevice));
   return PI_SUCCESS;
 }
 
 inline pi_result piDeviceRelease(pi_device Device) {
-  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceRelease(hDevice));
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  HANDLE_ERRORS(urDeviceRelease(UrDevice));
   return PI_SUCCESS;
 }
 
@@ -490,18 +556,67 @@ inline pi_result piDeviceGetInfo(pi_device Device, pi_device_info ParamName,
   }
 
   size_t SizeInOut = ParamValueSize;
-  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceGetInfo(hDevice, InfoType->second, SizeInOut,
-                                ParamValue, ParamValueSizeRet));
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  HANDLE_ERRORS(urDeviceGetInfo(UrDevice,
+                                InfoType->second, SizeInOut,
+                                ParamValue,
+                                ParamValueSizeRet));
 
   ur2piInfoValue(InfoType->second, ParamValueSize, &SizeInOut, ParamValue);
 
   return PI_SUCCESS;
 }
 
-inline pi_result piDevicePartition(
-    pi_device Device, const pi_device_partition_property *Properties,
-    pi_uint32 NumEntries, pi_device *SubDevices, pi_uint32 *NumSubDevices) {
+inline pi_result
+piextDeviceGetNativeHandle(pi_device Device,
+                           pi_native_handle *NativeHandle) {
+  PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  ur_native_handle_t UrNativeHandle {};
+  HANDLE_ERRORS(urDeviceGetNativeHandle(UrDevice,
+                                        &UrNativeHandle));
+  *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeHandle);
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextDeviceCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                  pi_platform Platform,
+                                  pi_device *Device) {
+
+  PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  ur_native_handle_t UrNativeDevice = reinterpret_cast<ur_native_handle_t>(NativeHandle);
+  ur_platform_handle_t UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
+  ur_device_handle_t UrDevice {};
+  HANDLE_ERRORS(urDeviceCreateWithNativeHandle(UrNativeDevice,
+                                               UrPlatform,
+                                               &UrDevice));
+
+  try {
+    _pi_device *PiDevice = new _pi_device(UrDevice);
+    *Device = reinterpret_cast<pi_device>(PiDevice);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+}
+
+inline pi_result piDevicePartition(pi_device Device,
+                                   const pi_device_partition_property *Properties,
+                                   pi_uint32 NumEntries,
+                                   pi_device *SubDevices,
+                                   pi_uint32 *NumSubDevices) {
 
   if (!Properties || !Properties[0])
     return PI_ERROR_INVALID_VALUE;
@@ -550,29 +665,47 @@ inline pi_result piDevicePartition(
   ur_device_partition_property_t UrProperties[] = {
       ur_device_partition_property_t(PropertyIt->second), Value, 0};
 
-  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  auto phSubDevices = reinterpret_cast<ur_device_handle_t *>(SubDevices);
-  HANDLE_ERRORS(urDevicePartition(hDevice, UrProperties, NumEntries, phSubDevices,
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+    ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  std::vector<ur_device_handle_t> UrSubDevices{};
+  for (uint32_t SubDeviceCount = 0; SubDeviceCount < NumEntries; SubDeviceCount++){
+    _pi_device *PiSubDevice = reinterpret_cast<_pi_device *>(SubDevices[SubDeviceCount]);
+    ur_device_handle_t UrSubDevice = PiSubDevice->UrDevice;
+    UrSubDevices.push_back(UrSubDevice);
+  }
+
+  HANDLE_ERRORS(urDevicePartition(UrDevice,
+                                  UrProperties,
+                                  NumEntries,
+                                  UrSubDevices.data(),
                                   NumSubDevices));
   return PI_SUCCESS;
 }
 
-inline pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
-                                  uint64_t *HostTime) {
-  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceGetGlobalTimestamps(hDevice, DeviceTime, HostTime));
+inline pi_result
+piGetDeviceAndHostTimer(pi_device Device,
+                        uint64_t *DeviceTime,
+                        uint64_t *HostTime) {
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  HANDLE_ERRORS(urDeviceGetGlobalTimestamps(UrDevice,
+                                            DeviceTime,
+                                            HostTime));
   return PI_SUCCESS;
 }
 
 inline  pi_result
 piextDeviceSelectBinary(pi_device Device, // TODO: does this need to be context?
-                        pi_device_binary *Binaries, pi_uint32 NumBinaries,
+                        pi_device_binary *Binaries,
+                        pi_uint32 NumBinaries,
                         pi_uint32 *SelectedBinaryInd) {
 
-  auto hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  const uint8_t **ppBinaries = const_cast<const uint8_t **>(reinterpret_cast<uint8_t **>(Binaries));
-  HANDLE_ERRORS(urDeviceSelectBinary(hDevice,
-                                     ppBinaries,
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  const uint8_t **UrBinaries = const_cast<const uint8_t **>(reinterpret_cast<uint8_t **>(Binaries));
+  HANDLE_ERRORS(urDeviceSelectBinary(UrDevice,
+                                     UrBinaries,
                                      NumBinaries,
                                      SelectedBinaryInd));
   return PI_SUCCESS;
@@ -590,11 +723,18 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
                                             void *UserData),
                           void *UserData, pi_context *RetContext) {
   uint32_t DeviceCount = reinterpret_cast<uint32_t>(NumDevices);
-  ur_device_handle_t *phDevices = reinterpret_cast<ur_device_handle_t *>(const_cast<pi_device *>(Devices));
-  // ur_context_handle_t *phContext = reinterpret_cast<ur_context_handle_t *>(RetContext);
+
+  std::vector<ur_device_handle_t> UrDevices{};
+  for (uint32_t DeviceCount = 0; DeviceCount < NumDevices; DeviceCount++){
+    _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Devices[DeviceCount]);
+    ur_device_handle_t UrDevice = PiDevice->UrDevice;
+    UrDevices.push_back(UrDevice);
+  }
 
   ur_context_handle_t UrContext;  
-  HANDLE_ERRORS(urContextCreate(DeviceCount, phDevices, &UrContext));
+  HANDLE_ERRORS(urContextCreate(DeviceCount,
+                                UrDevices.data(),
+                                &UrContext));
 
   printf("%s %d UrContext %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext);
   
@@ -619,6 +759,66 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
   return PI_SUCCESS;
 }
 
+// FIXME: Dummy implementation to prevent link fail
+inline pi_result
+piextContextSetExtendedDeleter(pi_context Context,
+                               pi_context_extended_deleter Function,
+                               void *UserData) {
+  std::ignore = Context;
+  std::ignore = Function;
+  std::ignore = UserData;
+  die("piextContextSetExtendedDeleter: not supported");
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextContextGetNativeHandle(pi_context Context,
+                            pi_native_handle *NativeHandle) {
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  ur_native_handle_t UrNativeHandle {};
+  HANDLE_ERRORS(urContextGetNativeHandle(UrContext,
+                                        &UrNativeHandle));
+  *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeHandle);
+  return PI_SUCCESS;
+
+}
+
+
+inline pi_result
+piextContextCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                   pi_uint32 NumDevices,
+                                   const pi_device *Devices,
+                                   bool OwnNativeHandle,
+                                   pi_context *RetContext) {
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Devices, PI_ERROR_INVALID_DEVICE);
+  PI_ASSERT(RetContext, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(NumDevices, PI_ERROR_INVALID_VALUE);
+
+  ur_native_handle_t NativeContext = reinterpret_cast<ur_native_handle_t>(NativeHandle);
+  ur_context_handle_t UrContext {};
+  HANDLE_ERRORS(urContextCreateWithNativeHandle(NativeContext,
+                                                &UrContext));
+
+  try {
+    _pi_context *PiContext = new _pi_context(UrContext,
+                                             NumDevices,
+                                             Devices,
+                                             OwnNativeHandle);
+    *RetContext = reinterpret_cast<pi_context>(PiContext);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+}
+
+
 inline pi_result
 piContextGetInfo(pi_context Context,
                  pi_context_info ParamName,
@@ -626,20 +826,60 @@ piContextGetInfo(pi_context Context,
                  void *ParamValue,
                  size_t *ParamValueSizeRet) {
 
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+
   ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
   ur_context_info_t ContextInfoType{};
+  
+  switch (ParamName) {
+    case PI_CONTEXT_INFO_DEVICES: {
+      ContextInfoType = UR_CONTEXT_INFO_DEVICES;
+      break;
+    }
+    case PI_CONTEXT_INFO_PLATFORM: {
+      die("urGetContextInfo: unsuppported ParamName.");
+    }
+    case PI_CONTEXT_INFO_NUM_DEVICES: {
+      ContextInfoType = UR_CONTEXT_INFO_NUM_DEVICES;
+      break;
+    }
+    case PI_CONTEXT_INFO_PROPERTIES: {
+      die("urGetContextInfo: unsuppported ParamName.");
+    }
+    case PI_CONTEXT_INFO_REFERENCE_COUNT: {
+      ContextInfoType = UR_EXT_CONTEXT_INFO_REFERENCE_COUNT;
+      break;
+    }
+    case PI_CONTEXT_INFO_ATOMIC_MEMORY_ORDER_CAPABILITIES: {
+      die("urGetContextInfo: unsuppported ParamName.");
+    }
+    case PI_EXT_ONEAPI_CONTEXT_INFO_USM_FILL2D_SUPPORT: {
+      ContextInfoType = UR_CONTEXT_INFO_USM_FILL2D_SUPPORT;
+      break;
+    }
+    case PI_EXT_ONEAPI_CONTEXT_INFO_USM_MEMSET2D_SUPPORT: {
+      ContextInfoType = UR_CONTEXT_INFO_USM_MEMSET2D_SUPPORT;
+      break;
+    }
+    case PI_EXT_ONEAPI_CONTEXT_INFO_USM_MEMCPY2D_SUPPORT: {
+      ContextInfoType = UR_CONTEXT_INFO_USM_MEMCPY2D_SUPPORT;
+      break;
+    }
+    default: {
+      die("urGetContextInfo: unsuppported ParamName.");
+    }
+  }
+
   HANDLE_ERRORS(urContextGetInfo(hContext,
                                  ContextInfoType,
                                  ParamValueSize,
                                  ParamValue,
                                  ParamValueSizeRet));
-
   return PI_SUCCESS;
 }
 
 inline pi_result
 piContextRetain(pi_context Context) {
-
   ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
 
   HANDLE_ERRORS(urContextRetain(hContext));
@@ -650,7 +890,6 @@ piContextRetain(pi_context Context) {
 
 inline pi_result
 piContextRelease(pi_context Context) {
-
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
   ur_context_handle_t UrContext = PiContext->UrContext;
 
@@ -670,18 +909,33 @@ inline pi_result piQueueCreate(pi_context Context, pi_device Device,
   printf("%s %d\n", __FILE__, __LINE__);
 
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
-  ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  ur_queue_property_t props {};
-  ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  ur_queue_property_t Props {};
+  ur_queue_handle_t UrQueue {};
 
   printf("%s %d Queue %lx PiContext %lx Context %lx\n",
     __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
     (unsigned long int)PiContext->UrContext);
 
-  HANDLE_ERRORS(urQueueCreate(PiContext->UrContext, 
-                              hDevice,
-                              &props,
-                              phQueue));
+  HANDLE_ERRORS(urQueueCreate(UrContext, 
+                              UrDevice,
+                              &Props,
+                              &UrQueue));
+  
+  try {
+    _pi_queue *PiQueue = new _pi_queue(UrContext,
+                                       UrQueue,
+                                       Device,
+                                       true);
+    *Queue = reinterpret_cast<pi_queue>(PiQueue);
+  } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_RESOURCES;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+  
   return PI_SUCCESS;
 }
 
@@ -733,41 +987,96 @@ inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
   }
 
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+  
+  ur_queue_handle_t UrQueue {};
 
-  ur_device_handle_t hDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  ur_queue_handle_t *phQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
-  // ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
-
-// printf("%s %d Queue %lx PiContext %lx Context %lx hContext %lx\n",
-//     __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
-//     (unsigned long int)PiContext->UrContext, (unsigned long int)hContext);
-
-  HANDLE_ERRORS(urQueueCreate(PiContext->UrContext, 
-                              hDevice,
+  HANDLE_ERRORS(urQueueCreate(UrContext, 
+                              UrDevice,
                               props,
-                              phQueue));
+                              &UrQueue));
 
-  printf("%s %d Queue %lx PiContext %lx UrContext %lx\n",
-    __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
-    (unsigned long int)PiContext->UrContext);
-  // printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
-  //   (unsigned long int)hContext);
-  // if (hContext) {
-  //   printf("%s %d Context->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]);
-  //   if (Context->Devices[0]) {
-  //     printf("%s %d Context->Devices[0]->ZeDevice %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]->ZeDevice);
-  //   }
-  // }
+  try {
+    _pi_queue *PiQueue = new _pi_queue(UrContext,
+                                       UrQueue,
+                                       Device,
+                                       true);
+    *Queue = reinterpret_cast<pi_queue>(PiQueue);
+  } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_RESOURCES;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
 
   return PI_SUCCESS;
 }
 
+inline pi_result
+piextQueueCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                 pi_context Context,
+                                 pi_device Device,
+                                 bool OwnNativeHandle,
+                                 pi_queue *Queue) {
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+  PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  ur_native_handle_t UrNativeHandle = reinterpret_cast<ur_native_handle_t>(NativeHandle);
+  ur_queue_handle_t UrQueue {};
+  HANDLE_ERRORS(urQueueCreateWithNativeHandle(UrNativeHandle,
+                                              UrContext,
+                                              &UrQueue));
+
+  try {
+    _pi_queue *PiQueue = new _pi_queue(UrContext,
+                                      UrQueue,
+                                      Device,
+                                      OwnNativeHandle);
+    *Queue = reinterpret_cast<pi_queue>(PiQueue);
+  } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_RESOURCES;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+      
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextQueueGetNativeHandle(pi_queue Queue,
+                          pi_native_handle *NativeHandle) {
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+
+  ur_native_handle_t UrNativeQueue {};
+  HANDLE_ERRORS(urQueueGetNativeHandle(UrQueue,
+                                      &UrNativeQueue));
+
+  *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeQueue);
+
+  return PI_SUCCESS;
+}
+
+
+
+
 inline pi_result piQueueRelease(pi_queue Queue) {
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   
-  HANDLE_ERRORS(urQueueRelease(hQueue));
+  HANDLE_ERRORS(urQueueRelease(UrQueue));
 
   return PI_SUCCESS;
 }
@@ -776,9 +1085,94 @@ inline pi_result piQueueFinish(pi_queue Queue) {
   // Wait until command lists attached to the command queue are executed.
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
 
-  HANDLE_ERRORS(urQueueFinish(hQueue));
+  HANDLE_ERRORS(urQueueFinish(UrQueue));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piQueueGetInfo(pi_queue Queue,
+               pi_queue_info ParamName,
+               size_t ParamValueSize,
+               void *ParamValue,
+               size_t *ParamValueSizeRet) {
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+
+  ur_queue_info_t UrParamName {};
+
+  switch (ParamName) {
+    case PI_QUEUE_INFO_CONTEXT: {
+      UrParamName = UR_QUEUE_INFO_CONTEXT;
+      break;
+    }
+    case PI_QUEUE_INFO_DEVICE: {
+      UrParamName = UR_QUEUE_INFO_DEVICE;
+      break;
+    }
+    case PI_QUEUE_INFO_DEVICE_DEFAULT: {
+      UrParamName = UR_QUEUE_INFO_DEVICE_DEFAULT;
+      break;
+    }
+    case PI_QUEUE_INFO_PROPERTIES: {
+      UrParamName = UR_QUEUE_INFO_PROPERTIES;
+      break;
+    }
+    case PI_QUEUE_INFO_REFERENCE_COUNT: {
+      UrParamName = UR_QUEUE_INFO_REFERENCE_COUNT;
+      break;
+    }
+    case PI_QUEUE_INFO_SIZE: {
+      UrParamName = UR_QUEUE_INFO_SIZE;
+      break;
+    }
+    case PI_EXT_ONEAPI_QUEUE_INFO_EMPTY: {
+      UrParamName = UR_EXT_ONEAPI_QUEUE_INFO_EMPTY;
+      break;
+    }
+    default: {
+      printf("Unsupported ParamName in piQueueGetInfo: ParamName=%d(0x%x)\n",
+              ParamName, ParamName);
+      return PI_ERROR_INVALID_VALUE;
+    }
+  }
+
+  HANDLE_ERRORS(urQueueGetInfo(UrQueue,
+                               UrParamName,
+                               ParamValueSize,
+                               ParamValue,
+                               ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piQueueRetain(pi_queue Queue) {
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+
+  HANDLE_ERRORS(urQueueRetain(UrQueue));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piQueueFlush(pi_queue Queue) {
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+
+  HANDLE_ERRORS(urQueueFlush(UrQueue));
 
   return PI_SUCCESS;
 }
@@ -961,7 +1355,8 @@ printf("%s %d\n", __FILE__, __LINE__);
   // We no longer need the IL / native code.
   Program->Code.reset();
   Program->UrModule = UrModule;
-  Program->UrDevice = reinterpret_cast<ur_device_handle_t>(DeviceList[0]);
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(DeviceList[0]);
+  Program->UrDevice = PiDevice->UrDevice;
 
   printf("%s %d Program %lx UrProgram %lx\n", __FILE__, __LINE__,
       (unsigned long int)Program,
@@ -969,6 +1364,8 @@ printf("%s %d\n", __FILE__, __LINE__);
 
   return Result;
 }
+
+
 
 inline pi_result piProgramLink(pi_context Context,
                                pi_uint32 NumDevices,
@@ -1162,6 +1559,80 @@ inline pi_result piKernelCreate(pi_program ProgramIn, const char *KernelName,
   return PI_SUCCESS;
 }
 
+inline pi_result
+piEnqueueMemImageFill(pi_queue Queue,
+                      pi_mem Image,
+                      const void *FillColor,
+                      const size_t *Origin,
+                      const size_t *Region,
+                      pi_uint32 NumEventsInWaitList,
+                      const pi_event *EventsWaitList,
+                      pi_event *Event) {
+
+  std::ignore = Image;
+  std::ignore = FillColor;
+  std::ignore = Origin;
+  std::ignore = Region;
+  std::ignore = NumEventsInWaitList;
+  std::ignore = EventsWaitList;
+  std::ignore = Event;
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+  
+  die("piEnqueueMemImageFill: not implemented");
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piEnqueueNativeKernel(pi_queue Queue,
+                      void (*UserFunc)(void *),
+                      void *Args,
+                      size_t CbArgs,
+                      pi_uint32 NumMemObjects,
+                      const pi_mem *MemList,
+                      const void **ArgsMemLoc,
+                      pi_uint32 NumEventsInWaitList,
+                      const pi_event *EventsWaitList,
+                      pi_event *Event) {
+  std::ignore = UserFunc;
+  std::ignore = Args;
+  std::ignore = CbArgs;
+  std::ignore = NumMemObjects;
+  std::ignore = MemList;
+  std::ignore = ArgsMemLoc;
+  std::ignore = NumEventsInWaitList;
+  std::ignore = EventsWaitList;
+  std::ignore = Event;
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  die("piEnqueueNativeKernel: not implemented");
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextGetDeviceFunctionPointer(pi_device Device,
+                              pi_program Program,
+                              const char *FunctionName,
+                              pi_uint64 *FunctionPointerRet) {
+
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+
+  void **FunctionPointer = reinterpret_cast<void **>(FunctionPointerRet);
+
+  HANDLE_ERRORS(urProgramGetFunctionPointer(UrDevice,
+                                            UrProgram,
+                                            FunctionName,
+                                            FunctionPointer));
+  return PI_SUCCESS;
+}
+
 // Special version of piKernelSetArg to accept pi_mem.
 inline pi_result piextKernelSetArgMemObj(pi_kernel Kernel, pi_uint32 ArgIndex,
                                   const pi_mem *ArgValue) {
@@ -1290,6 +1761,55 @@ piKernelSetExecInfo(pi_kernel Kernel,
 
   return PI_SUCCESS;
 }
+
+inline pi_result
+piextProgramGetNativeHandle(pi_program Program,
+                            pi_native_handle *NativeHandle) {
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  ur_native_handle_t NativeProgram {};
+  HANDLE_ERRORS(urProgramGetNativeHandle(UrProgram,
+                                         &NativeProgram));
+
+  *NativeHandle = reinterpret_cast<pi_native_handle>(NativeProgram);
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextProgramCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                   pi_context Context,
+                                  bool ownNativeHandle,
+                                    pi_program *Program) {
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+
+  ur_native_handle_t NativeProgram = reinterpret_cast<ur_native_handle_t>(NativeHandle);
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  ur_program_handle_t UrProgram {};
+  HANDLE_ERRORS(urProgramCreateWithNativeHandle(NativeProgram,
+                                                UrContext,
+                                                &UrProgram));
+    try {
+    _pi_program *PiProgram = new _pi_program(_pi_program::state::Exe,
+                                     PiContext,
+                                    UrProgram,
+                                    ownNativeHandle);
+    *Program = reinterpret_cast<pi_program>(PiProgram);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+}
+
 
 inline pi_result
 piKernelGetInfo(pi_kernel Kernel,
@@ -1442,6 +1962,423 @@ piProgramRelease(pi_program Program) {
 
   return PI_SUCCESS;
 }
+
+inline pi_result
+piextKernelSetArgPointer(pi_kernel Kernel,
+                         pi_uint32 ArgIndex,
+                         size_t ArgSize,
+                         const void *ArgValue) {
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+
+  HANDLE_ERRORS(urKernelSetArgValue(UrKernel,
+                                    ArgIndex,
+                                    ArgSize,
+                                    ArgValue));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piKernelGetSubGroupInfo(pi_kernel Kernel,
+                        pi_device Device,
+                        pi_kernel_sub_group_info ParamName,
+                        size_t InputValueSize,
+                        const void *InputValue,
+                        size_t ParamValueSize,
+                        void *ParamValue,
+                        size_t *ParamValueSizeRet) {
+
+  (void)InputValueSize;
+  (void)InputValue;
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  ur_kernel_sub_group_info_t PropName {};
+  switch (ParamName) {
+    case PI_KERNEL_MAX_SUB_GROUP_SIZE: {
+      PropName = UR_KERNEL_SUB_GROUP_INFO_MAX_SUB_GROUP_SIZE;
+      break;
+    }
+    case PI_KERNEL_MAX_NUM_SUB_GROUPS: {
+      PropName = UR_KERNEL_SUB_GROUP_INFO_MAX_NUM_SUB_GROUPS;
+      break;
+    }
+    case PI_KERNEL_COMPILE_NUM_SUB_GROUPS: {
+      PropName = UR_KERNEL_SUB_GROUP_INFO_COMPILE_NUM_SUB_GROUPS;
+      break;
+    }
+    case PI_KERNEL_COMPILE_SUB_GROUP_SIZE_INTEL: {
+      PropName = UR_KERNEL_SUB_GROUP_INFO_SUB_GROUP_SIZE_INTEL;
+      break;
+    }
+  }
+  HANDLE_ERRORS(urKernelGetSubGroupInfo(UrKernel,
+                                        UrDevice,
+                                        PropName,
+                                        ParamValueSize,
+                                        ParamValue,
+                                        ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+
+inline pi_result
+piProgramCreateWithBinary(pi_context Context,
+                          pi_uint32 NumDevices,
+                          const pi_device *DeviceList,
+                          const size_t *Lengths,
+                          const unsigned char **Binaries,
+                          size_t NumMetadataEntries,
+                          const pi_device_binary_property *Metadata,
+                          pi_int32 *BinaryStatus,
+                          pi_program *Program) {
+
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  PI_ASSERT(DeviceList && NumDevices, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Binaries && Lengths, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  // For now we support only one device.
+  if (NumDevices != 1) {
+    printf("piProgramCreateWithBinary: level_zero supports only one device.");
+    return PI_ERROR_INVALID_VALUE;
+  }
+  if (!Binaries[0] || !Lengths[0]) {
+    if (BinaryStatus)
+      *BinaryStatus = PI_ERROR_INVALID_VALUE;
+    return PI_ERROR_INVALID_VALUE;
+  }
+  
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(DeviceList[0]);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  ur_program_handle_t UrProgram {};
+  HANDLE_ERRORS(urProgramCreateWithBinary(UrContext,
+                                          UrDevice,
+                                          Lengths[0],
+                                          Binaries[0],
+                                          &UrProgram));
+
+  try {
+    _pi_program *PiProgram = new _pi_program(_pi_program::state::Native,
+                                             PiContext,
+                                             Binaries[0],
+                                             Lengths[0]);
+    PiProgram->UrProgram = UrProgram;
+    *Program = reinterpret_cast<pi_program>(PiProgram);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  if (BinaryStatus)
+    *BinaryStatus = PI_SUCCESS;
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piclProgramCreateWithSource(pi_context Context, pi_uint32 Count,
+                            const char **Strings,
+                            const size_t *Lengths,
+                            pi_program *RetProgram) {
+  (void)Context;
+  (void)Count;
+  (void)Strings;
+  (void)Lengths;
+  (void)RetProgram;
+  // zePrint("piclProgramCreateWithSource: not supported in Level Zero\n");
+  return PI_ERROR_INVALID_OPERATION;
+}
+
+inline pi_result
+piProgramGetInfo(pi_program Program, pi_program_info ParamName,
+                           size_t ParamValueSize, void *ParamValue,
+                           size_t *ParamValueSizeRet) {
+
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+  
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+
+  ur_program_info_t PropName {};
+
+  switch(ParamName) {
+    case PI_PROGRAM_INFO_REFERENCE_COUNT: {
+      PropName = UR_PROGRAM_INFO_REFERENCE_COUNT;
+      break;
+    }
+    case PI_PROGRAM_INFO_CONTEXT: {
+      PropName = UR_PROGRAM_INFO_CONTEXT;
+      break;
+    }
+    case PI_PROGRAM_INFO_NUM_DEVICES: {
+      PropName = UR_PROGRAM_INFO_NUM_DEVICES;
+      break;
+    }
+    case PI_PROGRAM_INFO_DEVICES: {
+      PropName = UR_PROGRAM_INFO_DEVICES;
+      break;
+    }
+    case PI_PROGRAM_INFO_SOURCE: {
+      PropName = UR_PROGRAM_INFO_SOURCE;
+      break;
+    }
+    case PI_PROGRAM_INFO_BINARY_SIZES: {
+      PropName = UR_PROGRAM_INFO_BINARY_SIZES;
+      break;
+    }
+    case PI_PROGRAM_INFO_BINARIES: {
+      PropName = UR_PROGRAM_INFO_BINARIES;
+      break;
+    }
+    case PI_PROGRAM_INFO_NUM_KERNELS: {
+      PropName = UR_PROGRAM_INFO_NUM_KERNELS;
+      break;
+    }
+    case PI_PROGRAM_INFO_KERNEL_NAMES: {
+      PropName = UR_PROGRAM_INFO_KERNEL_NAMES;
+      break;
+    }
+    default: {
+      die("urProgramGetInfo: not implemented");
+    }
+  }
+
+  HANDLE_ERRORS(urProgramGetInfo(UrProgram,
+                                 PropName,
+                                 ParamValueSize,
+                                 ParamValue,
+                                 ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piProgramCompile(pi_program Program,
+                 pi_uint32 NumDevices,
+                 const pi_device *DeviceList,
+                 const char *Options,
+                 pi_uint32 NumInputHeaders,
+                 const pi_program *InputHeaders,
+                 const char **HeaderIncludeNames,
+                 void (*PFnNotify)(pi_program Program, void *UserData),
+                 void *UserData) {
+
+  (void)NumInputHeaders;
+  (void)InputHeaders;
+  (void)HeaderIncludeNames;
+
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
+    return PI_ERROR_INVALID_VALUE;
+
+  // These aren't supported.
+  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+
+  std::scoped_lock<pi_shared_mutex> Guard(PiProgram->Mutex);
+
+  // It's only valid to compile a program created from IL (we don't support
+  // programs created from source code).
+  //
+  // The OpenCL spec says that the header parameters are ignored when compiling
+  // IL programs, so we don't validate them.
+  if (PiProgram->State != _pi_program::IL)
+    return PI_ERROR_INVALID_OPERATION;
+
+  // We don't compile anything now.  Instead, we delay compilation until
+  // piProgramLink, where we do both compilation and linking as a single step.
+  // This produces better code because the driver can do cross-module
+  // optimizations.  Therefore, we just remember the compilation flags, so we
+  // can use them later.
+  if (Options)
+    PiProgram->BuildFlags = Options;
+  PiProgram->State = _pi_program::Object;
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piProgramGetBuildInfo(pi_program Program,
+                      pi_device Device,
+                      pi_program_build_info ParamName,
+                      size_t ParamValueSize,
+                      void *ParamValue,
+                      size_t *ParamValueSizeRet) {
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  ur_program_build_info_t PropName {};
+  switch (ParamName) {
+    case PI_PROGRAM_BUILD_INFO_STATUS: {
+      PropName = UR_PROGRAM_BUILD_INFO_STATUS;
+      break;
+    }
+    case PI_PROGRAM_BUILD_INFO_OPTIONS: {
+      PropName = UR_PROGRAM_BUILD_INFO_OPTIONS;
+      break;
+    }
+    case PI_PROGRAM_BUILD_INFO_LOG: {
+      PropName = UR_PROGRAM_BUILD_INFO_LOG;
+      break;
+    }
+    case PI_PROGRAM_BUILD_INFO_BINARY_TYPE: {
+      PropName = UR_PROGRAM_BUILD_INFO_BINARY_TYPE;
+      break;
+    }
+    default: {
+      die("piProgramGetBuildInfo: not implemented");
+    }
+  }
+  HANDLE_ERRORS(urProgramGetBuildInfo(UrProgram,
+                                      UrDevice,
+                                      PropName,
+                                      ParamValueSize,
+                                      ParamValue,
+                                      ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextKernelGetNativeHandle(pi_kernel Kernel,
+                           pi_native_handle *NativeHandle) {
+  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+  ur_native_handle_t NativeKernel {};
+  HANDLE_ERRORS(urKernelGetNativeHandle(UrKernel,
+                                        &NativeKernel));
+
+  *NativeHandle = reinterpret_cast<pi_native_handle>(NativeKernel);
+
+  return PI_SUCCESS;
+}
+
+/// API for writing data from host to a device global variable.
+///
+/// \param Queue is the queue
+/// \param Program is the program containing the device global variable
+/// \param Name is the unique identifier for the device global variable
+/// \param BlockingWrite is true if the write should block
+/// \param Count is the number of bytes to copy
+/// \param Offset is the byte offset into the device global variable to start
+/// copying
+/// \param Src is a pointer to where the data must be copied from
+/// \param NumEventsInWaitList is a number of events in the wait list
+/// \param EventWaitList is the wait list
+/// \param Event is the resulting event
+inline pi_result
+piextEnqueueDeviceGlobalVariableWrite(pi_queue Queue,
+                                      pi_program Program,
+                                      const char *Name,
+                                      pi_bool BlockingWrite,
+                                      size_t Count,
+                                      size_t Offset,
+                                      const void *Src,
+                                      pi_uint32 NumEventsInWaitList,
+                                      const pi_event *EventsWaitList,
+                                      pi_event *Event) {
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueDeviceGlobalVariableWrite(UrQueue,
+                                                   UrProgram,
+                                                   Name,
+                                                   BlockingWrite,
+                                                   Count,
+                                                   Offset,
+                                                   Src,
+                                                   NumEventsInWaitList,
+                                                   UrEventsWaitList.data(),
+                                                   UrEvent));
+
+  return PI_SUCCESS;
+}
+
+/// API reading data from a device global variable to host.
+///
+/// \param Queue is the queue
+/// \param Program is the program containing the device global variable
+/// \param Name is the unique identifier for the device global variable
+/// \param BlockingRead is true if the read should block
+/// \param Count is the number of bytes to copy
+/// \param Offset is the byte offset into the device global variable to start
+/// copying
+/// \param Dst is a pointer to where the data must be copied to
+/// \param NumEventsInWaitList is a number of events in the wait list
+/// \param EventWaitList is the wait list
+/// \param Event is the resulting event
+inline pi_result
+piextEnqueueDeviceGlobalVariableRead(pi_queue Queue,
+                                     pi_program Program,
+                                     const char *Name,
+                                     pi_bool BlockingRead,
+                                     size_t Count,
+                                     size_t Offset,
+                                     void *Dst,
+                                     pi_uint32 NumEventsInWaitList,
+                                     const pi_event *EventsWaitList,
+                                     pi_event *Event) {
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueDeviceGlobalVariableRead(UrQueue,
+                                                  UrProgram,
+                                                  Name,
+                                                  BlockingRead,
+                                                  Count,
+                                                  Offset,
+                                                  Dst,
+                                                  NumEventsInWaitList,
+                                                  UrEventsWaitList.data(),
+                                                  UrEvent));
+
+  return PI_SUCCESS;
+}
+
 
 // Program
 ///////////////////////////////////////////////////////////////////////////////
@@ -1624,13 +2561,12 @@ inline pi_result
 piEnqueueMemImageCopy(pi_queue Queue, pi_mem SrcImage, pi_mem DstImage,
                       pi_image_offset SrcOrigin, pi_image_offset DstOrigin,
                       pi_image_region Region, pi_uint32 NumEventsInWaitList,
-                      const pi_event *EventWaitList, pi_event *Event) {
+                      const pi_event *EventsWaitList, pi_event *Event) {
   
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  // _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
-  // ur_queue_handle_t UrQueue = PiQueue->UrQueue;
-  ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
 
   _pi_mem *PiSrcImage = reinterpret_cast<_pi_mem *>(SrcImage);
   ur_mem_handle_t UrImageSrc = PiSrcImage->UrMemory;
@@ -1641,9 +2577,15 @@ piEnqueueMemImageCopy(pi_queue Queue, pi_mem SrcImage, pi_mem DstImage,
   ur_rect_offset_t UrSrcOrigin {SrcOrigin->x, SrcOrigin->y, SrcOrigin->z};
   ur_rect_offset_t UrDstOrigin {DstOrigin->x, DstOrigin->y, DstOrigin->z};
   ur_rect_region_t UrRegion {Region->width, Region->depth, Region->height};
-  uint32_t UrNumEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *UrEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *UrEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
   
   HANDLE_ERRORS(urEnqueueMemImageCopy(UrQueue,
                                       UrImageSrc,
@@ -1651,8 +2593,8 @@ piEnqueueMemImageCopy(pi_queue Queue, pi_mem SrcImage, pi_mem DstImage,
                                       UrSrcOrigin,
                                       UrDstOrigin,
                                       UrRegion,
-                                      UrNumEventsInWaitList,
-                                      UrEventWaitList,
+                                      NumEventsInWaitList,
+                                      UrEventsWaitList.data(),
                                       UrEvent));
   return PI_SUCCESS;
 }
@@ -1707,7 +2649,9 @@ piextUSMDeviceAlloc(void **ResultPtr,
 
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
   ur_context_handle_t UrContext = PiContext->UrContext;
-  ur_device_handle_t UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
   ur_usm_mem_flags_t USMProp {};
   HANDLE_ERRORS(urUSMDeviceAlloc(UrContext,
                                  UrDevice,
@@ -1732,6 +2676,350 @@ piextUSMDeviceAlloc(void **ResultPtr,
   
 }
 
+inline pi_result
+piextUSMSharedAlloc(void **ResultPtr,
+                    pi_context Context,
+                    pi_device Device,
+                    pi_usm_mem_properties *Properties,
+                    size_t Size,
+                    pi_uint32 Alignment) {
+
+  if (Properties && *Properties != 0) {
+    PI_ASSERT(*(Properties) == PI_MEM_ALLOC_FLAGS && *(Properties + 2) == 0,
+              PI_ERROR_INVALID_VALUE);
+  }
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(Device);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  ur_usm_mem_flags_t USMProp {};
+  HANDLE_ERRORS(urUSMSharedAlloc(UrContext,
+                                 UrDevice,
+                                 &USMProp,
+                                 Size,
+                                 Alignment,
+                                 ResultPtr));
+
+  try {
+    _pi_mem *PiMem = new _pi_mem(UrContext,
+                                 Size,
+                                 nullptr,
+                                 true);
+    *ResultPtr = reinterpret_cast<pi_mem>(PiMem);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextUSMFree(pi_context Context,
+             void *Ptr) {
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  HANDLE_ERRORS(urUSMFree(UrContext,
+                          Ptr));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piMemRetain(pi_mem Mem) {
+  PI_ASSERT(Mem, PI_ERROR_INVALID_MEM_OBJECT);
+
+  _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Mem);
+  ur_mem_handle_t UrMem = PiMem->UrMemory;
+
+  HANDLE_ERRORS(urMemRetain(UrMem));
+
+  return PI_SUCCESS;
+
+}
+
+inline pi_result
+piMemRelease(pi_mem Mem) {
+  PI_ASSERT(Mem, PI_ERROR_INVALID_MEM_OBJECT);
+
+  _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Mem);
+  ur_mem_handle_t UrMem = PiMem->UrMemory;
+
+  HANDLE_ERRORS(urMemRelease(UrMem));
+
+  return PI_SUCCESS;
+}
+
+
+/// Hint to migrate memory to the device
+///
+/// @param Queue is the queue to submit to
+/// @param Ptr points to the memory to migrate
+/// @param Size is the number of bytes to migrate
+/// @param Flags is a bitfield used to specify memory migration options
+/// @param NumEventsInWaitList is the number of events to wait on
+/// @param EventsWaitList is an array of events to wait on
+/// @param Event is the event that represents this operation
+inline pi_result
+piextUSMEnqueuePrefetch(pi_queue Queue,
+                        const void *Ptr,
+                        size_t Size,
+                        pi_usm_migration_flags Flags,
+                        pi_uint32 NumEventsInWaitList,
+                        const pi_event *EventsWaitList,
+                        pi_event *OutEvent) {
+
+  // flags is currently unused so fail if set
+  PI_ASSERT(Flags == 0, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  // TODO: to map from pi_usm_migration_flags to
+  // ur_usm_migration_flags_t
+  // once we have those defined
+  ur_usm_migration_flags_t UrFlags {};
+  HANDLE_ERRORS(urEnqueueUSMPrefetch(UrQueue,
+                                     Ptr,
+                                     Size,
+                                     UrFlags,
+                                     NumEventsInWaitList,
+                                     UrEventsWaitList.data(),
+                                     UrEvent));
+
+  return PI_SUCCESS;
+}
+
+/// USM memadvise API to govern behavior of automatic migration mechanisms
+///
+/// @param Queue is the queue to submit to
+/// @param Ptr is the data to be advised
+/// @param Length is the size in bytes of the meory to advise
+/// @param Advice is device specific advice
+/// @param Event is the event that represents this operation
+///
+inline pi_result
+piextUSMEnqueueMemAdvise(pi_queue Queue,
+                         const void *Ptr,
+                         size_t Length,
+                         pi_mem_advice Advice,
+                         pi_event *OutEvent) {
+  
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  // TODO: to map from pi_mem_advice to ur_mem_advice_t
+  // once we have those defined
+  ur_mem_advice_t UrAdvice {};
+  HANDLE_ERRORS(urEnqueueUSMMemAdvise(UrQueue,
+                                      Ptr,
+                                      Length,
+                                      UrAdvice,
+                                      UrEvent));
+  return PI_SUCCESS;
+}
+
+/// USM 2D Fill API
+///
+/// \param queue is the queue to submit to
+/// \param ptr is the ptr to fill
+/// \param pitch is the total width of the destination memory including padding
+/// \param pattern is a pointer with the bytes of the pattern to set
+/// \param pattern_size is the size in bytes of the pattern
+/// \param width is width in bytes of each row to fill
+/// \param height is height the columns to fill
+/// \param num_events_in_waitlist is the number of events to wait on
+/// \param events_waitlist is an array of events to wait on
+/// \param event is the event that represents this operation
+inline pi_result
+piextUSMEnqueueFill2D(pi_queue Queue,
+                      void *Ptr,
+                      size_t Pitch,
+                      size_t PatternSize,
+                      const void *Pattern,
+                      size_t Width,
+                      size_t Height,
+                      pi_uint32 NumEventsWaitList,
+                      const pi_event *EventsWaitList,
+                      pi_event *Event) {
+
+  std::ignore = Queue;
+  std::ignore = Ptr;
+  std::ignore = Pitch;
+  std::ignore = PatternSize;
+  std::ignore = Pattern;
+  std::ignore = Width;
+  std::ignore = Height;
+  std::ignore = NumEventsWaitList;
+  std::ignore = EventsWaitList;
+  std::ignore = Event;
+  die("piextUSMEnqueueFill2D: not implemented");
+  return {};
+}
+
+
+inline pi_result
+piextUSMEnqueueMemset2D(pi_queue Queue,
+                        void *Ptr,
+                        size_t Pitch,
+                        int Value,
+                        size_t Width,
+                        size_t Height,
+                        pi_uint32 NumEventsWaitList,
+                        const pi_event *EventsWaitList,
+                        pi_event *Event) {
+  std::ignore = Queue;
+  std::ignore = Ptr;
+  std::ignore = Pitch;
+  std::ignore = Value;
+  std::ignore = Width;
+  std::ignore = Height;
+  std::ignore = NumEventsWaitList;
+  std::ignore = EventsWaitList;
+  std::ignore = Event;
+  die("piextUSMEnqueueMemset2D: not implemented");
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextUSMGetMemAllocInfo(pi_context Context,
+                        const void *Ptr,
+                        pi_mem_alloc_info ParamName,
+                        size_t ParamValueSize,
+                        void *ParamValue,
+                        size_t *ParamValueSizeRet) {
+
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  ur_usm_alloc_info_t UrParamName{};
+  switch(ParamName) {
+    case PI_MEM_ALLOC_TYPE: {
+      UrParamName = UR_USM_ALLOC_INFO_TYPE;
+      break;
+    }
+    case PI_MEM_ALLOC_BASE_PTR: {
+      UrParamName = UR_USM_ALLOC_INFO_BASE_PTR;
+      break;
+    }
+    case PI_MEM_ALLOC_SIZE: {
+      UrParamName = UR_USM_ALLOC_INFO_SIZE;
+      break;
+    }
+    case PI_MEM_ALLOC_DEVICE: {
+      UrParamName = UR_USM_ALLOC_INFO_DEVICE;
+      break;
+    }
+    default: {
+      die("piextUSMGetMemAllocInfo: unsuppported ParamName.");
+    }
+  }
+
+  HANDLE_ERRORS(urUSMGetMemAllocInfo(UrContext,
+                                     Ptr,
+                                     UrParamName,
+                                     ParamValueSize,
+                                     ParamValue,
+                                     ParamValueSizeRet))
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piMemImageGetInfo(pi_mem Image,
+                  pi_image_info ParamName,
+                  size_t ParamValueSize,
+                  void *ParamValue,
+                  size_t *ParamValueSizeRet) { // missing
+  std::ignore = Image;
+  std::ignore = ParamName;
+  std::ignore = ParamValueSize;
+  std::ignore = ParamValue;
+  std::ignore = ParamValueSizeRet;
+
+  // TODO: use urMemImageGetInfo
+
+  die("piMemImageGetInfo: not implemented");
+  return {};
+}
+
+/// USM 2D Memcpy API
+///
+/// \param queue is the queue to submit to
+/// \param blocking is whether this operation should block the host
+/// \param dst_ptr is the location the data will be copied
+/// \param dst_pitch is the total width of the destination memory including
+/// padding
+/// \param src_ptr is the data to be copied
+/// \param dst_pitch is the total width of the source memory including padding
+/// \param width is width in bytes of each row to be copied
+/// \param height is height the columns to be copied
+/// \param num_events_in_waitlist is the number of events to wait on
+/// \param events_waitlist is an array of events to wait on
+/// \param event is the event that represents this operation
+inline pi_result
+piextUSMEnqueueMemcpy2D(pi_queue Queue,
+                        pi_bool Blocking,
+                        void *DstPtr,
+                        size_t DstPitch,
+                        const void *SrcPtr,
+                        size_t SrcPitch,
+                        size_t Width,
+                        size_t Height,
+                        pi_uint32 NumEventsInWaitList,
+                        const pi_event *EventsWaitList,
+                        pi_event *Event) {
+
+  if (!DstPtr || !SrcPtr)
+    return PI_ERROR_INVALID_VALUE;
+
+  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
+
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueUSMMemcpy2D(UrQueue,
+                                     Blocking,
+                                     DstPtr,
+                                     DstPitch,
+                                     SrcPtr,
+                                     SrcPitch,
+                                     Width,
+                                     Height,
+                                     NumEventsInWaitList,
+                                     UrEventsWaitList.data(),
+                                     UrEvent));
+  return PI_SUCCESS;
+}
+
 // Memory
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -1746,32 +3034,63 @@ piEnqueueKernelLaunch(pi_queue Queue,
                       const size_t *GlobalWorkSize,
                       const size_t *LocalWorkSize,
                       pi_uint32 NumEventsInWaitList,
-                      const pi_event *EventWaitList,
+                      const pi_event *EventsWaitList,
                       pi_event *OutEvent) {
 
   PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
   PI_ASSERT((WorkDim > 0) && (WorkDim < 4), PI_ERROR_INVALID_WORK_DIMENSION);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
   ur_kernel_handle_t hKernel = PiKernel->UrKernel;
   uint32_t workDim = reinterpret_cast<uint32_t>(WorkDim);
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  // printf("%s %d *RetKernel %lx\n", __FILE__, __LINE__, (unsigned long int)*RetKernel);
+  // _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  // ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  // ur_event_handle_t *UrEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueKernelLaunch(hQueue,
+  ur_event_handle_t *UrEvent {};
+  ur_event_handle_t InternalEvent {};
+  if (OutEvent) {
+    UrEvent = &InternalEvent;
+  }
+
+  printf("%s %d OutEvent %lx UrEvent %lx\n", __FILE__, __LINE__, (unsigned long int)OutEvent, (unsigned long int)UrEvent);
+
+  HANDLE_ERRORS(urEnqueueKernelLaunch(UrQueue,
                                       hKernel,
                                       workDim,
                                       GlobalWorkOffset,
                                       GlobalWorkSize,
                                       LocalWorkSize,
-                                      numEventsInWaitList,
-                                      phEventWaitList,
-                                      phEvent));
+                                      NumEventsInWaitList,
+                                      UrEventsWaitList.data(),
+                                      UrEvent));
+
+  if (*OutEvent == nullptr) {
+    _pi_event *PiEvent {};
+    try {
+      PiEvent = new _pi_event(*UrEvent);
+      *OutEvent = reinterpret_cast<pi_event>(PiEvent);
+    } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return PI_ERROR_UNKNOWN;
+    }
+  } else {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+    PiEvent->UrEvent = *UrEvent;
+  }
+
+
+  printf("%s %d\n", __FILE__, __LINE__);
 
   return PI_SUCCESS;
 }
@@ -1782,30 +3101,36 @@ piEnqueueMemImageWrite(pi_queue Queue, pi_mem Image,
                        pi_image_region Region, size_t InputRowPitch,
                        size_t InputSlicePitch, const void *Ptr,
                        pi_uint32 NumEventsInWaitList,
-                       const pi_event *EventWaitList,
+                       const pi_event *EventsWaitList,
                        pi_event *Event) {
 
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Image);
-  ur_mem_handle_t hImage = PiMem->UrMemory;
+  ur_mem_handle_t UrImage = PiMem->UrMemory;
   ur_rect_offset_t UrOrigin {Origin->x, Origin->y, Origin->z};
   ur_rect_region_t UrRegion {Region->width, Region->depth, Region->height};
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
-  HANDLE_ERRORS(urEnqueueMemImageWrite(hQueue,
-                                       hImage,
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  HANDLE_ERRORS(urEnqueueMemImageWrite(UrQueue,
+                                       UrImage,
                                        BlockingWrite,
                                        UrOrigin,
                                        UrRegion,
                                        InputRowPitch,
                                        InputSlicePitch,
                                        const_cast<void *>(Ptr),
-                                       numEventsInWaitList,
-                                       phEventWaitList,
-                                       phEvent));
+                                       NumEventsInWaitList,
+                                       UrEventsWaitList.data(),
+                                       UrEvent));
 
   return PI_SUCCESS;
 }
@@ -1816,29 +3141,35 @@ piEnqueueMemImageRead(pi_queue Queue, pi_mem Image,
                       pi_image_region Region, size_t RowPitch,
                       size_t SlicePitch, void *Ptr,
                       pi_uint32 NumEventsInWaitList,
-                      const pi_event *EventWaitList,
+                      const pi_event *EventsWaitList,
                       pi_event *Event) {
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Image);
-  ur_mem_handle_t hImage = PiMem->UrMemory;
+  ur_mem_handle_t UrImage = PiMem->UrMemory;
   ur_rect_offset_t UrOrigin {Origin->x, Origin->y, Origin->z};
   ur_rect_region_t UrRegion {Region->width, Region->depth, Region->height};
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
-  HANDLE_ERRORS(urEnqueueMemImageRead(hQueue,
-                                      hImage,
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  HANDLE_ERRORS(urEnqueueMemImageRead(UrQueue,
+                                      UrImage,
                                       BlockingRead,
                                       UrOrigin,
                                       UrRegion,
                                       RowPitch,
                                       SlicePitch,
                                       Ptr,
-                                      numEventsInWaitList,
-                                      phEventWaitList,
-                                      phEvent));
+                                      NumEventsInWaitList,
+                                      UrEventsWaitList.data(),
+                                      UrEvent));
 
   return PI_SUCCESS;
 }
@@ -1851,7 +3182,7 @@ piEnqueueMemBufferMap(pi_queue Queue,
                       size_t Offset,
                       size_t Size,
                       pi_uint32 NumEventsInWaitList,
-                      const pi_event *EventWaitList,
+                      const pi_event *EventsWaitList,
                       pi_event *OutEvent,
                       void **RetMap) {
   // TODO: we don't implement read-only or write-only, always read-write.
@@ -1860,30 +3191,36 @@ piEnqueueMemBufferMap(pi_queue Queue,
   PI_ASSERT(Mem, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Mem);
-  ur_mem_handle_t hMem = PiMem->UrMemory;
+  ur_mem_handle_t UrMem = PiMem->UrMemory;
 
-  ur_map_flags_t mapFlags {};
+  ur_map_flags_t UrMapFlags {};
   if (MapFlags == PI_MAP_READ)
-    mapFlags |= UR_MAP_FLAG_READ;
+    UrMapFlags |= UR_MAP_FLAG_READ;
   if (MapFlags == PI_MAP_WRITE)
-    mapFlags |= UR_MAP_FLAG_WRITE;
+    UrMapFlags |= UR_MAP_FLAG_WRITE;
   if (MapFlags == PI_MAP_WRITE_INVALIDATE_REGION)
-    mapFlags |= UR_EXT_MAP_FLAG_WRITE_INVALIDATE_REGION;
+    UrMapFlags |= UR_EXT_MAP_FLAG_WRITE_INVALIDATE_REGION;
 
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
-  urEnqueueMemBufferMap(hQueue,
-                        hMem,
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  urEnqueueMemBufferMap(UrQueue,
+                        UrMem,
                         BlockingMap,
-                        mapFlags,
+                        UrMapFlags,
                         Offset,
                         Size,
-                        numEventsInWaitList,
-                        phEventWaitList,
-                        phEvent,
+                        NumEventsInWaitList,
+                        UrEventsWaitList.data(),
+                        UrEvent,
                         RetMap);
 
   return PI_SUCCESS;
@@ -1894,24 +3231,30 @@ piEnqueueMemUnmap(pi_queue Queue,
                   pi_mem Mem,
                   void *MappedPtr,
                   pi_uint32 NumEventsInWaitList,
-                  const pi_event *EventWaitList,
+                  const pi_event *EventsWaitList,
                   pi_event *OutEvent) {
   
   PI_ASSERT(Mem, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Mem);
-  ur_mem_handle_t hMem = PiMem->UrMemory;
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
-  HANDLE_ERRORS(urEnqueueMemUnmap(hQueue,
-                                  hMem,
+  ur_mem_handle_t UrMem = PiMem->UrMemory;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  HANDLE_ERRORS(urEnqueueMemUnmap(UrQueue,
+                                  UrMem,
                                   MappedPtr,
-                                  numEventsInWaitList,
-                                  phEventWaitList,
-                                  phEvent));
+                                  NumEventsInWaitList,
+                                  UrEventsWaitList.data(),
+                                  UrEvent));
 
   return PI_SUCCESS;
 }
@@ -1921,26 +3264,32 @@ piEnqueueMemBufferFill(pi_queue Queue, pi_mem Buffer,
                        const void *Pattern, size_t PatternSize,
                        size_t Offset, size_t Size,
                        pi_uint32 NumEventsInWaitList,
-                       const pi_event *EventWaitList,
+                       const pi_event *EventsWaitList,
                        pi_event *Event) {
   PI_ASSERT(Buffer, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiBuffer = reinterpret_cast<_pi_mem *>(Buffer);
-  ur_mem_handle_t hBuffer = PiBuffer->UrMemory;
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
-  HANDLE_ERRORS(urEnqueueMemBufferFill(hQueue,
-                                       hBuffer,
+  ur_mem_handle_t UrBuffer = PiBuffer->UrMemory;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  HANDLE_ERRORS(urEnqueueMemBufferFill(UrQueue,
+                                       UrBuffer,
                                        Pattern,
                                        PatternSize,
                                        Offset,
                                        Size,
-                                       numEventsInWaitList,
-                                       phEventWaitList,
-                                       phEvent));
+                                       NumEventsInWaitList,
+                                       UrEventsWaitList.data(),
+                                       UrEvent));
   return PI_SUCCESS;
 }
 
@@ -1949,30 +3298,36 @@ piextUSMEnqueueMemset(pi_queue Queue,
                       void *Ptr,
                       pi_int32 Value,
                       size_t Count,
-                      pi_uint32 NumEventsInWaitlist,
-                      const pi_event *EventsWaitlist,
+                      pi_uint32 NumEventsInWaitList,
+                      const pi_event *EventsWaitList,
                       pi_event *Event) {
   PI_ASSERT(Ptr, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiBuffer = reinterpret_cast<_pi_mem *>(Ptr);
-  ur_mem_handle_t hBuffer = PiBuffer->UrMemory;
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitlist);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventsWaitlist);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBuffer = PiBuffer->UrMemory;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
 
   uint32_t Pattern = Value;
   size_t PatternSize = sizeof(Pattern);
-  HANDLE_ERRORS(urEnqueueMemBufferFill(hQueue,
-                                       hBuffer,
+  HANDLE_ERRORS(urEnqueueMemBufferFill(UrQueue,
+                                       UrBuffer,
                                        const_cast<const void *>(reinterpret_cast<void *>(&Pattern)),
                                        PatternSize,
                                        0,
                                        Count,
-                                       numEventsInWaitList,
-                                       phEventWaitList,
-                                       phEvent));
+                                       NumEventsInWaitList,
+                                       UrEventsWaitList.data(),
+                                       UrEvent));
   return PI_SUCCESS;
 }
 
@@ -1988,38 +3343,44 @@ piEnqueueMemBufferCopyRect(pi_queue Queue,
                            size_t DstRowPitch,
                            size_t DstSlicePitch,
                            pi_uint32 NumEventsInWaitList,
-                           const pi_event *EventWaitList,
+                           const pi_event *EventsWaitList,
                            pi_event *Event) {
 
   PI_ASSERT(SrcMem && DstMem, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiSrcBuffer = reinterpret_cast<_pi_mem *>(SrcMem);
-  ur_mem_handle_t hBufferSrc = PiSrcBuffer->UrMemory;
+  ur_mem_handle_t UrBufferSrc = PiSrcBuffer->UrMemory;
   _pi_mem *PiDstBuffer = reinterpret_cast<_pi_mem *>(DstMem);
-  ur_mem_handle_t hBufferDst = PiDstBuffer->UrMemory;
-  ur_rect_offset_t srcOrigin {SrcOrigin->x_bytes, SrcOrigin->y_scalar, SrcOrigin->z_scalar};
-  ur_rect_offset_t dstOrigin {DstOrigin->x_bytes, DstOrigin->y_scalar, DstOrigin->z_scalar};
-  ur_rect_region_t region {Region->width_bytes, Region->depth_scalar, Region->height_scalar};
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBufferDst = PiDstBuffer->UrMemory;
+  ur_rect_offset_t UrSrcOrigin {SrcOrigin->x_bytes, SrcOrigin->y_scalar, SrcOrigin->z_scalar};
+  ur_rect_offset_t UrDstOrigin {DstOrigin->x_bytes, DstOrigin->y_scalar, DstOrigin->z_scalar};
+  ur_rect_region_t UrRegion {Region->width_bytes, Region->depth_scalar, Region->height_scalar};
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueMemBufferCopyRect(hQueue,
-                                           hBufferSrc,
-                                           hBufferDst,
-                                           srcOrigin,
-                                           dstOrigin,
-                                           region,
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueMemBufferCopyRect(UrQueue,
+                                           UrBufferSrc,
+                                           UrBufferDst,
+                                           UrSrcOrigin,
+                                           UrDstOrigin,
+                                           UrRegion,
                                            SrcRowPitch,
                                            SrcSlicePitch,
                                            DstRowPitch,
                                            DstSlicePitch,
-                                           numEventsInWaitList,
-                                           phEventWaitList,
-                                           phEvent));
+                                           NumEventsInWaitList,
+                                           UrEventsWaitList.data(),
+                                           UrEvent));
   return PI_SUCCESS;
 }
 
@@ -2029,30 +3390,36 @@ piEnqueueMemBufferCopy(pi_queue Queue, pi_mem SrcMem, pi_mem DstMem,
                        size_t DstOffset,
                        size_t Size,
                        pi_uint32 NumEventsInWaitList,
-                       const pi_event *EventWaitList,
+                       const pi_event *EventsWaitList,
                        pi_event *Event) {
  
   PI_ASSERT(SrcMem && DstMem, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiSrcBuffer = reinterpret_cast<_pi_mem *>(SrcMem);
-  ur_mem_handle_t hBufferSrc = PiSrcBuffer->UrMemory;
+  ur_mem_handle_t UrBufferSrc = PiSrcBuffer->UrMemory;
   _pi_mem *PiDstBuffer = reinterpret_cast<_pi_mem *>(DstMem);
-  ur_mem_handle_t hBufferDst = PiDstBuffer->UrMemory;
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBufferDst = PiDstBuffer->UrMemory;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueMemBufferCopy(hQueue,
-                                       hBufferSrc,
-                                       hBufferDst,
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueMemBufferCopy(UrQueue,
+                                       UrBufferSrc,
+                                       UrBufferDst,
                                        SrcOffset,
                                        DstOffset,
                                        Size,
-                                       numEventsInWaitList,
-                                       phEventWaitList,
-                                       phEvent));
+                                       NumEventsInWaitList,
+                                       UrEventsWaitList.data(),
+                                       UrEvent));
   return PI_SUCCESS;
 }
 
@@ -2062,23 +3429,29 @@ piextUSMEnqueueMemcpy(pi_queue Queue,
                       void *DstPtr,
                       const void *SrcPtr,
                       size_t Size,
-                      pi_uint32 NumEventsInWaitlist,
-                      const pi_event *EventsWaitlist,
+                      pi_uint32 NumEventsInWaitList,
+                      const pi_event *EventsWaitList,
                       pi_event *Event) {
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitlist);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventsWaitlist);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueUSMMemcpy(hQueue,
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueUSMMemcpy(UrQueue,
                                    Blocking,
                                    DstPtr,
                                    SrcPtr,
                                    Size,
-                                   numEventsInWaitList,
-                                   phEventWaitList,
-                                   phEvent));
+                                   NumEventsInWaitList,
+                                   UrEventsWaitList.data(),
+                                   UrEvent));
   return PI_SUCCESS;
 }
 
@@ -2095,36 +3468,42 @@ piEnqueueMemBufferWriteRect(pi_queue Queue,
                             size_t HostSlicePitch,
                             const void *Ptr,
                             pi_uint32 NumEventsInWaitList,
-                            const pi_event *EventWaitList,
+                            const pi_event *EventsWaitList,
                             pi_event *Event) {
 
   PI_ASSERT(Buffer, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiBuffer = reinterpret_cast<_pi_mem *>(Buffer);
-  ur_mem_handle_t hBuffer = PiBuffer->UrMemory;
-  ur_rect_offset_t bufferOffset {BufferOffset->x_bytes, BufferOffset->y_scalar, BufferOffset->z_scalar};
-  ur_rect_offset_t hostOffset {HostOffset->x_bytes, HostOffset->y_scalar, HostOffset->z_scalar};
-  ur_rect_region_t region {Region->width_bytes, Region->depth_scalar, Region->height_scalar};
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBuffer = PiBuffer->UrMemory;
+  ur_rect_offset_t UrBufferOffset {BufferOffset->x_bytes, BufferOffset->y_scalar, BufferOffset->z_scalar};
+  ur_rect_offset_t UrHostOffset {HostOffset->x_bytes, HostOffset->y_scalar, HostOffset->z_scalar};
+  ur_rect_region_t UrRegion {Region->width_bytes, Region->depth_scalar, Region->height_scalar};
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueMemBufferWriteRect(hQueue,
-                                            hBuffer,
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueMemBufferWriteRect(UrQueue,
+                                            UrBuffer,
                                             BlockingWrite,
-                                            bufferOffset,
-                                            hostOffset,
-                                            region,
+                                            UrBufferOffset,
+                                            UrHostOffset,
+                                            UrRegion,
                                             BufferRowPitch,
                                             BufferSlicePitch,
                                             HostRowPitch,
                                             HostSlicePitch,
                                             const_cast<void *>(Ptr),
-                                            numEventsInWaitList,
-                                            phEventWaitList,
-                                            phEvent));
+                                            NumEventsInWaitList,
+                                            UrEventsWaitList.data(),
+                                            UrEvent));
   
  return PI_SUCCESS;
 }
@@ -2137,28 +3516,34 @@ piEnqueueMemBufferWrite(pi_queue Queue,
                         size_t Size,
                         const void *Ptr,
                         pi_uint32 NumEventsInWaitList,
-                        const pi_event *EventWaitList,
+                        const pi_event *EventsWaitList,
                         pi_event *Event) {
 
   PI_ASSERT(Buffer, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiBuffer = reinterpret_cast<_pi_mem *>(Buffer);
-  ur_mem_handle_t hBuffer = PiBuffer->UrMemory;
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBuffer = PiBuffer->UrMemory;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueMemBufferWrite(hQueue,
-                                        hBuffer,
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueMemBufferWrite(UrQueue,
+                                        UrBuffer,
                                         BlockingWrite,
                                         Offset,
                                         Size,
                                         const_cast<void *>(Ptr),
-                                        numEventsInWaitList,
-                                        phEventWaitList,
-                                        phEvent));
+                                        NumEventsInWaitList,
+                                        UrEventsWaitList.data(),
+                                        UrEvent));
   
   return PI_SUCCESS;
 }
@@ -2176,36 +3561,43 @@ piEnqueueMemBufferReadRect(pi_queue Queue,
                            size_t HostSlicePitch,
                            void *Ptr,
                            pi_uint32 NumEventsInWaitList,
-                           const pi_event *EventWaitList,
+                           const pi_event *EventsWaitList,
                            pi_event *Event) {
 
   PI_ASSERT(Buffer, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiBuffer = reinterpret_cast<_pi_mem *>(Buffer);
-  ur_mem_handle_t hBuffer = PiBuffer->UrMemory;
-  ur_rect_offset_t bufferOffset {BufferOffset->x_bytes, BufferOffset->y_scalar, BufferOffset->z_scalar};
-  ur_rect_offset_t hostOffset {HostOffset->x_bytes, HostOffset->y_scalar, HostOffset->z_scalar};
-  ur_rect_region_t region {Region->width_bytes, Region->depth_scalar, Region->height_scalar};
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBuffer = PiBuffer->UrMemory;
+  ur_rect_offset_t UrBufferOffset {BufferOffset->x_bytes, BufferOffset->y_scalar, BufferOffset->z_scalar};
+  ur_rect_offset_t UrHostOffset {HostOffset->x_bytes, HostOffset->y_scalar, HostOffset->z_scalar};
+  ur_rect_region_t UrRegion {Region->width_bytes, Region->depth_scalar, Region->height_scalar};
 
-  HANDLE_ERRORS(urEnqueueMemBufferReadRect(hQueue,
-                                           hBuffer,
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueMemBufferReadRect(UrQueue,
+                                           UrBuffer,
                                            BlockingRead,
-                                           bufferOffset,
-                                           hostOffset,
-                                           region,
+                                           UrBufferOffset,
+                                           UrHostOffset,
+                                           UrRegion,
                                            BufferRowPitch,
                                            BufferSlicePitch,
                                            HostRowPitch,
                                            HostSlicePitch,
                                            Ptr,
-                                           numEventsInWaitList,
-                                           phEventWaitList,
-                                           phEvent));
+                                           NumEventsInWaitList,
+                                           UrEventsWaitList.data(),
+                                           UrEvent));
 
   return PI_SUCCESS;
 }
@@ -2214,51 +3606,63 @@ inline pi_result
 piEnqueueMemBufferRead(pi_queue Queue,
                         pi_mem Src,
                         pi_bool BlockingRead,
-                      size_t Offset,
+                        size_t Offset,
                         size_t Size,
                         void *Dst,
                         pi_uint32 NumEventsInWaitList,
-                        const pi_event *EventWaitList,
+                        const pi_event *EventsWaitList,
                         pi_event *Event) {
   PI_ASSERT(Src, PI_ERROR_INVALID_MEM_OBJECT);
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
   
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
   _pi_mem *PiBuffer = reinterpret_cast<_pi_mem *>(Src);
-  ur_mem_handle_t hBuffer = PiBuffer->UrMemory;
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
+  ur_mem_handle_t UrBuffer = PiBuffer->UrMemory;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueMemBufferRead(hQueue,
-                                       hBuffer,
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueMemBufferRead(UrQueue,
+                                       UrBuffer,
                                        BlockingRead,
                                        Offset,
                                        Size,
                                        Dst,
-                                       numEventsInWaitList,
-                                       phEventWaitList,
-                                       phEvent));
+                                       NumEventsInWaitList,
+                                       UrEventsWaitList.data(),
+                                       UrEvent));
   return PI_SUCCESS;
 }
 
 inline pi_result
 piEnqueueEventsWaitWithBarrier(pi_queue Queue,
                                pi_uint32 NumEventsInWaitList,
-                               const pi_event *EventWaitList,
+                               const pi_event *EventsWaitList,
                                pi_event *OutEvent) {
 
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
 
-  HANDLE_ERRORS(urEnqueueEventsWaitWithBarrier(hQueue,
-                                               numEventsInWaitList,
-                                               phEventWaitList,
-                                               phEvent));
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  HANDLE_ERRORS(urEnqueueEventsWaitWithBarrier(UrQueue,
+                                               NumEventsInWaitList,
+                                               UrEventsWaitList.data(),
+                                               UrEvent));
  
   return PI_SUCCESS;
 }
@@ -2267,19 +3671,25 @@ piEnqueueEventsWaitWithBarrier(pi_queue Queue,
 inline pi_result
 piEnqueueEventsWait(pi_queue Queue,
                     pi_uint32 NumEventsInWaitList,
-                    const pi_event *EventWaitList,
+                    const pi_event *EventsWaitList,
                     pi_event *OutEvent) {
 
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
-  ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEventsInWaitList);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventWaitList);
-  ur_event_handle_t *phEvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
+  _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
+  ur_queue_handle_t UrQueue = PiQueue->UrQueue;
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEventsInWaitList);
+  for (uint32_t EventIt = 0; EventIt < NumEventsInWaitList; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*OutEvent);
+  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
   
-  HANDLE_ERRORS(urEnqueueEventsWait(hQueue,
-                                    numEventsInWaitList,
-                                    phEventWaitList,
-                                    phEvent));
+  HANDLE_ERRORS(urEnqueueEventsWait(UrQueue,
+                                    NumEventsInWaitList,
+                                    UrEventsWaitList.data(),
+                                    UrEvent));
 
   return PI_SUCCESS;
 }
@@ -2291,15 +3701,19 @@ piEnqueueEventsWait(pi_queue Queue,
 // Events
 inline pi_result
 piEventsWait(pi_uint32 NumEvents,
-             const pi_event *EventList) {
-  if (NumEvents && !EventList) {
+             const pi_event *EventsWaitList) {
+  if (NumEvents && !EventsWaitList) {
     return PI_ERROR_INVALID_EVENT;
   }
 
-  uint32_t numEventsInWaitList = reinterpret_cast<uint32_t>(NumEvents);
-  const ur_event_handle_t *phEventWaitList = reinterpret_cast<const ur_event_handle_t *>(EventList);
-  HANDLE_ERRORS(urEventWait(numEventsInWaitList,
-                            phEventWaitList));
+  std::vector<ur_event_handle_t> UrEventsWaitList(NumEvents);
+  for (uint32_t EventIt = 0; EventIt < NumEvents; EventIt++) {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
+    UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+  }
+
+  HANDLE_ERRORS(urEventWait(NumEvents,
+                            UrEventsWaitList.data()));
 
   return PI_SUCCESS;
 }
@@ -2313,24 +3727,26 @@ piEventGetInfo(pi_event Event,
 
   PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
 
-  ur_event_handle_t hEvent = reinterpret_cast<ur_event_handle_t>(Event);
-  ur_event_info_t propName {};
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(Event);
+  ur_event_handle_t UrEvent = PiEvent->UrEvent;
+
+  ur_event_info_t PropName {};
   if (ParamName == PI_EVENT_INFO_COMMAND_QUEUE) {
-    propName = UR_EVENT_INFO_COMMAND_QUEUE;
+    PropName = UR_EVENT_INFO_COMMAND_QUEUE;
   } else if (ParamName == PI_EVENT_INFO_CONTEXT) {
-    propName = UR_EVENT_INFO_CONTEXT;
+    PropName = UR_EVENT_INFO_CONTEXT;
   } else if (ParamName == PI_EVENT_INFO_COMMAND_TYPE) {
-    propName = UR_EVENT_INFO_COMMAND_TYPE;
+    PropName = UR_EVENT_INFO_COMMAND_TYPE;
   } else if (ParamName == PI_EVENT_INFO_COMMAND_EXECUTION_STATUS) {
-    propName = UR_EVENT_INFO_COMMAND_EXECUTION_STATUS;
+    PropName = UR_EVENT_INFO_COMMAND_EXECUTION_STATUS;
   } else if (ParamName == PI_EVENT_INFO_REFERENCE_COUNT) {
-    propName = UR_EVENT_INFO_REFERENCE_COUNT;
+    PropName = UR_EVENT_INFO_REFERENCE_COUNT;
   } else {
     return PI_ERROR_INVALID_VALUE;
   }
 
-  HANDLE_ERRORS(urEventGetInfo(hEvent,
-                               propName,
+  HANDLE_ERRORS(urEventGetInfo(UrEvent,
+                               PropName,
                                ParamValueSize,
                                ParamValue,
                                ParamValueSizeRet));
@@ -2345,9 +3761,12 @@ piextEventGetNativeHandle(pi_event Event,
   PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
   PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
 
-  ur_event_handle_t hEvent = reinterpret_cast<ur_event_handle_t>(Event);
-  ur_native_handle_t *phNativeEvent = reinterpret_cast<ur_native_handle_t *>(NativeHandle);
-  HANDLE_ERRORS(urEventGetNativeHandle(hEvent, phNativeEvent));
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(Event);
+  ur_event_handle_t UrEvent = PiEvent->UrEvent;
+
+  ur_native_handle_t *UrNativeEvent = reinterpret_cast<ur_native_handle_t *>(NativeHandle);
+  HANDLE_ERRORS(urEventGetNativeHandle(UrEvent,
+                                       UrNativeEvent));
 
   return PI_SUCCESS;
 }
@@ -2361,38 +3780,278 @@ piEventGetProfilingInfo(pi_event Event,
 
   PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
 
-  ur_event_handle_t hEvent = reinterpret_cast<ur_event_handle_t>(Event);
-  ur_profiling_info_t propName {};
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(Event);
+  ur_event_handle_t UrEvent = PiEvent->UrEvent;
+
+  printf("%s %d ParamName %d\n", __FILE__, __LINE__, (uint32_t)ParamName);
+
+  ur_profiling_info_t PropName {};
   switch(ParamName) {
     case PI_PROFILING_INFO_COMMAND_QUEUED: {
-      propName = UR_PROFILING_INFO_COMMAND_QUEUED;
+      printf("%s %d\n", __FILE__, __LINE__);
+      PropName = UR_PROFILING_INFO_COMMAND_QUEUED;
       break;
     }
     case PI_PROFILING_INFO_COMMAND_SUBMIT: {
-      propName = UR_PROFILING_INFO_COMMAND_SUBMIT;
+      printf("%s %d\n", __FILE__, __LINE__);
+      PropName = UR_PROFILING_INFO_COMMAND_SUBMIT;
       break;
     }
     case PI_PROFILING_INFO_COMMAND_START: {
-      propName = UR_PROFILING_INFO_COMMAND_START;
+      printf("%s %d\n", __FILE__, __LINE__);
+      PropName = UR_PROFILING_INFO_COMMAND_START;
       break;
     }
     case PI_PROFILING_INFO_COMMAND_END: {
-      propName = UR_PROFILING_INFO_COMMAND_END;
+      printf("%s %d\n", __FILE__, __LINE__);
+      PropName = UR_PROFILING_INFO_COMMAND_END;
       break;
     }
     default:
+      printf("%s %d\n", __FILE__, __LINE__);
       return PI_ERROR_INVALID_PROPERTY;
   }
 
-  HANDLE_ERRORS(urEventGetProfilingInfo(hEvent,
-                                        propName,
+  HANDLE_ERRORS(urEventGetProfilingInfo(UrEvent,
+                                        PropName,
                                         ParamValueSize,
                                         ParamValue,
                                         ParamValueSizeRet));
 
+  printf("%s %d\n", __FILE__, __LINE__);
+
   return PI_SUCCESS;
 }
+
+inline pi_result
+piEventCreate(pi_context Context,
+              pi_event *RetEvent) {
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  ur_event_handle_t UrEvent {};
+  // pass null for the hNativeHandle to use urEventCreateWithNativeHandle
+  // as urEventCreate
+  HANDLE_ERRORS(urEventCreateWithNativeHandle(nullptr,
+                                              UrContext,
+                                              &UrEvent));
+
+  _pi_event *PiEvent {};
+  try {
+    PiEvent = new _pi_event(UrEvent);
+    *RetEvent = reinterpret_cast<pi_event>(PiEvent);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piextEventCreateWithNativeHandle(pi_native_handle NativeHandle,
+                                           pi_context Context,
+                                           bool OwnNativeHandle,
+                                           pi_event *Event) {
+
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
+  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
+
+  ur_native_handle_t UrNativeKernel = reinterpret_cast<ur_native_handle_t>(NativeHandle);
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  ur_event_handle_t UrEvent {};
+  HANDLE_ERRORS(urEventCreateWithNativeHandle(UrNativeKernel,
+                                              UrContext,
+                                              &UrEvent));  
+
+  _pi_event *PiEvent {};
+  try {
+    PiEvent = new _pi_event(UrEvent);
+    *Event = reinterpret_cast<pi_event>(PiEvent);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  PiEvent->OwnZeEvent = OwnNativeHandle;
+
+  return PI_SUCCESS;
+}
+
+
+inline pi_result
+piEventSetCallback(pi_event Event,
+                   pi_int32 CommandExecCallbackType,
+                   void (*PFnNotify)(pi_event Event,
+                                    pi_int32 EventCommandStatus,
+                                    void *UserData),
+                   void *UserData) {
+  (void)Event;
+  (void)CommandExecCallbackType;
+  (void)PFnNotify;
+  (void)UserData;
+  die("piEventSetCallback: deprecated, to be removed");
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piEventSetStatus(pi_event Event,
+                 pi_int32 ExecutionStatus) {
+  (void)Event;
+  (void)ExecutionStatus;
+  die("piEventSetStatus: deprecated, to be removed");
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piEventRetain(pi_event Event) {
+  PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
+  
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(Event);
+  ur_event_handle_t UrEvent = PiEvent->UrEvent;
+  HANDLE_ERRORS(urEventRetain(UrEvent));
+  
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piEventRelease(pi_event Event) {
+  PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
+
+  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(Event);
+  ur_event_handle_t UrEvent = PiEvent->UrEvent;
+  HANDLE_ERRORS(urEventRelease(UrEvent));
+
+  return PI_SUCCESS;
+}
+
+
 // Events
+///////////////////////////////////////////////////////////////////////////////
+
+///////////////////////////////////////////////////////////////////////////////
+// Sampler
+inline pi_result
+piSamplerCreate(pi_context Context,
+                const pi_sampler_properties *SamplerProperties,
+                pi_sampler *RetSampler) {
+
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  PI_ASSERT(RetSampler, PI_ERROR_INVALID_VALUE);
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  ur_sampler_property_t UrProps [6] {};
+  UrProps[0] = UR_SAMPLER_PROPERTIES_NORMALIZED_COORDS;
+  UrProps[1] = SamplerProperties[1];
+
+  UrProps[2] = UR_SAMPLER_PROPERTIES_ADDRESSING_MODE;
+  if (SamplerProperties[3] & PI_SAMPLER_ADDRESSING_MODE_MIRRORED_REPEAT)
+    UrProps[3] = UR_SAMPLER_ADDRESSING_MODE_MIRRORED_REPEAT;
+  else if (SamplerProperties[3] & PI_SAMPLER_ADDRESSING_MODE_REPEAT)
+    UrProps[3] = UR_SAMPLER_ADDRESSING_MODE_REPEAT;
+  else if (SamplerProperties[3] & PI_SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE)
+    UrProps[3] = UR_SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE;
+  else if (SamplerProperties[3] & PI_SAMPLER_ADDRESSING_MODE_CLAMP)
+    UrProps[3] = UR_SAMPLER_ADDRESSING_MODE_CLAMP;
+  else if (SamplerProperties[3] & PI_SAMPLER_ADDRESSING_MODE_NONE)
+    UrProps[3] = UR_SAMPLER_ADDRESSING_MODE_NONE;
+
+  UrProps[4] = UR_SAMPLER_PROPERTIES_FILTER_MODE;
+  if (SamplerProperties[4] & PI_SAMPLER_FILTER_MODE_NEAREST)
+    UrProps[5] = UR_EXT_SAMPLER_FILTER_MODE_NEAREST;
+  else if (SamplerProperties[4] & PI_SAMPLER_FILTER_MODE_LINEAR)
+    UrProps[5] = UR_EXT_SAMPLER_FILTER_MODE_LINEAR;
+
+  ur_sampler_handle_t UrSampler {};
+
+  HANDLE_ERRORS(urSamplerCreate(UrContext, 
+                                UrProps,
+                                &UrSampler));
+  
+  try {
+    _pi_sampler *PiSampler = new _pi_sampler(UrSampler);
+    *RetSampler = reinterpret_cast<pi_sampler>(PiSampler);
+  } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_RESOURCES;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piSamplerGetInfo(pi_sampler Sampler,
+                 pi_sampler_info ParamName,
+                 size_t ParamValueSize,
+                 void *ParamValue,
+                 size_t *ParamValueSizeRet) {
+  std::ignore = Sampler;
+  std::ignore = ParamName;
+  std::ignore = ParamValueSize;
+  std::ignore = ParamValue;
+  std::ignore = ParamValueSizeRet;
+
+  die("piSamplerGetInfo: not implemented");
+  return PI_SUCCESS;
+}
+
+
+// Special version of piKernelSetArg to accept pi_sampler.
+inline pi_result
+piextKernelSetArgSampler(pi_kernel Kernel,
+                         pi_uint32 ArgIndex,
+                         const pi_sampler *ArgValue) {
+  _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
+  ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
+  _pi_sampler *PiSampler = reinterpret_cast<_pi_sampler *>(const_cast<pi_sampler *>(ArgValue));
+  ur_sampler_handle_t UrSampler = PiSampler->UrSampler;
+  
+  HANDLE_ERRORS(urKernelSetArgSampler(UrKernel,
+                                      ArgIndex,
+                                      UrSampler));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piSamplerRetain(pi_sampler Sampler) {
+  PI_ASSERT(Sampler, PI_ERROR_INVALID_SAMPLER);
+
+  _pi_sampler *PiSampler = reinterpret_cast<_pi_sampler *>(Sampler);
+  ur_sampler_handle_t UrSampler = PiSampler->UrSampler;
+
+  HANDLE_ERRORS(urSamplerRetain(UrSampler));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piSamplerRelease(pi_sampler Sampler) {
+  PI_ASSERT(Sampler, PI_ERROR_INVALID_SAMPLER);
+
+  _pi_sampler *PiSampler = reinterpret_cast<_pi_sampler *>(Sampler);
+  ur_sampler_handle_t UrSampler = PiSampler->UrSampler;
+
+  HANDLE_ERRORS(urSamplerRelease(UrSampler));
+
+  if (!PiSampler->RefCount.decrementAndTest())
+    return PI_SUCCESS;
+
+  delete PiSampler;
+
+  return PI_SUCCESS;
+}
+
+// Sampler
 ///////////////////////////////////////////////////////////////////////////////
 
 } // namespace pi2ur

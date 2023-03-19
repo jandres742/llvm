@@ -23,15 +23,35 @@ namespace pi2ur {
 struct _pi_context : _pi_object {
   _pi_context(ur_context_handle_t UrContext): UrContext{UrContext}  {}
 
+  _pi_context(ur_context_handle_t UrContext,
+                       uint32_t NumDevices,
+                       const pi_device *Devs,
+                       bool OwnZeContext) :
+    UrContext{UrContext}, Devices{Devs, Devs + NumDevices}, OwnZeContext{OwnZeContext} {}
+
   ur_context_handle_t UrContext;
+
+  // Keep the PI devices this PI context was created for.
+  // This field is only set at _pi_context creation time, and cannot change.
+  // Therefore it can be accessed without holding a lock on this _pi_context.
+  //const std::vector<ur_device_handle_t> Devices;
+  std::vector<pi_device> Devices;
+
+    // Indicates if we own the ZeContext or it came from interop that
+  // asked to not transfer the ownership to SYCL RT.
+  bool OwnZeContext = false;
 };
 
-// struct _pi_queue : _pi_object {
-//   _pi_queue(ur_context_handle_t UrContext): UrContext{UrContext}  {}
+struct _pi_queue : _pi_object {
+  _pi_queue(ur_context_handle_t UrContext, ur_queue_handle_t UrQueue, pi_device Device, bool OwnNativeHandle):
+    UrContext{UrContext}, UrQueue{UrQueue}, PiDevice{Device},  OwnNativeHandle{OwnNativeHandle} {}
 
-//   ur_context_handle_t UrContext;
-//   ur_queue_handle_t UrQueue;
-// };
+  ur_context_handle_t UrContext = {};
+  ur_queue_handle_t UrQueue = {};
+
+  pi_device PiDevice = {};
+  bool OwnNativeHandle = false ;
+};
 
 struct _pi_device : _pi_object {
   _pi_device(ur_device_handle_t UrDevice): UrDevice{UrDevice}  {}
@@ -191,6 +211,34 @@ struct _pi_mem : _pi_object {
 struct _pi_buffer : _pi_mem {
   _pi_buffer(ur_context_handle_t UrContext): _pi_mem(UrContext)  {}
 };
+
+struct _ur_sampler_handle_t : _pi_object {
+  _ur_sampler_handle_t(ze_sampler_handle_t Sampler) : ZeSampler{Sampler} {}
+
+  // Level Zero sampler handle.
+  ze_sampler_handle_t ZeSampler;
+};
+
+struct _pi_sampler : _pi_object {
+  _pi_sampler(ur_sampler_handle_t UrSampler) : UrSampler{UrSampler} {}
+
+  // UR sampler handle.
+  ur_sampler_handle_t UrSampler;
+};
+
+
+struct _pi_event : _pi_object {
+  _pi_event(ur_event_handle_t UrEvent) : UrEvent{UrEvent} {printf("JAIME: %s %d =================================================== \n", __FILE__, __LINE__);}
+
+  // UR sampler handle.
+  ur_event_handle_t UrEvent {};
+  std::atomic<uint32_t> RefCountExternal{0};
+
+  // Indicates if we own the ZeEvent or it came from interop that
+  // asked to not transfer the ownership to SYCL RT.
+  bool OwnZeEvent;
+};
+
 
 // inline pi_result piContextCreate(const pi_context_properties *Properties,
 //                           pi_uint32 NumDevices, const pi_device *Devices,

@@ -40,22 +40,43 @@ UR_APIEXPORT ur_result_t UR_APICALL urPlatformGetApiVersion(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urPlatformGetNativeHandle(
-    ur_platform_handle_t hPlatform,      ///< [in] handle of the platform.
-    ur_native_handle_t *phNativePlatform ///< [out] a pointer to the native
+    ur_platform_handle_t Platform,      ///< [in] handle of the platform.
+    ur_native_handle_t *NativePlatform ///< [out] a pointer to the native
                                          ///< handle of the platform.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  // Extract the Level Zero driver handle from the given PI platform
+  *NativePlatform = reinterpret_cast<ur_native_handle_t>(Platform->ZeDriver);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urPlatformCreateWithNativeHandle(
-    ur_native_handle_t
-        hNativePlatform, ///< [in] the native handle of the platform.
-    ur_platform_handle_t *phPlatform ///< [out] pointer to the handle of the
+    ur_native_handle_t NativePlatform, ///< [in] the native handle of the platform.
+    ur_platform_handle_t *Platform ///< [out] pointer to the handle of the
                                      ///< platform object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  auto ZeDriver = ur_cast<ze_driver_handle_t>(NativePlatform);
+
+  uint32_t NumPlatforms = 0;
+  UR_CALL(urPlatformGet(0, nullptr, &NumPlatforms));
+
+  if (NumPlatforms) {
+    std::vector<ur_platform_handle_t> Platforms(NumPlatforms);
+    UR_CALL(urPlatformGet(NumPlatforms, Platforms.data(), nullptr));
+
+    // The SYCL spec requires that the set of platforms must remain fixed for
+    // the duration of the application's execution. We assume that we found all
+    // of the Level Zero drivers when we initialized the platform cache, so the
+    // "NativeHandle" must already be in the cache. If it is not, this must not
+    // be a valid Level Zero driver.
+    for (const ur_platform_handle_t &CachedPlatform : Platforms) {
+      if (CachedPlatform->ZeDriver == ZeDriver) {
+        *Platform = CachedPlatform;
+        return UR_RESULT_SUCCESS;
+      }
+    }
+  }
+
+  return UR_RESULT_ERROR_INVALID_VALUE;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urGetLastResult(

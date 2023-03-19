@@ -69,22 +69,47 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceSelectBinary(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetNativeHandle(
-    ur_device_handle_t hDevice, ///< [in] handle of the device.
-    ur_native_handle_t
-        *phNativeDevice ///< [out] a pointer to the native handle of the device.
+    ur_device_handle_t Device, ///< [in] handle of the device.
+    ur_native_handle_t *NativeDevice ///< [out] a pointer to the native handle of the device.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  *NativeDevice = reinterpret_cast<ur_native_handle_t>(Device->ZeDevice);
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urDeviceCreateWithNativeHandle(
-    ur_native_handle_t hNativeDevice, ///< [in] the native handle of the device.
-    ur_platform_handle_t hPlatform,   ///< [in] handle of the platform instance
-    ur_device_handle_t
-        *phDevice ///< [out] pointer to the handle of the device object created.
+    ur_native_handle_t NativeDevice, ///< [in] the native handle of the device.
+    ur_platform_handle_t Platform,   ///< [in] handle of the platform instance
+    ur_device_handle_t *Device ///< [out] pointer to the handle of the device object created.
 ) {
-  zePrint("[UR][L0] %s function not implemented!\n", __FUNCTION__);
-  return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+  auto ZeDevice = ur_cast<ze_device_handle_t>(NativeDevice);
+
+  // The SYCL spec requires that the set of devices must remain fixed for the
+  // duration of the application's execution. We assume that we found all of the
+  // Level Zero devices when we initialized the platforms/devices cache, so the
+  // "NativeHandle" must already be in the cache. If it is not, this must not be
+  // a valid Level Zero device.
+  //
+  // TODO: maybe we should populate cache of platforms if it wasn't already.
+  // For now assert that is was populated.
+  UR_ASSERT(PiPlatformCachePopulated, UR_RESULT_ERROR_INVALID_VALUE);
+  const std::lock_guard<SpinLock> Lock{*PiPlatformsCacheMutex};
+
+  ur_device_handle_t Dev = nullptr;
+  for (ur_platform_handle_t ThePlatform : *PiPlatformsCache) {
+    Dev = ThePlatform->getDeviceFromNativeHandle(ZeDevice);
+    if (Dev) {
+      // Check that the input Platform, if was given, matches the found one.
+      UR_ASSERT(!Platform || Platform == ThePlatform,
+                UR_RESULT_ERROR_INVALID_PLATFORM);
+      break;
+    }
+  }
+
+  if (Dev == nullptr)
+    return UR_RESULT_ERROR_INVALID_VALUE;
+
+  *Device = Dev;
+  return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetGlobalTimestamps(

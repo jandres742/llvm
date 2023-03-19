@@ -58,9 +58,22 @@ const int UR_EXT_USM_CAPS_ATOMIC_ACCESS = 1 << 1;
 const int UR_EXT_USM_CAPS_CONCURRENT_ACCESS = 1 << 2;
 const int UR_EXT_USM_CAPS_CONCURRENT_ATOMIC_ACCESS = 1 << 3;
 
+const int UR_EXT_USM_MEM_FLAG_DEVICE_READ_ONLY = 1 << 5;
+
+const ur_context_info_t UR_EXT_CONTEXT_INFO_REFERENCE_COUNT = (ur_context_info_t)(UR_CONTEXT_INFO_USM_MEMSET2D_SUPPORT + 2);
+
+const ur_queue_info_t UR_EXT_ONEAPI_QUEUE_INFO_EMPTY = (ur_queue_info_t)(UR_QUEUE_INFO_SIZE + 1);
+
 const ur_device_partition_property_t
     UR_EXT_DEVICE_PARTITION_PROPERTY_FLAG_BY_CSLICE =
         ur_device_partition_property_t(UR_DEVICE_PARTITION_FORCE_UINT32 - 1);
+
+typedef enum ur_ext_sampler_filter_mode_t
+{
+    UR_EXT_SAMPLER_FILTER_MODE_NEAREST = 0,
+    UR_EXT_SAMPLER_FILTER_MODE_LINEAR = 1,
+    UR_EXT_SAMPLER_FILTER_MODE_FORCE_UINT32 = 0x7fffffff
+} ur_ext_sampler_filter_mode_t;
 
 // Terminates the process with a catastrophic error message.
 [[noreturn]] inline void die(const char *Message) {
@@ -236,6 +249,11 @@ struct _pi_object {
 
 // Helper for one-liner validation
 #define PI_ASSERT(condition, error)                                            \
+  if (!(condition))                                                            \
+    return error;
+
+// Helper for one-liner validation
+#define UR_ASSERT(condition, error)                                            \
   if (!(condition))                                                            \
     return error;
 
