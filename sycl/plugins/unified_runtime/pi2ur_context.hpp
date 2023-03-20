@@ -206,10 +206,29 @@ struct _pi_mem : _pi_object {
   size_t Size = 0;
   void *NativeHandle {};
   bool OwnNativeHandle = false;
+
+  // Method to get type of the derived object (image or buffer)
+  virtual bool isImage() const = 0;
 };
 
 struct _pi_buffer : _pi_mem {
   _pi_buffer(ur_context_handle_t UrContext): _pi_mem(UrContext)  {}
+  _pi_buffer(ur_context_handle_t UrContext,
+             size_t Size,
+             void* NativeHandle,
+             bool OwnNativeHandle): _pi_mem(UrContext, Size, NativeHandle, OwnNativeHandle) {}
+
+  bool isImage() const override { return false; }
+};
+
+struct _pi_image : _pi_mem {
+  _pi_image(ur_context_handle_t UrContext): _pi_mem(UrContext)  {}
+  _pi_image(ur_context_handle_t UrContext,
+             size_t Size,
+             void* NativeHandle,
+             bool OwnNativeHandle): _pi_mem(UrContext, Size, NativeHandle, OwnNativeHandle) {}
+
+  bool isImage() const override { return true; }
 };
 
 struct _ur_sampler_handle_t : _pi_object {

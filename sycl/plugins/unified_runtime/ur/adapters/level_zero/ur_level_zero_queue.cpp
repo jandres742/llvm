@@ -452,7 +452,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueRelease(
     UR_CALL(CleanupCompletedEvent(Event));
     // This event was removed from the command list, so decrement ref count
     // (it was incremented when they were added to the command list).
-    UR_CALL(piEventReleaseInternal(reinterpret_cast<ur_event_handle_t>(Event)));
+    UR_CALL(urEventReleaseInternal(reinterpret_cast<ur_event_handle_t>(Event)));
   }
   UR_CALL(piQueueReleaseInternal(reinterpret_cast<ur_queue_handle_t>(Queue)));
   return UR_RESULT_SUCCESS;
@@ -1036,7 +1036,7 @@ ur_result_t _ur_queue_handle_t::executeCommandList(pi_command_list_ptr_t Command
         // we check that EventList of the command list is not empty above, i.e.
         // after createEventAndAssociateQueue ref count is 2 and then +1 for
         // each event in the EventList.
-        UR_CALL(piEventReleaseInternal(HostVisibleEvent));
+        UR_CALL(urEventReleaseInternal(HostVisibleEvent));
 
         if (doReuseDiscardedEvents()) {
           // If we have in-order queue with discarded events then we want to
@@ -1047,7 +1047,7 @@ ur_result_t _ur_queue_handle_t::executeCommandList(pi_command_list_ptr_t Command
           // For all other queues treat this as a special event and indicate no
           // cleanup is needed.
           // TODO: always treat this host event as a regular event.
-          UR_CALL(piEventReleaseInternal(HostVisibleEvent));
+          UR_CALL(urEventReleaseInternal(HostVisibleEvent));
           HostVisibleEvent->CleanedUp = true;
         }
 
@@ -1150,7 +1150,7 @@ void _ur_queue_handle_t::active_barriers::add(ur_event_handle_t &Event) {
 
 ur_result_t _ur_queue_handle_t::active_barriers::clear() {
   for (const auto &Event : Events)
-    UR_CALL(piEventReleaseInternal(Event));
+    UR_CALL(urEventReleaseInternal(Event));
   Events.clear();
   return UR_RESULT_SUCCESS;
 }
@@ -1165,7 +1165,7 @@ ur_result_t piQueueReleaseInternal(ur_queue_handle_t Queue) {
 
   for (auto &Cache : UrQueue->EventCaches)
     for (auto &Event : Cache)
-      UR_CALL(piEventReleaseInternal(Event));
+      UR_CALL(urEventReleaseInternal(Event));
 
   if (UrQueue->OwnZeCommandQueue) {
     for (auto &QueueMap :
@@ -1229,7 +1229,7 @@ CleanupEventListFromResetCmdList(std::vector<ur_event_handle_t> &EventListToClea
     UR_CALL(CleanupCompletedEvent(Event, QueueLocked));
     // This event was removed from the command list, so decrement ref count
     // (it was incremented when they were added to the command list).
-    UR_CALL(piEventReleaseInternal(Event));
+    UR_CALL(urEventReleaseInternal(Event));
   }
   return UR_RESULT_SUCCESS;
 }
@@ -1419,7 +1419,7 @@ ur_result_t _ur_queue_handle_t::signalEventFromCmdListIfLastEventDiscarded(
       reinterpret_cast<ur_queue_handle_t>(this), &Event, PI_COMMAND_TYPE_USER, CommandList,
       /* IsDiscarded */ false, /* ForceHostVisible */ false))
 #if 0
-  UR_CALL(piEventReleaseInternal(Event));
+  UR_CALL(urEventReleaseInternal(Event));
 #endif
   LastCommandEvent = Event;
 

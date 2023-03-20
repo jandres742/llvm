@@ -36,23 +36,17 @@ static const bool UseMultipleCmdlistBarriers = [] {
 }();
 
 UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
-    ur_queue_handle_t hQueue,     ///< [in] handle of the queue object
+    ur_queue_handle_t Queue,     ///< [in] handle of the queue object
     uint32_t numEventsInWaitList, ///< [in] size of the event wait list
-    const ur_event_handle_t *
-        phEventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
+    const ur_event_handle_t *EventWaitList, ///< [in][optional][range(0, numEventsInWaitList)]
                          ///< pointer to a list of events that must be complete
                          ///< before this command can be executed. If nullptr,
                          ///< the numEventsInWaitList must be 0, indicating that
                          ///< all previously enqueued commands must be complete.
-    ur_event_handle_t
-        *phEvent ///< [in,out][optional] return an event object that identifies
+    ur_event_handle_t *OutEvent ///< [in,out][optional] return an event object that identifies
                  ///< this particular command instance.
 ) {
-
-  _ur_queue_handle_t *Queue = ur_cast<_ur_queue_handle_t *>(hQueue);
-  _ur_event_handle_t **OutEvent = ur_cast<_ur_event_handle_t **>(phEvent);
-
-  if (phEventWaitList) {
+  if (EventWaitList) {
 #if 0
     PI_ASSERT(NumEventsInWaitList > 0, PI_ERROR_INVALID_VALUE);
 #endif
@@ -64,22 +58,22 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
 
     _pi_ze_event_list_t TmpWaitList = {};
     UR_CALL(TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
-                                                     reinterpret_cast<const ur_event_handle_t *>(phEventWaitList),
-                                                     hQueue,
+                                                     EventWaitList,
+                                                     Queue,
                                                      UseCopyEngine));
 
     // Get a new command list to be used on this call
     pi_command_list_ptr_t CommandList{};
-    UR_CALL(Queue->Context->getAvailableCommandList(hQueue,
+    UR_CALL(Queue->Context->getAvailableCommandList(Queue,
                                                     CommandList,
                                                     UseCopyEngine));
 
     ze_event_handle_t ZeEvent = nullptr;
     ur_event_handle_t InternalEvent;
-    bool IsInternal = phEvent == nullptr;
-    ur_event_handle_t *Event = phEvent ? phEvent : &InternalEvent;
-    UR_CALL(createEventAndAssociateQueue(hQueue,
-                                         reinterpret_cast<ur_event_handle_t *>(Event),
+    bool IsInternal = OutEvent == nullptr;
+    ur_event_handle_t *Event = OutEvent ? OutEvent : &InternalEvent;
+    UR_CALL(createEventAndAssociateQueue(Queue,
+                                         Event,
                                          PI_COMMAND_TYPE_USER,
                                          CommandList,
                                          IsInternal));
@@ -110,8 +104,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
     std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
 
     if (OutEvent) {
-      UR_CALL(createEventAndAssociateQueue(hQueue,
-                                           phEvent,
+      UR_CALL(createEventAndAssociateQueue(Queue,
+                                           OutEvent,
                                            PI_COMMAND_TYPE_USER,
                                            Queue->CommandListMap.end()));
     }
@@ -119,7 +113,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
     Queue->synchronize();
 
     if (OutEvent) {
-      Queue->LastCommandEvent = reinterpret_cast<ur_event_handle_t>(*phEvent);
+      Queue->LastCommandEvent = reinterpret_cast<ur_event_handle_t>(*OutEvent);
 
       ZE2UR_CALL(zeEventHostSignal, ((*OutEvent)->ZeEvent));
       (*OutEvent)->Completed = true;
@@ -127,7 +121,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWait(
   }
 
   if (!Queue->Device->useImmediateCommandLists())
-    resetCommandLists(hQueue);
+    resetCommandLists(Queue);
 
   return UR_RESULT_SUCCESS;
 }
@@ -615,20 +609,18 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventRelease(
     ur_event_handle_t Event ///< [in] handle of the event object
 ) {
   Event->RefCountExternal--;
-  UR_CALL(piEventReleaseInternal(Event));
+  UR_CALL(urEventReleaseInternal(Event));
 
   return UR_RESULT_SUCCESS;
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventGetNativeHandle(
-    ur_event_handle_t hEvent, ///< [in] handle of the event.
-    ur_native_handle_t
-        *phNativeEvent ///< [out] a pointer to the native handle of the event.
+    ur_event_handle_t Event, ///< [in] handle of the event.
+    ur_native_handle_t *NativeEvent ///< [out] a pointer to the native handle of the event.
 ) {
-  _ur_event_handle_t *Event = reinterpret_cast<_ur_event_handle_t *>(hEvent);
   {
     std::shared_lock<pi_shared_mutex> Lock(Event->Mutex);
-    auto *ZeEvent = ur_cast<ze_event_handle_t *>(phNativeEvent);
+    auto *ZeEvent = ur_cast<ze_event_handle_t *>(NativeEvent);
     *ZeEvent = Event->ZeEvent;
   }
   // Event can potentially be in an open command-list, make sure that
@@ -638,7 +630,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetNativeHandle(
   if (Queue) {
     std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
     const auto &OpenCommandList =
-      Queue->eventOpenCommandList(hEvent);
+      Queue->eventOpenCommandList(Event);
     if (OpenCommandList != Queue->CommandListMap.end()) {
       UR_CALL(Queue->executeOpenCommandList(OpenCommandList->second.isCopy(Queue)));
     }
@@ -722,9 +714,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventSetCallback(
   return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
 }
 
-ur_result_t piEventReleaseInternal(ur_event_handle_t Event) {
-  // PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
-
+ur_result_t urEventReleaseInternal(ur_event_handle_t Event) {
   if (!Event->RefCount.decrementAndTest())
     return UR_RESULT_SUCCESS;
 
@@ -748,7 +738,7 @@ ur_result_t piEventReleaseInternal(ur_event_handle_t Event) {
   // and release a reference to it.
   if (Event->HostVisibleEvent && Event->HostVisibleEvent != Event) {
     // Decrement ref-count of the host-visible proxy event.
-    UR_CALL(piEventReleaseInternal(Event->HostVisibleEvent));
+    UR_CALL(urEventReleaseInternal(Event->HostVisibleEvent));
   }
 
   // Save pointer to the queue before deleting/resetting event.
@@ -891,7 +881,7 @@ ur_result_t CleanupCompletedEvent(ur_event_handle_t Event, bool QueueLocked) {
     // association with queue. Events which don't have associated queue doesn't
     // require this release because it means that they are not created using
     // createEventAndAssociateQueue, i.e. additional retain was not made.
-    UR_CALL(piEventReleaseInternal(Event));
+    UR_CALL(urEventReleaseInternal(Event));
   }
 
   // The list of dependent events will be appended to as we walk it so that this
@@ -926,7 +916,7 @@ ur_result_t CleanupCompletedEvent(ur_event_handle_t Event, bool QueueLocked) {
       ReleaseIndirectMem(DepEventKernel);
       // UR_CALL(piKernelRelease(DepEventKernel));
     }
-    UR_CALL(piEventReleaseInternal(DepEvent));
+    UR_CALL(urEventReleaseInternal(DepEvent));
   }
 
   return UR_RESULT_SUCCESS;

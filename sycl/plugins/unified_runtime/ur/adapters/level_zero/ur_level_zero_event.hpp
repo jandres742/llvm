@@ -66,7 +66,7 @@ const bool FilterEventWaitList = [] {
 }();
 
 
-ur_result_t piEventReleaseInternal(ur_event_handle_t Event);
+ur_result_t urEventReleaseInternal(ur_event_handle_t Event);
 
 ur_result_t EventCreate(ur_context_handle_t Context, ur_queue_handle_t Queue,
                              bool HostVisible, ur_event_handle_t *RetEvent);

@@ -903,8 +903,11 @@ piContextRelease(pi_context Context) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // Queue
-inline pi_result piQueueCreate(pi_context Context, pi_device Device,
-                        pi_queue_properties Flags, pi_queue *Queue) {
+inline pi_result
+piQueueCreate(pi_context Context,
+              pi_device Device,
+              pi_queue_properties Flags,
+              pi_queue *Queue) {
   // printf("%s %d\n", __FILE__, __LINE__);
 
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
@@ -938,8 +941,11 @@ inline pi_result piQueueCreate(pi_context Context, pi_device Device,
   return PI_SUCCESS;
 }
 
-inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
-                           pi_queue_properties *Properties, pi_queue *Queue) {
+inline pi_result
+piextQueueCreate(pi_context Context,
+                 pi_device Device,
+                 pi_queue_properties *Properties,
+                 pi_queue *Queue) {
 
   PI_ASSERT(Properties, PI_ERROR_INVALID_VALUE);
   // Expect flags mask to be passed first.
@@ -1066,10 +1072,8 @@ piextQueueGetNativeHandle(pi_queue Queue,
   return PI_SUCCESS;
 }
 
-
-
-
-inline pi_result piQueueRelease(pi_queue Queue) {
+inline pi_result
+piQueueRelease(pi_queue Queue) {
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
   _pi_queue *PiQueue = reinterpret_cast<_pi_queue *>(Queue);
@@ -1080,7 +1084,8 @@ inline pi_result piQueueRelease(pi_queue Queue) {
   return PI_SUCCESS;
 }
 
-inline pi_result piQueueFinish(pi_queue Queue) {
+inline pi_result
+piQueueFinish(pi_queue Queue) {
   // Wait until command lists attached to the command queue are executed.
   PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
 
@@ -2168,9 +2173,13 @@ piextEnqueueDeviceGlobalVariableRead(pi_queue Queue,
 
 ///////////////////////////////////////////////////////////////////////////////
 // Memory
-inline pi_result piMemBufferCreate(pi_context Context, pi_mem_flags Flags, size_t Size,
-                            void *HostPtr, pi_mem *RetMem,
-                            const pi_mem_properties *properties) {
+inline pi_result
+piMemBufferCreate(pi_context Context,
+                  pi_mem_flags Flags,
+                  size_t Size,
+                  void *HostPtr,
+                  pi_mem *RetMem,
+                  const pi_mem_properties *properties) {
 
   PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
   PI_ASSERT(RetMem, PI_ERROR_INVALID_VALUE);
@@ -2186,7 +2195,7 @@ inline pi_result piMemBufferCreate(pi_context Context, pi_mem_flags Flags, size_
                                   &UrBuffer));
 
   try {
-    _pi_mem *PiMem = new _pi_mem(UrContext);
+    _pi_buffer *PiMem = new _pi_buffer(UrContext);
     PiMem->UrMemory = UrBuffer;
     *RetMem = reinterpret_cast<pi_mem>(PiMem);
   } catch (const std::bad_alloc &) {
@@ -2216,24 +2225,34 @@ inline pi_result piextUSMHostAlloc(void **ResultPtr, pi_context Context,
   return PI_SUCCESS;
 }
 
-inline pi_result piMemGetInfo(pi_mem Mem,
-                              pi_mem_info ParamName,
-                              size_t ParamValueSize,
-                              void *ParamValue,
-                              size_t *ParamValueSizeRet) {  
+inline pi_result
+piMemGetInfo(pi_mem Mem,
+             pi_mem_info ParamName,
+             size_t ParamValueSize,
+             void *ParamValue,
+             size_t *ParamValueSizeRet) {  
   _pi_mem *PiMem = reinterpret_cast<_pi_mem *>(Mem);
   PI_ASSERT(PiMem, PI_ERROR_INVALID_VALUE);
   // piMemImageGetInfo must be used for images
-#if 0
-  PI_ASSERT(!PiMem->   ->isImage(), PI_ERROR_INVALID_VALUE);
-#endif
+
+  // TODO: To implement
+  // PI_ASSERT(!PiMem->isImage(), PI_ERROR_INVALID_VALUE);
   
   ur_mem_handle_t UrMemory = PiMem->UrMemory;
   ur_mem_info_t MemInfoType {};
-  if (ParamName == PI_MEM_CONTEXT)
-    MemInfoType =  UR_MEM_INFO_CONTEXT;
-  else if (ParamName == PI_MEM_SIZE)
-    MemInfoType =  UR_MEM_INFO_SIZE;
+  switch(ParamName) {
+    case PI_MEM_CONTEXT: {
+      MemInfoType =  UR_MEM_INFO_CONTEXT;
+      break;
+    }
+    case PI_MEM_SIZE: {
+      MemInfoType =  UR_MEM_INFO_SIZE;
+      break;
+    }
+    default: {
+      die("piMemGetInfo: unsuppported ParamName.");
+    }
+  }
   HANDLE_ERRORS(urMemGetInfo(UrMemory,
                                MemInfoType,
                                ParamValueSize,
@@ -2272,10 +2291,15 @@ inline pi_result piMemImageCreate(pi_context Context,
                                  HostPtr,
                                  &UrMem));
 
-  _pi_mem *Image = new _pi_mem(UrContext);
-  Image->UrMemory = UrMem;
-
-  *RetImage = reinterpret_cast<pi_mem>(Image);
+  try {
+    _pi_image *Image = new _pi_image(UrContext);
+    Image->UrMemory = UrMem;
+    *RetImage = reinterpret_cast<pi_mem>(Image);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
 
   return PI_SUCCESS;
 }
@@ -2312,7 +2336,7 @@ inline pi_result piMemBufferPartition(pi_mem Buffer,
                                      &UrMem));
 
   try {
-    _pi_mem *PiMem = new _pi_mem(PiBuffer->UrContext);
+    _pi_buffer *PiMem = new _pi_buffer(PiBuffer->UrContext);
     PiMem->UrMemory = UrMem;
     *RetMem = reinterpret_cast<pi_mem>(PiMem);
   } catch (const std::bad_alloc &) {
@@ -2408,7 +2432,7 @@ piextMemCreateWithNativeHandle(pi_native_handle NativeHandle,
                              nullptr));
 
   try {
-    _pi_mem *PiMem = new _pi_mem(UrContext,
+    _pi_buffer *PiMem = new _pi_buffer(UrContext,
                                  Size,
                                  reinterpret_cast<char *>(NativeHandle),
                                  OwnNativeHandle);
@@ -2444,7 +2468,7 @@ piextUSMDeviceAlloc(void **ResultPtr,
                                  ResultPtr));
 
   try {
-    _pi_mem *PiMem = new _pi_mem(UrContext,
+    _pi_buffer *PiMem = new _pi_buffer(UrContext,
                                  Size,
                                  nullptr,
                                  true);
@@ -2486,10 +2510,10 @@ piextUSMSharedAlloc(void **ResultPtr,
                                  ResultPtr));
 
   try {
-    _pi_mem *PiMem = new _pi_mem(UrContext,
-                                 Size,
-                                 nullptr,
-                                 true);
+    _pi_buffer *PiMem = new _pi_buffer(UrContext,
+                                       Size,
+                                       nullptr,
+                                       true);
     *ResultPtr = reinterpret_cast<pi_mem>(PiMem);
   } catch (const std::bad_alloc &) {
     return PI_ERROR_OUT_OF_HOST_MEMORY;
@@ -3687,8 +3711,8 @@ piEventSetCallback(pi_event Event,
 inline pi_result
 piEventSetStatus(pi_event Event,
                  pi_int32 ExecutionStatus) {
-  (void)Event;
-  (void)ExecutionStatus;
+  std::ignore = Event;
+  std::ignore = ExecutionStatus;
   die("piEventSetStatus: deprecated, to be removed");
   return PI_SUCCESS;
 }

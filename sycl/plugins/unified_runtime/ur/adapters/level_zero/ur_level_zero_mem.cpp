@@ -341,9 +341,7 @@ static ur_result_t ZeHostMemAllocHelper(void **ResultPtr, ur_context_handle_t Ur
     // indirect access, that is why explicitly retain context to be sure
     // that it is released after all memory allocations in this context are
     // released.
-#if 0
-    UR_CALL(piContextRetain(UrContext));
-#endif
+    UR_CALL(urContextRetain(UrContext));
   }
 
   ZeStruct<ze_host_mem_alloc_desc_t> ZeDesc;
@@ -1724,97 +1722,106 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueUSMMemcpy2D(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemImageCreate(
-    ur_context_handle_t hContext, ///< [in] handle of the context object
-    ur_mem_flags_t flags, ///< [in] allocation and usage information flags
-    const ur_image_format_t
-        *pImageFormat, ///< [in] pointer to image format specification
-    const ur_image_desc_t *pImageDesc, ///< [in] pointer to image description
-    void *pHost,                       ///< [in] pointer to the buffer data
-    ur_mem_handle_t *phMem ///< [out] pointer to handle of image object created
+    ur_context_handle_t Context, ///< [in] handle of the context object
+    ur_mem_flags_t Flags, ///< [in] allocation and usage information flags
+    const ur_image_format_t *ImageFormat, ///< [in] pointer to image format specification
+    const ur_image_desc_t *ImageDesc, ///< [in] pointer to image description
+    void *Host,                       ///< [in] pointer to the buffer data
+    ur_mem_handle_t *Mem ///< [out] pointer to handle of image object created
 ) {
-
-  _ur_context_handle_t *UrContext = reinterpret_cast<_ur_context_handle_t *>(hContext);
-
   ze_image_format_type_t ZeImageFormatType;
   size_t ZeImageFormatTypeSize;
-  switch (pImageFormat->channelType) {
-  case UR_IMAGE_CHANNEL_TYPE_FLOAT:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_FLOAT;
-    ZeImageFormatTypeSize = 32;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_HALF_FLOAT:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_FLOAT;
-    ZeImageFormatTypeSize = 16;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_UNSIGNED_INT32:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UINT;
-    ZeImageFormatTypeSize = 32;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_UNSIGNED_INT16:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UINT;
-    ZeImageFormatTypeSize = 16;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_UNSIGNED_INT8:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UINT;
-    ZeImageFormatTypeSize = 8;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_UNORM_INT16:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UNORM;
-    ZeImageFormatTypeSize = 16;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_UNORM_INT8:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UNORM;
-    ZeImageFormatTypeSize = 8;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_SIGNED_INT32:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SINT;
-    ZeImageFormatTypeSize = 32;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_SIGNED_INT16:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SINT;
-    ZeImageFormatTypeSize = 16;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_SIGNED_INT8:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SINT;
-    ZeImageFormatTypeSize = 8;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_SNORM_INT16:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SNORM;
-    ZeImageFormatTypeSize = 16;
-    break;
-  case UR_IMAGE_CHANNEL_TYPE_SNORM_INT8:
-    ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SNORM;
-    ZeImageFormatTypeSize = 8;
-    break;
-  default:
-    zePrint("piMemImageCreate: unsupported image data type: data type = %d\n",
-            pImageFormat->channelType);
-    return UR_RESULT_ERROR_INVALID_VALUE;
+  switch (ImageFormat->channelType) {
+    case UR_IMAGE_CHANNEL_TYPE_FLOAT: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_FLOAT;
+      ZeImageFormatTypeSize = 32;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_HALF_FLOAT: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_FLOAT;
+      ZeImageFormatTypeSize = 16;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_UNSIGNED_INT32: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UINT;
+      ZeImageFormatTypeSize = 32;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_UNSIGNED_INT16: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UINT;
+      ZeImageFormatTypeSize = 16;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_UNSIGNED_INT8: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UINT;
+      ZeImageFormatTypeSize = 8;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_UNORM_INT16: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UNORM;
+      ZeImageFormatTypeSize = 16;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_UNORM_INT8: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_UNORM;
+      ZeImageFormatTypeSize = 8;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_SIGNED_INT32: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SINT;
+      ZeImageFormatTypeSize = 32;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_SIGNED_INT16: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SINT;
+      ZeImageFormatTypeSize = 16;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_SIGNED_INT8: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SINT;
+      ZeImageFormatTypeSize = 8;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_SNORM_INT16: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SNORM;
+      ZeImageFormatTypeSize = 16;
+      break;
+    }
+    case UR_IMAGE_CHANNEL_TYPE_SNORM_INT8: {
+      ZeImageFormatType = ZE_IMAGE_FORMAT_TYPE_SNORM;
+      ZeImageFormatTypeSize = 8;
+      break;
+    }
+    default:
+      urPrint("urMemImageCreate: unsupported image data type: data type = %d\n",
+              ImageFormat->channelType);
+      return UR_RESULT_ERROR_INVALID_VALUE;
   }
 
   // TODO: populate the layout mapping
   ze_image_format_layout_t ZeImageFormatLayout;
-  switch (pImageFormat->channelOrder) {
-  case UR_IMAGE_CHANNEL_ORDER_RGBA:
-    switch (ZeImageFormatTypeSize) {
-    case 8:
-      ZeImageFormatLayout = ZE_IMAGE_FORMAT_LAYOUT_8_8_8_8;
+  switch (ImageFormat->channelOrder) {
+    case UR_IMAGE_CHANNEL_ORDER_RGBA: {
+      switch (ZeImageFormatTypeSize) {
+        case 8:
+          ZeImageFormatLayout = ZE_IMAGE_FORMAT_LAYOUT_8_8_8_8;
+          break;
+        case 16:
+          ZeImageFormatLayout = ZE_IMAGE_FORMAT_LAYOUT_16_16_16_16;
+          break;
+        case 32:
+          ZeImageFormatLayout = ZE_IMAGE_FORMAT_LAYOUT_32_32_32_32;
+          break;
+        default:
+          zePrint("piMemImageCreate: unexpected data type Size\n");
+          return UR_RESULT_ERROR_INVALID_VALUE;
+      }
       break;
-    case 16:
-      ZeImageFormatLayout = ZE_IMAGE_FORMAT_LAYOUT_16_16_16_16;
-      break;
-    case 32:
-      ZeImageFormatLayout = ZE_IMAGE_FORMAT_LAYOUT_32_32_32_32;
-      break;
-    default:
-      zePrint("piMemImageCreate: unexpected data type Size\n");
-      return UR_RESULT_ERROR_INVALID_VALUE;
     }
-    break;
-  default:
-    zePrint("format layout = %d\n", pImageFormat->channelOrder);
-    die("piMemImageCreate: unsupported image format layout\n");
-    break;
+    default:
+      urPrint("format layout = %d\n", ImageFormat->channelOrder);
+      die("urMemImageCreate: unsupported image format layout\n");
+      break;
   }
 
   ze_image_format_t ZeFormatDesc = {
@@ -1824,72 +1831,73 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemImageCreate(
       ZE_IMAGE_FORMAT_SWIZZLE_B, ZE_IMAGE_FORMAT_SWIZZLE_A};
 
   ze_image_type_t ZeImageType;
-  switch (pImageDesc->type) {
-  case UR_MEM_TYPE_IMAGE1D:
-    ZeImageType = ZE_IMAGE_TYPE_1D;
-    break;
-  case UR_MEM_TYPE_IMAGE2D:
-    ZeImageType = ZE_IMAGE_TYPE_2D;
-    break;
-  case UR_MEM_TYPE_IMAGE3D:
-    ZeImageType = ZE_IMAGE_TYPE_3D;
-    break;
-  case UR_MEM_TYPE_IMAGE1D_ARRAY:
-    ZeImageType = ZE_IMAGE_TYPE_1DARRAY;
-    break;
-  case UR_MEM_TYPE_IMAGE2D_ARRAY:
-    ZeImageType = ZE_IMAGE_TYPE_2DARRAY;
-    break;
-  default:
-    zePrint("piMemImageCreate: unsupported image type\n");
-    return UR_RESULT_ERROR_INVALID_VALUE;
+  switch (ImageDesc->type) {
+    case UR_MEM_TYPE_IMAGE1D:
+      ZeImageType = ZE_IMAGE_TYPE_1D;
+      break;
+    case UR_MEM_TYPE_IMAGE2D:
+      ZeImageType = ZE_IMAGE_TYPE_2D;
+      break;
+    case UR_MEM_TYPE_IMAGE3D:
+      ZeImageType = ZE_IMAGE_TYPE_3D;
+      break;
+    case UR_MEM_TYPE_IMAGE1D_ARRAY:
+      ZeImageType = ZE_IMAGE_TYPE_1DARRAY;
+      break;
+    case UR_MEM_TYPE_IMAGE2D_ARRAY:
+      ZeImageType = ZE_IMAGE_TYPE_2DARRAY;
+      break;
+    default:
+      zePrint("urMemImageCreate: unsupported image type\n");
+      return UR_RESULT_ERROR_INVALID_VALUE;
   }
 
   ZeStruct<ze_image_desc_t> ZeImageDesc;
   ZeImageDesc.arraylevels = ZeImageDesc.flags = 0;
   ZeImageDesc.type = ZeImageType;
   ZeImageDesc.format = ZeFormatDesc;
-  ZeImageDesc.width = ur_cast<uint64_t>(pImageDesc->width);
-  ZeImageDesc.height = ur_cast<uint64_t>(pImageDesc->height);
-  ZeImageDesc.depth = ur_cast<uint64_t>(pImageDesc->depth);
-  ZeImageDesc.arraylevels = ur_cast<uint32_t>(pImageDesc->arraySize);
-  ZeImageDesc.miplevels = pImageDesc->numMipLevel;
+  ZeImageDesc.width = ur_cast<uint64_t>(ImageDesc->width);
+  ZeImageDesc.height = ur_cast<uint64_t>(ImageDesc->height);
+  ZeImageDesc.depth = ur_cast<uint64_t>(ImageDesc->depth);
+  ZeImageDesc.arraylevels = ur_cast<uint32_t>(ImageDesc->arraySize);
+  ZeImageDesc.miplevels = ImageDesc->numMipLevel;
 
-  std::shared_lock<pi_shared_mutex> Lock(UrContext->Mutex);
+  std::shared_lock<pi_shared_mutex> Lock(Context->Mutex);
 
   // Currently we have the "0" device in context with mutliple root devices to
   // own the image.
   // TODO: Implement explicit copying for acessing the image from other devices
   // in the context.
-  _ur_device_handle_t *Device = UrContext->SingleRootDevice ? UrContext->SingleRootDevice
-                                               : UrContext->Devices[0];
+  _ur_device_handle_t *Device = Context->SingleRootDevice ?
+                                Context->SingleRootDevice :
+                                Context->Devices[0];
   ze_image_handle_t ZeImage;
-  ZE2UR_CALL(zeImageCreate, (UrContext->ZeContext,
-                          Device->ZeDevice,
-                          &ZeImageDesc,
-                          &ZeImage));
+  ZE2UR_CALL(zeImageCreate, (Context->ZeContext,
+                             Device->ZeDevice,
+                             &ZeImageDesc,
+                             &ZeImage));
 
   try {
-    auto UrImage = new _ur_image(ur_cast<ur_context_handle_t>(UrContext), ZeImage);
-    *phMem = reinterpret_cast<ur_mem_handle_t>(UrImage);
+    auto UrImage = new _ur_image(ur_cast<ur_context_handle_t>(Context), ZeImage);
+    *Mem = reinterpret_cast<ur_mem_handle_t>(UrImage);
 
 #ifndef NDEBUG
     UrImage->ZeImageDesc = ZeImageDesc;
 #endif // !NDEBUG
 
-    if ((flags & UR_MEM_FLAG_USE_HOST_POINTER) != 0 ||
-        (flags & UR_MEM_FLAG_ALLOC_COPY_HOST_POINTER) != 0) {
+    if ((Flags & UR_MEM_FLAG_USE_HOST_POINTER) != 0 ||
+        (Flags & UR_MEM_FLAG_ALLOC_COPY_HOST_POINTER) != 0) {
       // Initialize image synchronously with immediate offload.
       // zeCommandListAppendImageCopyFromMemory must not be called from
       // simultaneous threads with the same command list handle, so we need
       // exclusive lock.
-      std::scoped_lock<pi_mutex> Lock(UrContext->ImmediateCommandListMutex);
-      ZE2UR_CALL(zeCommandListAppendImageCopyFromMemory, (UrContext->ZeCommandListInit,
+      std::scoped_lock<pi_mutex> Lock(Context->ImmediateCommandListMutex);
+      ZE2UR_CALL(zeCommandListAppendImageCopyFromMemory, (Context->ZeCommandListInit,
                                                           ZeImage,
-                                                          pHost,
+                                                          Host,
                                                           nullptr,
                                                           nullptr,
-               0, nullptr));
+                                                          0, nullptr));
     }
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
@@ -2069,32 +2077,25 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemGetNativeHandle(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemCreateWithNativeHandle(
-    ur_native_handle_t hNativeMem, ///< [in] the native handle of the mem.
-    ur_context_handle_t hContext,  ///< [in] handle of the context object
-    ur_mem_handle_t
-        *phMem ///< [out] pointer to the handle of the mem object created.
+    ur_native_handle_t NativeMem, ///< [in] the native handle of the mem.
+    ur_context_handle_t Context,  ///< [in] handle of the context object
+    ur_mem_handle_t *Mem ///< [out] pointer to the handle of the mem object created.
 ) {
-  
-  _ur_mem_handle_t *UrMem = ur_cast<_ur_mem_handle_t *>(hNativeMem);
-  _ur_context_handle_t *UrContext = UrMem->UrContext;
-
-  std::shared_lock<pi_shared_mutex> Lock(UrContext->Mutex);
+  std::shared_lock<pi_shared_mutex> Lock(Context->Mutex);
 
   // Get base of the allocation
   void *Base = nullptr;
   size_t Size = 0;
-  void *Ptr = ur_cast<void *>(hNativeMem);
-  ZE2UR_CALL(zeMemGetAddressRange, (UrContext->ZeContext,
+  void *Ptr = ur_cast<void *>(NativeMem);
+  ZE2UR_CALL(zeMemGetAddressRange, (Context->ZeContext,
                                     Ptr,
                                     &Base,
                                     &Size));
-#if 0
-  PI_ASSERT(Ptr == Base, PI_ERROR_INVALID_VALUE);
-#endif
+  UR_ASSERT(Ptr == Base, UR_RESULT_ERROR_INVALID_VALUE);
 
   ZeStruct<ze_memory_allocation_properties_t> ZeMemProps;
   ze_device_handle_t ZeDevice = nullptr;
-  ZE2UR_CALL(zeMemGetAllocProperties, (UrContext->ZeContext,
+  ZE2UR_CALL(zeMemGetAllocProperties, (Context->ZeContext,
                                        Ptr,
                                        &ZeMemProps,
                                        &ZeDevice));
@@ -2114,21 +2115,21 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemCreateWithNativeHandle(
 
   ur_device_handle_t Device {};
   if (ZeDevice) {
-    Device = UrContext->getPlatform()->getDeviceFromNativeHandle(ZeDevice);
-    // PI_ASSERT(Context->isValidDevice(Device), PI_ERROR_INVALID_CONTEXT);
+    Device = Context->getPlatform()->getDeviceFromNativeHandle(ZeDevice);
+    UR_ASSERT(Context->isValidDevice(Device), UR_RESULT_ERROR_INVALID_CONTEXT);
   }
 
   _pi_buffer *Buffer = nullptr;
   try {
-    Buffer = new _pi_buffer(hContext, Device, Size);
-    *phMem = reinterpret_cast<ur_mem_handle_t>(Buffer);
+    Buffer = new _pi_buffer(Context, Device, Size);
+    *Mem = reinterpret_cast<ur_mem_handle_t>(Buffer);
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
     return UR_RESULT_ERROR_UNKNOWN;
   }
 
-  ur_platform_handle_t Plt = UrContext->getPlatform();
+  ur_platform_handle_t Plt = Context->getPlatform();
   std::unique_lock<pi_shared_mutex> ContextsLock(Plt->ContextsMutex,
                                                   std::defer_lock);
   if (IndirectAccessTrackingEnabled) {
@@ -2136,15 +2137,13 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemCreateWithNativeHandle(
     ContextsLock.lock();
     // Retain context to be sure that it is released after all memory
     // allocations in this context are released.
-#if 0
-    PI_CALL(piContextRetain(UrContext));
-#endif
+    UR_CALL(urContextRetain(Context));
 
-    UrContext->MemAllocs.emplace(std::piecewise_construct,
-                                 std::forward_as_tuple(Ptr),
-                                  std::forward_as_tuple(reinterpret_cast<ur_context_handle_t>(UrContext),
-                                  true /*ownNativeHandle, how do we pass it here? or do we move all this logic to pi2ur? */
-                                  ));
+    Context->MemAllocs.emplace(std::piecewise_construct,
+                               std::forward_as_tuple(Ptr),
+                               std::forward_as_tuple(reinterpret_cast<ur_context_handle_t>(Context),
+                               true /*ownNativeHandle, how do we pass it here? or do we move all this logic to pi2ur? */
+                               ));
   }
 
   if (Device) {
@@ -2164,8 +2163,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemCreateWithNativeHandle(
 
     // zeCommandListAppendMemoryCopy must not be called from simultaneous
     // threads with the same command list handle, so we need exclusive lock.
-    std::scoped_lock<pi_mutex> Lock(UrContext->ImmediateCommandListMutex);
-    ZE2UR_CALL(zeCommandListAppendMemoryCopy, (UrContext->ZeCommandListInit,
+    std::scoped_lock<pi_mutex> Lock(Context->ImmediateCommandListMutex);
+    ZE2UR_CALL(zeCommandListAppendMemoryCopy, (Context->ZeCommandListInit,
                                                ZeHandleDst,
                                                Ptr,
                                                Size,
@@ -2178,42 +2177,33 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemCreateWithNativeHandle(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urMemGetInfo(
-    ur_mem_handle_t
-        hMemory, ///< [in] handle to the memory object being queried.
+    ur_mem_handle_t Memory, ///< [in] handle to the memory object being queried.
     ur_mem_info_t MemInfoType, ///< [in] type of the info to retrieve.
-    size_t propSize, ///< [in] the number of bytes of memory pointed to by
+    size_t PropSize, ///< [in] the number of bytes of memory pointed to by
                      ///< pMemInfo.
-    void *pMemInfo,  ///< [out][optional] array of bytes holding the info.
+    void *MemInfo,  ///< [out][optional] array of bytes holding the info.
                      ///< If propSize is less than the real number of bytes
                      ///< needed to return the info then the
                      ///< ::UR_RESULT_ERROR_INVALID_SIZE error is returned and
                      ///< pMemInfo is not used.
-    size_t *pPropSizeRet ///< [out][optional] pointer to the actual size in
+    size_t *PropSizeRet ///< [out][optional] pointer to the actual size in
                          ///< bytes of data queried by pMemInfo.
 ) {
-  auto Buffer = reinterpret_cast<_pi_buffer *>(hMemory);
+  auto Buffer = reinterpret_cast<_pi_buffer *>(Memory);
   std::shared_lock<pi_shared_mutex> Lock(Buffer->Mutex);
-#if 0
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-#endif
+  UrReturnHelper ReturnValue(PropSize, MemInfo, PropSizeRet);
 
   switch (MemInfoType) {
-  case UR_MEM_INFO_CONTEXT: {
-    std::memcpy(pMemInfo, &(Buffer->UrContext), propSize);
-    if (pPropSizeRet) {
-      *pPropSizeRet = sizeof(Buffer->UrContext);
+    case UR_MEM_INFO_CONTEXT: {
+      return ReturnValue(Buffer->UrContext);
     }
-    break;
-  }
-  case UR_MEM_INFO_SIZE: {
-    // Get size of the allocation
-    std::memcpy(pMemInfo, &(Buffer->Size), propSize);
-    if (pPropSizeRet)
-      *pPropSizeRet = sizeof(Buffer->Size);
-    break;
-  }
-  default:
-    die("urMemGetInfo: Parameter is not implemented");
+    case UR_MEM_INFO_SIZE: {
+      // Get size of the allocation
+      return ReturnValue(size_t{Buffer->Size});
+    }
+    default: {
+      die("urMemGetInfo: Parameter is not implemented");
+    }
   }
 
   return UR_RESULT_SUCCESS;
@@ -2893,9 +2883,7 @@ static ur_result_t ZeDeviceMemAllocHelper(void **ResultPtr,
     // indirect access, that is why explicitly retain context to be sure
     // that it is released after all memory allocations in this context are
     // released.
-#if 0 
-    PI_CALL(piContextRetain(Context));
-#endif
+    UR_CALL(urContextRetain(Context));
   }
 
   ze_device_mem_alloc_desc_t ZeDesc = {};
