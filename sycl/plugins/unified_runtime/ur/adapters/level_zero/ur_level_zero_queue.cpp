@@ -1331,7 +1331,7 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
   if (*Event == nullptr)
     UR_CALL(EventCreate(Queue->Context, Queue, ForceHostVisible, Event));
 
-  // printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d IsInternal %d *Event %lx\n", __FILE__, __LINE__, IsInternal, (unsigned long int)*Event);
 
   (*Event)->UrQueue = Queue;
   (*Event)->CommandType = CommandType;
@@ -1372,12 +1372,8 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
   // If the event is internal then don't increment the reference count as this
   // event will not be waited/released by SYCL RT, so it must be destroyed by
   // EventRelease in resetCommandList.
-#if 0
   if (!IsInternal)
-    UR_CALL(piEventRetain(*Event));
-#endif
-
-  // printf("%s %d\n", __FILE__, __LINE__);
+    UR_CALL(urEventRetain(*Event));
 
   return UR_RESULT_SUCCESS;
 }

@@ -3294,8 +3294,14 @@ piEnqueueMemBufferWriteRect(pi_queue Queue,
     UrEventsWaitList[EventIt] = PiEvent->UrEvent;
   }
 
-  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
-  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  // _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  // ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  ur_event_handle_t *UrEvent {};
+  ur_event_handle_t InternalEvent {};
+  if (Event) {
+    UrEvent = &InternalEvent;
+  }
 
   HANDLE_ERRORS(urEnqueueMemBufferWriteRect(UrQueue,
                                             UrBuffer,
@@ -3311,8 +3317,23 @@ piEnqueueMemBufferWriteRect(pi_queue Queue,
                                             NumEventsInWaitList,
                                             UrEventsWaitList.data(),
                                             UrEvent));
-  
- return PI_SUCCESS;
+
+  if (*Event == nullptr) {
+    _pi_event *PiEvent {};
+    try {
+      PiEvent = new _pi_event(*UrEvent);
+      *Event = reinterpret_cast<pi_event>(PiEvent);
+    } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return PI_ERROR_UNKNOWN;
+    }
+  } else {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+    PiEvent->UrEvent = *UrEvent;
+  }
+
+  return PI_SUCCESS;
 }
 
 inline pi_result
@@ -3339,8 +3360,14 @@ piEnqueueMemBufferWrite(pi_queue Queue,
     UrEventsWaitList[EventIt] = PiEvent->UrEvent;
   }
 
-  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
-  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  // _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  // ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+
+  ur_event_handle_t *UrEvent {};
+  ur_event_handle_t InternalEvent {};
+  if (Event) {
+    UrEvent = &InternalEvent;
+  }
 
   HANDLE_ERRORS(urEnqueueMemBufferWrite(UrQueue,
                                         UrBuffer,
@@ -3351,7 +3378,25 @@ piEnqueueMemBufferWrite(pi_queue Queue,
                                         NumEventsInWaitList,
                                         UrEventsWaitList.data(),
                                         UrEvent));
-  
+
+  if (*Event == nullptr) {
+    _pi_event *PiEvent {};
+    try {
+      PiEvent = new _pi_event(*UrEvent);
+      *Event = reinterpret_cast<pi_event>(PiEvent);
+    } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return PI_ERROR_UNKNOWN;
+    }
+  } else {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+    PiEvent->UrEvent = *UrEvent;
+  }
+
+  // printf("%s %d Event %lx *UrEvent %lx\n",
+  //   __FILE__, __LINE__, (unsigned long int)Event, (unsigned long int)*UrEvent);
+
   return PI_SUCCESS;
 }
 
@@ -3388,8 +3433,13 @@ piEnqueueMemBufferReadRect(pi_queue Queue,
     UrEventsWaitList[EventIt] = PiEvent->UrEvent;
   }
 
-  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
-  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  // _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  // ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  ur_event_handle_t *UrEvent {};
+  ur_event_handle_t InternalEvent {};
+  if (Event) {
+    UrEvent = &InternalEvent;
+  }
 
   HANDLE_ERRORS(urEnqueueMemBufferReadRect(UrQueue,
                                            UrBuffer,
@@ -3405,6 +3455,21 @@ piEnqueueMemBufferReadRect(pi_queue Queue,
                                            NumEventsInWaitList,
                                            UrEventsWaitList.data(),
                                            UrEvent));
+
+  if (*Event == nullptr) {
+    _pi_event *PiEvent {};
+    try {
+      PiEvent = new _pi_event(*UrEvent);
+      *Event = reinterpret_cast<pi_event>(PiEvent);
+    } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return PI_ERROR_UNKNOWN;
+    }
+  } else {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+    PiEvent->UrEvent = *UrEvent;
+  }
 
   return PI_SUCCESS;
 }
@@ -3432,8 +3497,13 @@ piEnqueueMemBufferRead(pi_queue Queue,
     UrEventsWaitList[EventIt] = PiEvent->UrEvent;
   }
 
-  _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
-  ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  // _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+  // ur_event_handle_t *UrEvent = &PiEvent->UrEvent;
+  ur_event_handle_t *UrEvent {};
+  ur_event_handle_t InternalEvent {};
+  if (Event) {
+    UrEvent = &InternalEvent;
+  }
 
   HANDLE_ERRORS(urEnqueueMemBufferRead(UrQueue,
                                        UrBuffer,
@@ -3444,6 +3514,22 @@ piEnqueueMemBufferRead(pi_queue Queue,
                                        NumEventsInWaitList,
                                        UrEventsWaitList.data(),
                                        UrEvent));
+  
+  if (*Event == nullptr) {
+    _pi_event *PiEvent {};
+    try {
+      PiEvent = new _pi_event(*UrEvent);
+      *Event = reinterpret_cast<pi_event>(PiEvent);
+    } catch (const std::bad_alloc &) {
+      return PI_ERROR_OUT_OF_HOST_MEMORY;
+    } catch (...) {
+      return PI_ERROR_UNKNOWN;
+    }
+  } else {
+    _pi_event *PiEvent = reinterpret_cast<_pi_event *>(*Event);
+    PiEvent->UrEvent = *UrEvent;
+  }
+  
   return PI_SUCCESS;
 }
 
@@ -3517,6 +3603,8 @@ piEventsWait(pi_uint32 NumEvents,
   for (uint32_t EventIt = 0; EventIt < NumEvents; EventIt++) {
     _pi_event *PiEvent = reinterpret_cast<_pi_event *>(EventsWaitList[EventIt]);
     UrEventsWaitList[EventIt] = PiEvent->UrEvent;
+    // printf("%s %d PiEvent %lx PiEvent->UrEvent %lx\n",
+    // __FILE__, __LINE__, (unsigned long int)PiEvent, (unsigned long int)PiEvent->UrEvent);
   }
 
   HANDLE_ERRORS(urEventWait(NumEvents,
