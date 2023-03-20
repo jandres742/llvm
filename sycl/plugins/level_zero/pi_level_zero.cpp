@@ -378,27 +378,10 @@ pi_result piextContextCreateWithNativeHandle(pi_native_handle NativeHandle,
 pi_result piContextRetain(pi_context Context) {
 
   return pi2ur::piContextRetain(Context);
-#if 0
-  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-
-  Context->RefCount.increment();
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piContextRelease(pi_context Context) {
   return pi2ur::piContextRelease(Context);
-#if 0
-  printf("%s %d Context %lx\n", __FILE__, __LINE__, (unsigned long int)Context);
-  pi_platform Plt = Context->getPlatform();
-  printf("%s %d Plt %lx\n", __FILE__, __LINE__, (unsigned long int)Plt);
-  std::unique_lock<pi_shared_mutex> ContextsLock(Plt->ContextsMutex,
-                                                 std::defer_lock);
-  if (IndirectAccessTrackingEnabled)
-    ContextsLock.lock();
-
-  return ur2piResult(ContextReleaseHelper(reinterpret_cast<ur_context_handle_t>(Context)));
-#endif
 }
 
 pi_result piQueueCreate(pi_context Context, pi_device Device,
@@ -1193,23 +1176,6 @@ pi_result piextMemCreateWithNativeHandle(pi_native_handle NativeHandle,
 
 pi_result piProgramCreate(pi_context Context, const void *ILBytes,
                           size_t Length, pi_program *Program) {
-
-  // PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-  // PI_ASSERT(ILBytes && Length, PI_ERROR_INVALID_VALUE);
-  // PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  // // NOTE: the Level Zero module creation is also building the program, so we
-  // // are deferring it until the program is ready to be built.
-
-  // try {
-  //   *Program = new _pi_program(_pi_program::IL, reinterpret_cast<ur_context_handle_t>(Context), ILBytes, Length);
-  // } catch (const std::bad_alloc &) {
-  //   return PI_ERROR_OUT_OF_HOST_MEMORY;
-  // } catch (...) {
-  //   return PI_ERROR_UNKNOWN;
-  // }
-  // return PI_SUCCESS;
-
   return pi2ur::piProgramCreate(Context, ILBytes,
                                 Length, Program);
 }
@@ -1229,52 +1195,6 @@ pi_result piProgramCreateWithBinary(
                                           Metadata,
                                           BinaryStatus,
                                           Program);
-#if 0
-  (void)Metadata;
-  (void)NumMetadataEntries;
-
-  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-  PI_ASSERT(DeviceList && NumDevices, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(Binaries && Lengths, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  // For now we support only one device.
-  if (NumDevices != 1) {
-    zePrint("piProgramCreateWithBinary: level_zero supports only one device.");
-    return PI_ERROR_INVALID_VALUE;
-  }
-  if (!Binaries[0] || !Lengths[0]) {
-    if (BinaryStatus)
-      *BinaryStatus = PI_ERROR_INVALID_VALUE;
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  size_t Length = Lengths[0];
-  auto Binary = Binaries[0];
-
-  // In OpenCL, clCreateProgramWithBinary() can be used to load any of the
-  // following: "program executable", "compiled program", or "library of
-  // compiled programs".  In addition, the loaded program can be either
-  // IL (SPIR-v) or native device code.  For now, we assume that
-  // piProgramCreateWithBinary() is only used to load a "program executable"
-  // as native device code.
-  // If we wanted to support all the same cases as OpenCL, we would need to
-  // somehow examine the binary image to distinguish the cases.  Alternatively,
-  // we could change the PI interface and have the caller pass additional
-  // information to distinguish the cases.
-
-  try {
-    *Program = new _pi_program(_pi_program::Native, reinterpret_cast<ur_context_handle_t>(Context), Binary, Length);
-  } catch (const std::bad_alloc &) {
-    return PI_ERROR_OUT_OF_HOST_MEMORY;
-  } catch (...) {
-    return PI_ERROR_UNKNOWN;
-  }
-
-  if (BinaryStatus)
-    *BinaryStatus = PI_SUCCESS;
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piclProgramCreateWithSource(pi_context Context, pi_uint32 Count,
@@ -1286,15 +1206,6 @@ pi_result piclProgramCreateWithSource(pi_context Context, pi_uint32 Count,
                                             Strings,
                                             Lengths,
                                             RetProgram);
-#if 0
-  (void)Context;
-  (void)Count;
-  (void)Strings;
-  (void)Lengths;
-  (void)RetProgram;
-  zePrint("piclProgramCreateWithSource: not supported in Level Zero\n");
-  return PI_ERROR_INVALID_OPERATION;
-#endif
 }
 
 pi_result piProgramGetInfo(pi_program Program, pi_program_info ParamName,
@@ -1306,107 +1217,6 @@ pi_result piProgramGetInfo(pi_program Program, pi_program_info ParamName,
                                  ParamValueSize,
                                  ParamValue,
                                  ParamValueSizeRet);
-
-#if 0
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-  switch (ParamName) {
-  case PI_PROGRAM_INFO_REFERENCE_COUNT:
-    return ReturnValue(pi_uint32{Program->RefCount.load()});
-  case PI_PROGRAM_INFO_NUM_DEVICES:
-    // TODO: return true number of devices this program exists for.
-    return ReturnValue(pi_uint32{1});
-  case PI_PROGRAM_INFO_DEVICES:
-    // TODO: return all devices this program exists for.
-    return ReturnValue(Program->Context->Devices[0]);
-  case PI_PROGRAM_INFO_BINARY_SIZES: {
-    std::shared_lock<pi_shared_mutex> Guard(Program->Mutex);
-    size_t SzBinary;
-    if (Program->State == _pi_program::IL ||
-        Program->State == _pi_program::Native ||
-        Program->State == _pi_program::Object) {
-      SzBinary = Program->CodeLength;
-    } else if (Program->State == _pi_program::Exe) {
-      ZE_CALL(zeModuleGetNativeBinary, (Program->ZeModule, &SzBinary, nullptr));
-    } else {
-      return PI_ERROR_INVALID_PROGRAM;
-    }
-    // This is an array of 1 element, initialized as if it were scalar.
-    return ReturnValue(size_t{SzBinary});
-  }
-  case PI_PROGRAM_INFO_BINARIES: {
-    // The caller sets "ParamValue" to an array of pointers, one for each
-    // device.  Since Level Zero supports only one device, there is only one
-    // pointer.  If the pointer is NULL, we don't do anything.  Otherwise, we
-    // copy the program's binary image to the buffer at that pointer.
-    uint8_t **PBinary = pi_cast<uint8_t **>(ParamValue);
-    if (!PBinary[0])
-      break;
-
-    std::shared_lock<pi_shared_mutex> Guard(Program->Mutex);
-    if (Program->State == _pi_program::IL ||
-        Program->State == _pi_program::Native ||
-        Program->State == _pi_program::Object) {
-      std::memcpy(PBinary[0], Program->Code.get(), Program->CodeLength);
-    } else if (Program->State == _pi_program::Exe) {
-      size_t SzBinary = 0;
-      ZE_CALL(zeModuleGetNativeBinary,
-              (Program->ZeModule, &SzBinary, PBinary[0]));
-    } else {
-      return PI_ERROR_INVALID_PROGRAM;
-    }
-    break;
-  }
-  case PI_PROGRAM_INFO_NUM_KERNELS: {
-    std::shared_lock<pi_shared_mutex> Guard(Program->Mutex);
-    uint32_t NumKernels;
-    if (Program->State == _pi_program::IL ||
-        Program->State == _pi_program::Native ||
-        Program->State == _pi_program::Object) {
-      return PI_ERROR_INVALID_PROGRAM_EXECUTABLE;
-    } else if (Program->State == _pi_program::Exe) {
-      NumKernels = 0;
-      ZE_CALL(zeModuleGetKernelNames,
-              (Program->ZeModule, &NumKernels, nullptr));
-    } else {
-      return PI_ERROR_INVALID_PROGRAM;
-    }
-    return ReturnValue(size_t{NumKernels});
-  }
-  case PI_PROGRAM_INFO_KERNEL_NAMES:
-    try {
-      std::shared_lock<pi_shared_mutex> Guard(Program->Mutex);
-      std::string PINames{""};
-      if (Program->State == _pi_program::IL ||
-          Program->State == _pi_program::Native ||
-          Program->State == _pi_program::Object) {
-        return PI_ERROR_INVALID_PROGRAM_EXECUTABLE;
-      } else if (Program->State == _pi_program::Exe) {
-        uint32_t Count = 0;
-        ZE_CALL(zeModuleGetKernelNames, (Program->ZeModule, &Count, nullptr));
-        std::unique_ptr<const char *[]> PNames(new const char *[Count]);
-        ZE_CALL(zeModuleGetKernelNames,
-                (Program->ZeModule, &Count, PNames.get()));
-        for (uint32_t I = 0; I < Count; ++I) {
-          PINames += (I > 0 ? ";" : "");
-          PINames += PNames[I];
-        }
-      } else {
-        return PI_ERROR_INVALID_PROGRAM;
-      }
-      return ReturnValue(PINames.c_str());
-    } catch (const std::bad_alloc &) {
-      return PI_ERROR_OUT_OF_HOST_MEMORY;
-    } catch (...) {
-      return PI_ERROR_UNKNOWN;
-    }
-  default:
-    die("piProgramGetInfo: not implemented");
-  }
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piProgramLink(pi_context Context, pi_uint32 NumDevices,
@@ -1424,171 +1234,6 @@ pi_result piProgramLink(pi_context Context, pi_uint32 NumDevices,
                               PFnNotify,
                               UserData,
                               RetProgram);
-#if 0
-  // We only support one device with Level Zero currently.
-  if (NumDevices != 1) {
-    zePrint("piProgramLink: level_zero supports only one device.");
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  // We do not support any link flags at this time because the Level Zero API
-  // does not have any way to pass flags that are specific to linking.
-  if (Options && *Options != '\0') {
-    std::string ErrorMessage(
-        "Level Zero does not support kernel link flags: \"");
-    ErrorMessage.append(Options);
-    ErrorMessage.push_back('\"');
-    pi_program Program =
-        new _pi_program(_pi_program::Invalid, reinterpret_cast<ur_context_handle_t>(Context), ErrorMessage);
-    *RetProgram = Program;
-    return PI_ERROR_LINK_PROGRAM_FAILURE;
-  }
-
-  // Validate input parameters.
-  PI_ASSERT(DeviceList, PI_ERROR_INVALID_DEVICE);
-  // PI_ASSERT(Context->isValidDevice(DeviceList[0]), PI_ERROR_INVALID_DEVICE);
-  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
-  if (NumInputPrograms == 0 || InputPrograms == nullptr)
-    return PI_ERROR_INVALID_VALUE;
-
-  pi_result PiResult = PI_SUCCESS;
-  try {
-    // Acquire a "shared" lock on each of the input programs, and also validate
-    // that they are all in Object state.
-    //
-    // There is no danger of deadlock here even if two threads call
-    // piProgramLink simultaneously with the same input programs in a different
-    // order.  If we were acquiring these with "exclusive" access, this could
-    // lead to a classic lock ordering deadlock.  However, there is no such
-    // deadlock potential with "shared" access.  There could also be a deadlock
-    // potential if there was some other code that holds more than one of these
-    // locks simultaneously with "exclusive" access.  However, there is no such
-    // code like that, so this is also not a danger.
-    std::vector<std::shared_lock<pi_shared_mutex>> Guards(NumInputPrograms);
-    for (pi_uint32 I = 0; I < NumInputPrograms; I++) {
-      std::shared_lock<pi_shared_mutex> Guard(InputPrograms[I]->Mutex);
-      Guards[I].swap(Guard);
-      if (InputPrograms[I]->State != _pi_program::Object) {
-        return PI_ERROR_INVALID_OPERATION;
-      }
-    }
-
-    // Previous calls to piProgramCompile did not actually compile the SPIR-V.
-    // Instead, we postpone compilation until this point, when all the modules
-    // are linked together.  By doing compilation and linking together, the JIT
-    // compiler is able see all modules and do cross-module optimizations.
-    //
-    // Construct a ze_module_program_exp_desc_t which contains information about
-    // all of the modules that will be linked together.
-    ZeStruct<ze_module_program_exp_desc_t> ZeExtModuleDesc;
-    std::vector<size_t> CodeSizes(NumInputPrograms);
-    std::vector<const uint8_t *> CodeBufs(NumInputPrograms);
-    std::vector<const char *> BuildFlagPtrs(NumInputPrograms);
-    std::vector<const ze_module_constants_t *> SpecConstPtrs(NumInputPrograms);
-    std::vector<_pi_program::SpecConstantShim> SpecConstShims;
-    SpecConstShims.reserve(NumInputPrograms);
-
-    for (pi_uint32 I = 0; I < NumInputPrograms; I++) {
-      pi_program Program = InputPrograms[I];
-      CodeSizes[I] = Program->CodeLength;
-      CodeBufs[I] = Program->Code.get();
-      BuildFlagPtrs[I] = Program->BuildFlags.c_str();
-      SpecConstShims.emplace_back(Program);
-      SpecConstPtrs[I] = SpecConstShims[I].ze();
-    }
-
-    ZeExtModuleDesc.count = NumInputPrograms;
-    ZeExtModuleDesc.inputSizes = CodeSizes.data();
-    ZeExtModuleDesc.pInputModules = CodeBufs.data();
-    ZeExtModuleDesc.pBuildFlags = BuildFlagPtrs.data();
-    ZeExtModuleDesc.pConstants = SpecConstPtrs.data();
-
-    ZeStruct<ze_module_desc_t> ZeModuleDesc;
-    ZeModuleDesc.pNext = &ZeExtModuleDesc;
-    ZeModuleDesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
-
-    // This works around a bug in the Level Zero driver.  When "ZE_DEBUG=-1",
-    // the driver does validation of the API calls, and it expects
-    // "pInputModule" to be non-NULL and "inputSize" to be non-zero.  This
-    // validation is wrong when using the "ze_module_program_exp_desc_t"
-    // extension because those fields are supposed to be ignored.  As a
-    // workaround, set both fields to 1.
-    //
-    // TODO: Remove this workaround when the driver is fixed.
-    ZeModuleDesc.pInputModule = reinterpret_cast<const uint8_t *>(1);
-    ZeModuleDesc.inputSize = 1;
-
-    // We need a Level Zero extension to compile multiple programs together into
-    // a single Level Zero module.  However, we don't need that extension if
-    // there happens to be only one input program.
-    //
-    // The "|| (NumInputPrograms == 1)" term is a workaround for a bug in the
-    // Level Zero driver.  The driver's "ze_module_program_exp_desc_t"
-    // extension should work even in the case when there is just one input
-    // module.  However, there is currently a bug in the driver that leads to a
-    // crash.  As a workaround, do not use the extension when there is one
-    // input module.
-    //
-    // TODO: Remove this workaround when the driver is fixed.
-    if (!DeviceList[0]->Platform->ZeDriverModuleProgramExtensionFound ||
-        (NumInputPrograms == 1)) {
-      if (NumInputPrograms == 1) {
-        ZeModuleDesc.pNext = nullptr;
-        ZeModuleDesc.inputSize = ZeExtModuleDesc.inputSizes[0];
-        ZeModuleDesc.pInputModule = ZeExtModuleDesc.pInputModules[0];
-        ZeModuleDesc.pBuildFlags = ZeExtModuleDesc.pBuildFlags[0];
-        ZeModuleDesc.pConstants = ZeExtModuleDesc.pConstants[0];
-      } else {
-        zePrint("piProgramLink: level_zero driver does not have static linking "
-                "support.");
-        return PI_ERROR_INVALID_VALUE;
-      }
-    }
-
-    // Call the Level Zero API to compile, link, and create the module.
-    ze_device_handle_t ZeDevice = DeviceList[0]->ZeDevice;
-    ze_context_handle_t ZeContext = Context->ZeContext;
-    ze_module_handle_t ZeModule = nullptr;
-    ze_module_build_log_handle_t ZeBuildLog = nullptr;
-    ze_result_t ZeResult =
-        ZE_CALL_NOCHECK(zeModuleCreate, (ZeContext, ZeDevice, &ZeModuleDesc,
-                                         &ZeModule, &ZeBuildLog));
-
-    // We still create a _pi_program object even if there is a BUILD_FAILURE
-    // because we need the object to hold the ZeBuildLog.  There is no build
-    // log created for other errors, so we don't create an object.
-    PiResult = mapError(ZeResult);
-    if (ZeResult != ZE_RESULT_SUCCESS &&
-        ZeResult != ZE_RESULT_ERROR_MODULE_BUILD_FAILURE) {
-      return PiResult;
-    }
-
-    // The call to zeModuleCreate does not report an error if there are
-    // unresolved symbols because it thinks these could be resolved later via a
-    // call to zeModuleDynamicLink.  However, modules created with piProgramLink
-    // are supposed to be fully linked and ready to use.  Therefore, do an extra
-    // check now for unresolved symbols.  Note that we still create a
-    // _pi_program if there are unresolved symbols because the ZeBuildLog tells
-    // which symbols are unresolved.
-    if (ZeResult == ZE_RESULT_SUCCESS) {
-      ZeResult = checkUnresolvedSymbols(ZeModule, &ZeBuildLog);
-      if (ZeResult == ZE_RESULT_ERROR_MODULE_LINK_FAILURE) {
-        PiResult = PI_ERROR_LINK_PROGRAM_FAILURE;
-      } else if (ZeResult != ZE_RESULT_SUCCESS) {
-        return mapError(ZeResult);
-      }
-    }
-
-    _pi_program::state State =
-        (PiResult == PI_SUCCESS) ? _pi_program::Exe : _pi_program::Invalid;
-    *RetProgram = new _pi_program(State, reinterpret_cast<ur_context_handle_t>(Context), ZeModule, ZeBuildLog);
-  } catch (const std::bad_alloc &) {
-    return PI_ERROR_OUT_OF_HOST_MEMORY;
-  } catch (...) {
-    return PI_ERROR_UNKNOWN;
-  }
-  return PiResult;
-#endif
 }
 
 pi_result piProgramCompile(
@@ -1605,124 +1250,12 @@ pi_result piProgramCompile(
                                  InputHeaders,
                                  HeaderIncludeNames,
                                  PFnNotify, UserData);
-#if 0
-  (void)NumInputHeaders;
-  (void)InputHeaders;
-  (void)HeaderIncludeNames;
-
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
-    return PI_ERROR_INVALID_VALUE;
-
-  // These aren't supported.
-  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
-
-  std::scoped_lock<pi_shared_mutex> Guard(Program->Mutex);
-
-  // It's only valid to compile a program created from IL (we don't support
-  // programs created from source code).
-  //
-  // The OpenCL spec says that the header parameters are ignored when compiling
-  // IL programs, so we don't validate them.
-  if (Program->State != _pi_program::IL)
-    return PI_ERROR_INVALID_OPERATION;
-
-  // We don't compile anything now.  Instead, we delay compilation until
-  // piProgramLink, where we do both compilation and linking as a single step.
-  // This produces better code because the driver can do cross-module
-  // optimizations.  Therefore, we just remember the compilation flags, so we
-  // can use them later.
-  if (Options)
-    Program->BuildFlags = Options;
-  Program->State = _pi_program::Object;
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piProgramBuild(pi_program Program, pi_uint32 NumDevices,
                          const pi_device *DeviceList, const char *Options,
                          void (*PFnNotify)(pi_program Program, void *UserData),
                          void *UserData) {
-#if 0
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
-    return PI_ERROR_INVALID_VALUE;
-
-  // We only support build to one device with Level Zero now.
-  // TODO: we should eventually build to the possibly multiple root
-  // devices in the context.
-  if (NumDevices != 1) {
-    zePrint("piProgramBuild: level_zero supports only one device.");
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  // These aren't supported.
-  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
-
-  std::scoped_lock<pi_shared_mutex> Guard(Program->Mutex);
-  // Check if device belongs to associated context.
-  PI_ASSERT(Program->Context, PI_ERROR_INVALID_PROGRAM);
-  // PI_ASSERT(Program->Context->isValidDevice(DeviceList[0]),
-  //           PI_ERROR_INVALID_VALUE);
-
-  // It is legal to build a program created from either IL or from native
-  // device code.
-  if (Program->State != _pi_program::IL &&
-      Program->State != _pi_program::Native)
-    return PI_ERROR_INVALID_OPERATION;
-
-  // We should have either IL or native device code.
-  PI_ASSERT(Program->Code, PI_ERROR_INVALID_PROGRAM);
-
-  // Ask Level Zero to build and load the native code onto the device.
-  ZeStruct<ze_module_desc_t> ZeModuleDesc;
-  _pi_program::SpecConstantShim Shim(Program);
-  ZeModuleDesc.format = (Program->State == _pi_program::IL)
-                            ? ZE_MODULE_FORMAT_IL_SPIRV
-                            : ZE_MODULE_FORMAT_NATIVE;
-  ZeModuleDesc.inputSize = Program->CodeLength;
-  ZeModuleDesc.pInputModule = Program->Code.get();
-  ZeModuleDesc.pBuildFlags = Options;
-  ZeModuleDesc.pConstants = Shim.ze();
-
-  ze_device_handle_t ZeDevice = DeviceList[0]->ZeDevice;
-  ze_context_handle_t ZeContext = Program->Context->ZeContext;
-  ze_module_handle_t ZeModule = nullptr;
-
-  pi_result Result = PI_SUCCESS;
-  Program->State = _pi_program::Exe;
-  ze_result_t ZeResult =
-      ZE_CALL_NOCHECK(zeModuleCreate, (ZeContext, ZeDevice, &ZeModuleDesc,
-                                       &ZeModule, &Program->ZeBuildLog));
-  if (ZeResult != ZE_RESULT_SUCCESS) {
-    // We adjust pi_program below to avoid attempting to release zeModule when
-    // RT calls piProgramRelease().
-    ZeModule = nullptr;
-    Program->State = _pi_program::Invalid;
-    Result = mapError(ZeResult);
-  } else {
-    // The call to zeModuleCreate does not report an error if there are
-    // unresolved symbols because it thinks these could be resolved later via a
-    // call to zeModuleDynamicLink.  However, modules created with
-    // piProgramBuild are supposed to be fully linked and ready to use.
-    // Therefore, do an extra check now for unresolved symbols.
-    ZeResult = checkUnresolvedSymbols(ZeModule, &Program->ZeBuildLog);
-    if (ZeResult != ZE_RESULT_SUCCESS) {
-      Program->State = _pi_program::Invalid;
-      Result = (ZeResult == ZE_RESULT_ERROR_MODULE_LINK_FAILURE)
-                   ? PI_ERROR_BUILD_PROGRAM_FAILURE
-                   : mapError(ZeResult);
-    }
-  }
-
-  // We no longer need the IL / native code.
-  Program->Code.reset();
-  Program->ZeModule = ZeModule;
-  return Result;
-#endif
-
   return pi2ur::piProgramBuild(Program,
                               NumDevices,
                               DeviceList,
@@ -1742,81 +1275,14 @@ pi_result piProgramGetBuildInfo(pi_program Program, pi_device Device,
                                       ParamValueSize,
                                       ParamValue,
                                       ParamValueSizeRet);
-#if 0
-  (void)Device;
-
-  std::shared_lock<pi_shared_mutex> Guard(Program->Mutex);
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-  if (ParamName == PI_PROGRAM_BUILD_INFO_BINARY_TYPE) {
-    pi_program_binary_type Type = PI_PROGRAM_BINARY_TYPE_NONE;
-    if (Program->State == _pi_program::Object) {
-      Type = PI_PROGRAM_BINARY_TYPE_COMPILED_OBJECT;
-    } else if (Program->State == _pi_program::Exe) {
-      Type = PI_PROGRAM_BINARY_TYPE_EXECUTABLE;
-    }
-    return ReturnValue(pi_program_binary_type{Type});
-  }
-  if (ParamName == PI_PROGRAM_BUILD_INFO_OPTIONS) {
-    // TODO: how to get module build options out of Level Zero?
-    // For the programs that we compiled we can remember the options
-    // passed with piProgramCompile/piProgramBuild, but what can we
-    // return for programs that were built outside and registered
-    // with piProgramRegister?
-    return ReturnValue("");
-  } else if (ParamName == PI_PROGRAM_BUILD_INFO_LOG) {
-    // Check first to see if the plugin code recorded an error message.
-    if (!Program->ErrorMessage.empty()) {
-      return ReturnValue(Program->ErrorMessage.c_str());
-    }
-
-    // Next check if there is a Level Zero build log.
-    if (Program->ZeBuildLog) {
-      size_t LogSize = ParamValueSize;
-      ZE_CALL(zeModuleBuildLogGetString,
-              (Program->ZeBuildLog, &LogSize, pi_cast<char *>(ParamValue)));
-      if (ParamValueSizeRet) {
-        *ParamValueSizeRet = LogSize;
-      }
-      return PI_SUCCESS;
-    }
-
-    // Otherwise, there is no error.  The OpenCL spec says to return an empty
-    // string if there ws no previous attempt to compile, build, or link the
-    // program.
-    return ReturnValue("");
-  } else {
-    zePrint("piProgramGetBuildInfo: unsupported ParamName\n");
-    return PI_ERROR_INVALID_VALUE;
-  }
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piProgramRetain(pi_program Program) {
   return pi2ur::piProgramRetain(Program);
-#if 0
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-  Program->RefCount.increment();
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piProgramRelease(pi_program Program) {
   return pi2ur::piProgramRelease(Program);
-#if 0
-  printf("%s %d\n", __FILE__, __LINE__);
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  printf("%s %d\n", __FILE__, __LINE__);
-  if (!Program->RefCount.decrementAndTest())
-    return PI_SUCCESS;
-  
-  printf("%s %d Program %lx\n", __FILE__, __LINE__, (unsigned long int)Program);
-  delete Program;
-
-  printf("%s %d\n", __FILE__, __LINE__);
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piextProgramGetNativeHandle(pi_program Program,
@@ -1841,36 +1307,6 @@ pi_result piKernelCreate(pi_program Program, const char *KernelName,
   return pi2ur::piKernelCreate(Program,
                                KernelName,
                                RetKernel);
-#if 0
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-  PI_ASSERT(RetKernel, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(KernelName, PI_ERROR_INVALID_VALUE);
-
-  std::shared_lock<pi_shared_mutex> Guard(Program->Mutex);
-  if (Program->State != _pi_program::Exe) {
-    return PI_ERROR_INVALID_PROGRAM_EXECUTABLE;
-  }
-
-  printf("%s %d Program %lx\n", __FILE__, __LINE__, (unsigned long int)Program);
-
-  ZeStruct<ze_kernel_desc_t> ZeKernelDesc;
-  ZeKernelDesc.flags = 0;
-  ZeKernelDesc.pKernelName = KernelName;
-
-  ze_kernel_handle_t ZeKernel;
-  ZE_CALL(zeKernelCreate, (Program->ZeModule, &ZeKernelDesc, &ZeKernel));
-
-  try {
-    *RetKernel = new _pi_kernel(ZeKernel, true, reinterpret_cast<ur_program_handle_t>(Program));
-  } catch (const std::bad_alloc &) {
-    return PI_ERROR_OUT_OF_HOST_MEMORY;
-  } catch (...) {
-    return PI_ERROR_UNKNOWN;
-  }
-
-  PI_CALL((*RetKernel)->initialize());
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piKernelSetArg(pi_kernel Kernel, pi_uint32 ArgIndex, size_t ArgSize,
@@ -1880,30 +1316,6 @@ pi_result piKernelSetArg(pi_kernel Kernel, pi_uint32 ArgIndex, size_t ArgSize,
                                ArgIndex,
                                ArgSize,
                                ArgValue);
-
-#if 0
-  // OpenCL: "the arg_value pointer can be NULL or point to a NULL value
-  // in which case a NULL value will be used as the value for the argument
-  // declared as a pointer to global or constant memory in the kernel"
-  //
-  // We don't know the type of the argument but it seems that the only time
-  // SYCL RT would send a pointer to NULL in 'arg_value' is when the argument
-  // is a NULL pointer. Treat a pointer to NULL in 'arg_value' as a NULL.
-  if (ArgSize == sizeof(void *) && ArgValue &&
-      *(void **)(const_cast<void *>(ArgValue)) == nullptr) {
-    ArgValue = nullptr;
-  }
-
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  std::scoped_lock<pi_shared_mutex> Guard(Kernel->Mutex);
-  ZE_CALL(zeKernelSetArgumentValue,
-          (pi_cast<ze_kernel_handle_t>(Kernel->ZeKernel),
-           pi_cast<uint32_t>(ArgIndex), pi_cast<size_t>(ArgSize),
-           pi_cast<const void *>(ArgValue)));
-
-  return PI_SUCCESS;
-#endif
 }
 
 // Special version of piKernelSetArg to accept pi_mem.
@@ -1913,32 +1325,6 @@ pi_result piextKernelSetArgMemObj(pi_kernel Kernel, pi_uint32 ArgIndex,
   return pi2ur::piextKernelSetArgMemObj(Kernel,
                                         ArgIndex,
                                         ArgValue);
-#if 0
-  // TODO: the better way would probably be to add a new PI API for
-  // extracting native PI object from PI handle, and have SYCL
-  // RT pass that directly to the regular piKernelSetArg (and
-  // then remove this piextKernelSetArgMemObj).
-
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  // We don't yet know the device where this kernel will next be run on.
-  // Thus we can't know the actual memory allocation that needs to be used.
-  // Remember the memory object being used as an argument for this kernel
-  // to process it later when the device is known (at the kernel enqueue).
-  //
-  // TODO: for now we have to conservatively assume the access as read-write.
-  //       Improve that by passing SYCL buffer accessor type into
-  //       piextKernelSetArgMemObj.
-  //
-  std::scoped_lock<pi_shared_mutex> Guard(Kernel->Mutex);
-  // The ArgValue may be a NULL pointer in which case a NULL value is used for
-  // the kernel argument declared as a pointer to global or constant memory.
-  auto Arg = ArgValue ? *ArgValue : nullptr;
-  Kernel->PendingArguments.push_back(
-      {ArgIndex, sizeof(void *), Arg, _pi_mem::read_write});
-
-  return PI_SUCCESS;
-#endif
 }
 
 // Special version of piKernelSetArg to accept pi_sampler.
@@ -1948,17 +1334,6 @@ pi_result piextKernelSetArgSampler(pi_kernel Kernel, pi_uint32 ArgIndex,
   return pi2ur::piextKernelSetArgSampler(Kernel,
                                          ArgIndex,
                                          ArgValue);
-#if 0
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  std::scoped_lock<pi_shared_mutex> Guard(Kernel->Mutex);
-  ZE_CALL(zeKernelSetArgumentValue,
-          (pi_cast<ze_kernel_handle_t>(Kernel->ZeKernel),
-           pi_cast<uint32_t>(ArgIndex), sizeof(void *),
-           &(*ArgValue)->ZeSampler));
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piKernelGetInfo(pi_kernel Kernel, pi_kernel_info ParamName,
@@ -1970,53 +1345,6 @@ pi_result piKernelGetInfo(pi_kernel Kernel, pi_kernel_info ParamName,
                                 ParamValueSize,
                                 ParamValue,
                                 ParamValueSizeRet);
-#if 0
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-
-  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
-  switch (ParamName) {
-  case PI_KERNEL_INFO_CONTEXT:
-    return ReturnValue(pi_context{Kernel->Program->Context});
-  case PI_KERNEL_INFO_PROGRAM:
-    return ReturnValue(pi_program{Kernel->Program});
-  case PI_KERNEL_INFO_FUNCTION_NAME:
-    try {
-      std::string &KernelName = *Kernel->ZeKernelName.operator->();
-      return ReturnValue(static_cast<const char *>(KernelName.c_str()));
-    } catch (const std::bad_alloc &) {
-      return PI_ERROR_OUT_OF_HOST_MEMORY;
-    } catch (...) {
-      return PI_ERROR_UNKNOWN;
-    }
-  case PI_KERNEL_INFO_NUM_ARGS:
-    return ReturnValue(pi_uint32{Kernel->ZeKernelProperties->numKernelArgs});
-  case PI_KERNEL_INFO_REFERENCE_COUNT:
-    return ReturnValue(pi_uint32{Kernel->RefCount.load()});
-  case PI_KERNEL_INFO_ATTRIBUTES:
-    try {
-      uint32_t Size;
-      ZE_CALL(zeKernelGetSourceAttributes, (Kernel->ZeKernel, &Size, nullptr));
-      char *attributes = new char[Size];
-      ZE_CALL(zeKernelGetSourceAttributes,
-              (Kernel->ZeKernel, &Size, &attributes));
-      auto Res = ReturnValue(attributes);
-      delete[] attributes;
-      return Res;
-    } catch (const std::bad_alloc &) {
-      return PI_ERROR_OUT_OF_HOST_MEMORY;
-    } catch (...) {
-      return PI_ERROR_UNKNOWN;
-    }
-  default:
-    zePrint("Unsupported ParamName in piKernelGetInfo: ParamName=%d(0x%x)\n",
-            ParamName, ParamName);
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piKernelGetGroupInfo(pi_kernel Kernel, pi_device Device,
@@ -2030,57 +1358,6 @@ pi_result piKernelGetGroupInfo(pi_kernel Kernel, pi_device Device,
                                      ParamValueSize,
                                      ParamValue,
                                      ParamValueSizeRet);
-
-#if 0
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-  PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
-
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-
-  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
-  switch (ParamName) {
-  case PI_KERNEL_GROUP_INFO_GLOBAL_WORK_SIZE: {
-    // TODO: To revisit after level_zero/issues/262 is resolved
-    struct {
-      size_t Arr[3];
-    } WorkSize = {{Device->ZeDeviceComputeProperties->maxGroupSizeX,
-                   Device->ZeDeviceComputeProperties->maxGroupSizeY,
-                   Device->ZeDeviceComputeProperties->maxGroupSizeZ}};
-    return ReturnValue(WorkSize);
-  }
-  case PI_KERNEL_GROUP_INFO_WORK_GROUP_SIZE: {
-    // As of right now, L0 is missing API to query kernel and device specific
-    // max work group size.
-    return ReturnValue(
-        pi_uint64{Device->ZeDeviceComputeProperties->maxTotalGroupSize});
-  }
-  case PI_KERNEL_GROUP_INFO_COMPILE_WORK_GROUP_SIZE: {
-    struct {
-      size_t Arr[3];
-    } WgSize = {{Kernel->ZeKernelProperties->requiredGroupSizeX,
-                 Kernel->ZeKernelProperties->requiredGroupSizeY,
-                 Kernel->ZeKernelProperties->requiredGroupSizeZ}};
-    return ReturnValue(WgSize);
-  }
-  case PI_KERNEL_GROUP_INFO_LOCAL_MEM_SIZE:
-    return ReturnValue(pi_uint32{Kernel->ZeKernelProperties->localMemSize});
-  case PI_KERNEL_GROUP_INFO_PREFERRED_WORK_GROUP_SIZE_MULTIPLE: {
-    return ReturnValue(size_t{Device->ZeDeviceProperties->physicalEUSimdWidth});
-  }
-  case PI_KERNEL_GROUP_INFO_PRIVATE_MEM_SIZE:
-    return ReturnValue(pi_uint32{Kernel->ZeKernelProperties->privateMemSize});
-  case PI_KERNEL_GROUP_INFO_NUM_REGS: {
-    die("PI_KERNEL_GROUP_INFO_NUM_REGS in piKernelGetGroupInfo not "
-        "implemented\n");
-    break;
-  }
-  default:
-    zePrint("Unknown ParamName in piKernelGetGroupInfo: ParamName=%d(0x%x)\n",
-            ParamName, ParamName);
-    return PI_ERROR_INVALID_VALUE;
-  }
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piKernelGetSubGroupInfo(pi_kernel Kernel, pi_device Device,
@@ -2097,63 +1374,16 @@ pi_result piKernelGetSubGroupInfo(pi_kernel Kernel, pi_device Device,
                                         ParamValueSize,
                                         ParamValue,
                                         ParamValueSizeRet);
-#if 0
-  (void)Device;
-  (void)InputValueSize;
-  (void)InputValue;
-
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-
-  std::shared_lock<pi_shared_mutex> Guard(Kernel->Mutex);
-  if (ParamName == PI_KERNEL_MAX_SUB_GROUP_SIZE) {
-    ReturnValue(uint32_t{Kernel->ZeKernelProperties->maxSubgroupSize});
-  } else if (ParamName == PI_KERNEL_MAX_NUM_SUB_GROUPS) {
-    ReturnValue(uint32_t{Kernel->ZeKernelProperties->maxNumSubgroups});
-  } else if (ParamName == PI_KERNEL_COMPILE_NUM_SUB_GROUPS) {
-    ReturnValue(uint32_t{Kernel->ZeKernelProperties->requiredNumSubGroups});
-  } else if (ParamName == PI_KERNEL_COMPILE_SUB_GROUP_SIZE_INTEL) {
-    ReturnValue(uint32_t{Kernel->ZeKernelProperties->requiredSubgroupSize});
-  } else {
-    die("piKernelGetSubGroupInfo: parameter not implemented");
-    return {};
-  }
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piKernelRetain(pi_kernel Kernel) {
 
   return pi2ur::piKernelRetain(Kernel);
-#if 0
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  Kernel->RefCount.increment();
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piKernelRelease(pi_kernel Kernel) {
 
   return pi2ur::piKernelRelease(Kernel);
-
-#if 0
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  if (!Kernel->RefCount.decrementAndTest())
-    return PI_SUCCESS;
-
-  auto KernelProgram = Kernel->Program;
-  if (Kernel->OwnZeKernel)
-    ZE_CALL(zeKernelDestroy, (Kernel->ZeKernel));
-  if (IndirectAccessTrackingEnabled) {
-    PI_CALL(piContextRelease(KernelProgram->Context));
-  }
-  // do a release on the program this kernel was part of
-  PI_CALL(piProgramRelease(KernelProgram));
-  delete Kernel;
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result
@@ -2162,7 +1392,6 @@ piEnqueueKernelLaunch(pi_queue Queue, pi_kernel Kernel, pi_uint32 WorkDim,
                       const size_t *GlobalWorkSize, const size_t *LocalWorkSize,
                       pi_uint32 NumEventsInWaitList,
                       const pi_event *EventWaitList, pi_event *OutEvent) {
-
   return pi2ur::piEnqueueKernelLaunch(Queue,
                                       Kernel,
                                       WorkDim,
@@ -2172,221 +1401,6 @@ piEnqueueKernelLaunch(pi_queue Queue, pi_kernel Kernel, pi_uint32 WorkDim,
                                       NumEventsInWaitList,
                                       EventWaitList,
                                       OutEvent);
-#if 0
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-  PI_ASSERT(Queue, PI_ERROR_INVALID_QUEUE);
-  PI_ASSERT((WorkDim > 0) && (WorkDim < 4), PI_ERROR_INVALID_WORK_DIMENSION);
-
-  // Lock automatically releases when this goes out of scope.
-  std::scoped_lock<pi_shared_mutex, pi_shared_mutex, pi_shared_mutex> Lock(
-      Queue->Mutex, Kernel->Mutex, Kernel->Program->Mutex);
-  if (GlobalWorkOffset != NULL) {
-    if (!Queue->Device->Platform->ZeDriverGlobalOffsetExtensionFound) {
-      zePrint("No global offset extension found on this driver\n");
-      return PI_ERROR_INVALID_VALUE;
-    }
-
-    ZE_CALL(zeKernelSetGlobalOffsetExp,
-            (Kernel->ZeKernel, GlobalWorkOffset[0], GlobalWorkOffset[1],
-             GlobalWorkOffset[2]));
-  }
-
-  // If there are any pending arguments set them now.
-  for (auto &Arg : Kernel->PendingArguments) {
-    // The ArgValue may be a NULL pointer in which case a NULL value is used for
-    // the kernel argument declared as a pointer to global or constant memory.
-    char **ZeHandlePtr = nullptr;
-    if (Arg.Value) {
-      PI_CALL(Arg.Value->getZeHandlePtr(ZeHandlePtr, Arg.AccessMode,
-                                        Queue->Device));
-    }
-    ZE_CALL(zeKernelSetArgumentValue,
-            (Kernel->ZeKernel, Arg.Index, Arg.Size, ZeHandlePtr));
-  }
-  Kernel->PendingArguments.clear();
-
-  ze_group_count_t ZeThreadGroupDimensions{1, 1, 1};
-  uint32_t WG[3];
-
-  // global_work_size of unused dimensions must be set to 1
-  PI_ASSERT(WorkDim == 3 || GlobalWorkSize[2] == 1, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(WorkDim >= 2 || GlobalWorkSize[1] == 1, PI_ERROR_INVALID_VALUE);
-
-  if (LocalWorkSize) {
-    WG[0] = pi_cast<uint32_t>(LocalWorkSize[0]);
-    WG[1] = pi_cast<uint32_t>(LocalWorkSize[1]);
-    WG[2] = pi_cast<uint32_t>(LocalWorkSize[2]);
-  } else {
-    // We can't call to zeKernelSuggestGroupSize if 64-bit GlobalWorkSize
-    // values do not fit to 32-bit that the API only supports currently.
-    bool SuggestGroupSize = true;
-    for (int I : {0, 1, 2}) {
-      if (GlobalWorkSize[I] > UINT32_MAX) {
-        SuggestGroupSize = false;
-      }
-    }
-    if (SuggestGroupSize) {
-      ZE_CALL(zeKernelSuggestGroupSize,
-              (Kernel->ZeKernel, GlobalWorkSize[0], GlobalWorkSize[1],
-               GlobalWorkSize[2], &WG[0], &WG[1], &WG[2]));
-    } else {
-      for (int I : {0, 1, 2}) {
-        // Try to find a I-dimension WG size that the GlobalWorkSize[I] is
-        // fully divisable with. Start with the max possible size in
-        // each dimension.
-        uint32_t GroupSize[] = {
-            Queue->Device->ZeDeviceComputeProperties->maxGroupSizeX,
-            Queue->Device->ZeDeviceComputeProperties->maxGroupSizeY,
-            Queue->Device->ZeDeviceComputeProperties->maxGroupSizeZ};
-        GroupSize[I] = std::min(size_t(GroupSize[I]), GlobalWorkSize[I]);
-        while (GlobalWorkSize[I] % GroupSize[I]) {
-          --GroupSize[I];
-        }
-        if (GlobalWorkSize[I] / GroupSize[I] > UINT32_MAX) {
-          zePrint("piEnqueueKernelLaunch: can't find a WG size "
-                  "suitable for global work size > UINT32_MAX\n");
-          return PI_ERROR_INVALID_WORK_GROUP_SIZE;
-        }
-        WG[I] = GroupSize[I];
-      }
-      zePrint("piEnqueueKernelLaunch: using computed WG size = {%d, %d, %d}\n",
-              WG[0], WG[1], WG[2]);
-    }
-  }
-
-  // TODO: assert if sizes do not fit into 32-bit?
-  switch (WorkDim) {
-  case 3:
-    ZeThreadGroupDimensions.groupCountX =
-        pi_cast<uint32_t>(GlobalWorkSize[0] / WG[0]);
-    ZeThreadGroupDimensions.groupCountY =
-        pi_cast<uint32_t>(GlobalWorkSize[1] / WG[1]);
-    ZeThreadGroupDimensions.groupCountZ =
-        pi_cast<uint32_t>(GlobalWorkSize[2] / WG[2]);
-    break;
-  case 2:
-    ZeThreadGroupDimensions.groupCountX =
-        pi_cast<uint32_t>(GlobalWorkSize[0] / WG[0]);
-    ZeThreadGroupDimensions.groupCountY =
-        pi_cast<uint32_t>(GlobalWorkSize[1] / WG[1]);
-    WG[2] = 1;
-    break;
-  case 1:
-    ZeThreadGroupDimensions.groupCountX =
-        pi_cast<uint32_t>(GlobalWorkSize[0] / WG[0]);
-    WG[1] = WG[2] = 1;
-    break;
-
-  default:
-    zePrint("piEnqueueKernelLaunch: unsupported work_dim\n");
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  // Error handling for non-uniform group size case
-  if (GlobalWorkSize[0] !=
-      size_t(ZeThreadGroupDimensions.groupCountX) * WG[0]) {
-    zePrint("piEnqueueKernelLaunch: invalid work_dim. The range is not a "
-            "multiple of the group size in the 1st dimension\n");
-    return PI_ERROR_INVALID_WORK_GROUP_SIZE;
-  }
-  if (GlobalWorkSize[1] !=
-      size_t(ZeThreadGroupDimensions.groupCountY) * WG[1]) {
-    zePrint("piEnqueueKernelLaunch: invalid work_dim. The range is not a "
-            "multiple of the group size in the 2nd dimension\n");
-    return PI_ERROR_INVALID_WORK_GROUP_SIZE;
-  }
-  if (GlobalWorkSize[2] !=
-      size_t(ZeThreadGroupDimensions.groupCountZ) * WG[2]) {
-    zePrint("piEnqueueKernelLaunch: invalid work_dim. The range is not a "
-            "multiple of the group size in the 3rd dimension\n");
-    return PI_ERROR_INVALID_WORK_GROUP_SIZE;
-  }
-
-  ZE_CALL(zeKernelSetGroupSize, (Kernel->ZeKernel, WG[0], WG[1], WG[2]));
-
-  bool UseCopyEngine = false;
-  _pi_ze_event_list_t TmpWaitList;
-  if (auto Res = ur2piResult(TmpWaitList.createAndRetainPiZeEventList(
-          NumEventsInWaitList, reinterpret_cast<const ur_event_handle_t *>(EventWaitList), reinterpret_cast<ur_queue_handle_t>(Queue), UseCopyEngine)))
-    return Res;
-
-  // Get a new command list to be used on this call
-  pi_command_list_ptr_t CommandList{};
-  if (auto Res = ur2piResult(Queue->Context->getAvailableCommandList(
-          reinterpret_cast<ur_queue_handle_t>(Queue), CommandList, UseCopyEngine, true /* AllowBatching */)))
-    return Res;
-
-  ze_event_handle_t ZeEvent = nullptr;
-  pi_event InternalEvent;
-  bool IsInternal = OutEvent == nullptr;
-  pi_event *Event = OutEvent ? OutEvent : &InternalEvent;
-  pi_result Res = ur2piResult(createEventAndAssociateQueue(reinterpret_cast<ur_queue_handle_t>(Queue),
-                                                           reinterpret_cast<ur_event_handle_t *>(Event),
-                                                           PI_COMMAND_TYPE_NDRANGE_KERNEL,
-                                                           CommandList,
-                                                           IsInternal));
-  if (Res != PI_SUCCESS)
-    return Res;
-  ZeEvent = (*Event)->ZeEvent;
-  (*Event)->WaitList = TmpWaitList;
-
-  // Save the kernel in the event, so that when the event is signalled
-  // the code can do a piKernelRelease on this kernel.
-  (*Event)->CommandData = (void *)Kernel;
-
-  // Increment the reference count of the Kernel and indicate that the Kernel is
-  // in use. Once the event has been signalled, the code in
-  // CleanupCompletedEvent(Event) will do a piReleaseKernel to update the
-  // reference count on the kernel, using the kernel saved in CommandData.
-  PI_CALL(piKernelRetain(Kernel));
-
-  // Add to list of kernels to be submitted
-  if (IndirectAccessTrackingEnabled)
-    Queue->KernelsToBeSubmitted.push_back(reinterpret_cast<ur_kernel_handle_t>(Kernel));
-
-  if (Queue->Device->useImmediateCommandLists() &&
-      IndirectAccessTrackingEnabled) {
-    // If using immediate commandlists then gathering of indirect
-    // references and appending to the queue (which means submission)
-    // must be done together.
-    std::unique_lock<pi_shared_mutex> ContextsLock(
-        Queue->Device->Platform->ContextsMutex, std::defer_lock);
-    // We are going to submit kernels for execution. If indirect access flag is
-    // set for a kernel then we need to make a snapshot of existing memory
-    // allocations in all contexts in the platform. We need to lock the mutex
-    // guarding the list of contexts in the platform to prevent creation of new
-    // memory alocations in any context before we submit the kernel for
-    // execution.
-    ContextsLock.lock();
-    Queue->CaptureIndirectAccesses();
-    // Add the command to the command list, which implies submission.
-    ZE_CALL(zeCommandListAppendLaunchKernel,
-            (CommandList->first, Kernel->ZeKernel, &ZeThreadGroupDimensions,
-             ZeEvent, (*Event)->WaitList.Length,
-             (*Event)->WaitList.ZeEventList));
-  } else {
-    // Add the command to the command list for later submission.
-    // No lock is needed here, unlike the immediate commandlist case above,
-    // because the kernels are not actually submitted yet. Kernels will be
-    // submitted only when the comamndlist is closed. Then, a lock is held.
-    ZE_CALL(zeCommandListAppendLaunchKernel,
-            (CommandList->first, Kernel->ZeKernel, &ZeThreadGroupDimensions,
-             ZeEvent, (*Event)->WaitList.Length,
-             (*Event)->WaitList.ZeEventList));
-  }
-
-  zePrint("calling zeCommandListAppendLaunchKernel() with"
-          "  ZeEvent %#llx\n",
-          pi_cast<std::uintptr_t>(ZeEvent));
-  printZeEventList((*Event)->WaitList);
-
-  // Execute command list asynchronously, as the event will be used
-  // to track down its completion.
-  if (auto Res = ur2piResult(Queue->executeCommandList(CommandList, false, true)))
-    return Res;
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piextKernelCreateWithNativeHandle(pi_native_handle NativeHandle,
@@ -2400,17 +1414,6 @@ pi_result piextKernelCreateWithNativeHandle(pi_native_handle NativeHandle,
                                                   Program,
                                                   OwnNativeHandle,
                                                   Kernel);
-#if 0
-  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-  PI_ASSERT(NativeHandle, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(Kernel, PI_ERROR_INVALID_KERNEL);
-
-  auto ZeKernel = pi_cast<ze_kernel_handle_t>(NativeHandle);
-  *Kernel = new _pi_kernel(ZeKernel, OwnNativeHandle, reinterpret_cast<ur_program_handle_t>(Program));
-  PI_CALL((*Kernel)->initialize());
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piextKernelGetNativeHandle(pi_kernel Kernel,
@@ -2425,21 +1428,8 @@ pi_result piextKernelGetNativeHandle(pi_kernel Kernel,
 
 // External PI API entry
 pi_result piEventCreate(pi_context Context, pi_event *RetEvent) {
-
   return pi2ur::piEventCreate(Context,
                               RetEvent);
-
-#if 0
-  pi_result Result = ur2piResult(EventCreate(reinterpret_cast<ur_context_handle_t>(Context),
-                                             nullptr,
-                                             true,
-                                             reinterpret_cast<ur_event_handle_t *>(RetEvent)));
-  (*RetEvent)->RefCountExternal++;
-  if (Result != PI_SUCCESS)
-    return Result;
-  ZE_CALL(zeEventHostSignal, ((*RetEvent)->ZeEvent));
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piEventGetInfo(pi_event Event, pi_event_info ParamName,
@@ -2450,73 +1440,6 @@ pi_result piEventGetInfo(pi_event Event, pi_event_info ParamName,
                                ParamValueSize,
                                ParamValue,
                                ParamValueSizeRet);
-#if 0
-  PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
-
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-  switch (ParamName) {
-  case PI_EVENT_INFO_COMMAND_QUEUE: {
-    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
-    return ReturnValue(pi_queue{Event->Queue});
-  }
-  case PI_EVENT_INFO_CONTEXT: {
-    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
-    return ReturnValue(pi_context{Event->Context});
-  }
-  case PI_EVENT_INFO_COMMAND_TYPE: {
-    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
-    return ReturnValue(pi_cast<pi_uint64>(Event->CommandType));
-  }
-  case PI_EVENT_INFO_COMMAND_EXECUTION_STATUS: {
-    // Check to see if the event's Queue has an open command list due to
-    // batching. If so, go ahead and close and submit it, because it is
-    // possible that this is trying to query some event's status that
-    // is part of the batch.  This isn't strictly required, but it seems
-    // like a reasonable thing to do.
-    auto Queue = Event->Queue;
-    if (Queue) {
-      // Lock automatically releases when this goes out of scope.
-      std::scoped_lock<pi_shared_mutex> lock(Queue->Mutex);
-      const auto &OpenCommandList = Queue->eventOpenCommandList(reinterpret_cast<ur_event_handle_t>(Event));
-      if (OpenCommandList != Queue->CommandListMap.end()) {
-        if (auto Res = ur2piResult(Queue->executeOpenCommandList(
-                OpenCommandList->second.isCopy(Queue))))
-          return Res;
-      }
-    }
-
-    // Level Zero has a much more explicit notion of command submission than
-    // OpenCL. It doesn't happen unless the user submits a command list. We've
-    // done it just above so the status is at least PI_EVENT_RUNNING.
-    pi_int32 Result = PI_EVENT_RUNNING;
-
-    // Make sure that we query a host-visible event only.
-    // If one wasn't yet created then don't create it here as well, and
-    // just conservatively return that event is not yet completed.
-    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
-    auto HostVisibleEvent = Event->HostVisibleEvent;
-    if (Event->Completed) {
-      Result = PI_EVENT_COMPLETE;
-    } else if (HostVisibleEvent) {
-      ze_result_t ZeResult;
-      ZeResult =
-          ZE_CALL_NOCHECK(zeEventQueryStatus, (HostVisibleEvent->ZeEvent));
-      if (ZeResult == ZE_RESULT_SUCCESS) {
-        Result = PI_EVENT_COMPLETE;
-      }
-    }
-    return ReturnValue(pi_cast<pi_int32>(Result));
-  }
-  case PI_EVENT_INFO_REFERENCE_COUNT:
-    return ReturnValue(pi_uint32{Event->RefCount.load()});
-  default:
-    zePrint("Unsupported ParamName in piEventGetInfo: ParamName=%d(%x)\n",
-            ParamName, ParamName);
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  return PI_SUCCESS;
-#endif
 }
 
 pi_result piEventGetProfilingInfo(pi_event Event, pi_profiling_info ParamName,

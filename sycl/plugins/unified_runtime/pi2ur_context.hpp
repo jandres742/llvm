@@ -228,7 +228,7 @@ struct _pi_sampler : _pi_object {
 
 
 struct _pi_event : _pi_object {
-  _pi_event(ur_event_handle_t UrEvent) : UrEvent{UrEvent} {printf("JAIME: %s %d =================================================== \n", __FILE__, __LINE__);}
+  _pi_event(ur_event_handle_t UrEvent) : UrEvent{UrEvent} {}
 
   // UR sampler handle.
   ur_event_handle_t UrEvent {};

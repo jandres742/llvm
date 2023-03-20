@@ -384,3 +384,87 @@ extern thread_local char ErrorMessage[MaxMessageSize];
 // Utility function for setting a message and warning
 [[maybe_unused]] void setErrorMessage(const char *message,
                                       ur_result_t error_code);
+
+
+// remove after rebase
+///////////////////////////////////////////////////////////////////////////////
+/// @brief Program metadata property type.
+typedef enum ur_program_metadata_type_t {
+    UR_PROGRAM_METADATA_TYPE_UINT32 = 0,     ///< type is a 32-bit integer.
+    UR_PROGRAM_METADATA_TYPE_UINT64 = 1,     ///< type is a 64-bit integer.
+    UR_PROGRAM_METADATA_TYPE_BYTE_ARRAY = 2, ///< type is a byte array.
+    UR_PROGRAM_METADATA_TYPE_STRING = 3,     ///< type is a null-terminated string.
+    /// @cond
+    UR_PROGRAM_METADATA_TYPE_FORCE_UINT32 = 0x7fffffff
+    /// @endcond
+
+} ur_program_metadata_type_t;
+
+///////////////////////////////////////////////////////////////////////////////
+/// @brief Program metadata value union.
+typedef union ur_program_metadata_value_t {
+    uint32_t data32; ///< [in] inline storage for the 32-bit data, type
+                     ///< ::UR_PROGRAM_METADATA_TYPE_UINT32.
+    uint64_t data64; ///< [in] inline storage for the 64-bit data, type
+                     ///< ::UR_PROGRAM_METADATA_TYPE_UINT64.
+    char *pString;   ///< [in] pointer to null-terminated string data, type
+                     ///< ::UR_PROGRAM_METADATA_TYPE_STRING.
+    void *pData;     ///< [in] pointer to binary data, type
+                     ///< ::UR_PROGRAM_METADATA_TYPE_BYTE_ARRAY.
+
+} ur_program_metadata_value_t;
+
+///////////////////////////////////////////////////////////////////////////////
+/// @brief Program metadata property.
+typedef struct ur_program_metadata_t {
+    char *pName;                       ///< [in] null-terminated metadata name.
+    ur_program_metadata_type_t type;   ///< [in] the type of metadata value.
+    size_t size;                       ///< [in] size in bytes of the data pointed to by value.pData, or 0 when
+                                       ///< value size is less than 64-bits and is stored directly in value.data.
+    ur_program_metadata_value_t value; ///< [in] the metadata value storage.
+
+} ur_program_metadata_t;
+
+///////////////////////////////////////////////////////////////////////////////
+/// @brief Program creation properties.
+typedef struct ur_program_properties_t {
+    ur_structure_type_t stype;               ///< [in] type of this structure, must be
+                                             ///< ::UR_STRUCTURE_TYPE_PROGRAM_PROPERTIES
+    void *pNext;                             ///< [in,out][optional] pointer to extension-specific structure
+    uint32_t count;                          ///< [in] the number of entries in pMetadatas, if count is greater than
+                                             ///< zero then pMetadatas must not be null.
+    const ur_program_metadata_t *pMetadatas; ///< [in][optional][range(0,count)] pointer to array of metadata entries.
+
+} ur_program_properties_t;
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramCreateWithIL(
+    ur_context_handle_t hContext,               ///< [in] handle of the context instance
+    const void *pIL,                            ///< [in] pointer to IL binary.
+    size_t length,                              ///< [in] length of `pIL` in bytes.
+    const ur_program_properties_t *pProperties, ///< [in][optional] pointer to program creation properties.
+    ur_program_handle_t *phProgram              ///< [out] pointer to handle of program object created.
+);
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramBuild(
+    ur_context_handle_t hContext, ///< [in] handle of the context instance.
+    ur_program_handle_t hProgram, ///< [in] Handle of the program to build.
+    const char *pOptions          ///< [in][optional] pointer to build options null-terminated string.
+);
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramCompile(
+    ur_context_handle_t hContext, ///< [in] handle of the context instance.
+    ur_program_handle_t hProgram, ///< [in][out] handle of the program to compile.
+    const char *pOptions          ///< [in][optional] pointer to build options null-terminated string.
+);
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramLink(
+    ur_context_handle_t hContext,          ///< [in] handle of the context instance.
+    uint32_t count,                        ///< [in] number of program handles in `phPrograms`.
+    const ur_program_handle_t *phPrograms, ///< [in][range(0, count)] pointer to array of program handles.
+    const char *pOptions,                  ///< [in][optional] pointer to linker options null-terminated string.
+    ur_program_handle_t *phProgram         ///< [out] pointer to handle of program object created.
+);

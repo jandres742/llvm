@@ -48,17 +48,372 @@ checkUnresolvedSymbols(ze_module_handle_t ZeModule,
   return ZE_RESULT_SUCCESS;
 }
 
-UR_APIEXPORT ur_result_t UR_APICALL urProgramCreate(
-    ur_context_handle_t hContext, ///< [in] handle of the context instance
-    uint32_t count, ///< [in] number of module handles in module list.
-    const ur_module_handle_t
-        *phModules, ///< [in][range(0, count)] pointer to array of modules.
-    const char *pOptions, ///< [in][optional] pointer to linker options
-                          ///< null-terminated string.
-    ur_program_handle_t
-        *phProgram ///< [out] pointer to handle of program object created.
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramCreateWithIL(
+    ur_context_handle_t Context,               ///< [in] handle of the context instance
+    const void *IL,                            ///< [in] pointer to IL binary.
+    size_t Length,                              ///< [in] length of `pIL` in bytes.
+    const ur_program_properties_t *Properties, ///< [in][optional] pointer to program creation properties.
+    ur_program_handle_t *Program              ///< [out] pointer to handle of program object created.
 ) {
-  printf("%s %d\n", __FILE__, __LINE__);
+  try {
+     _ur_program_handle_t *UrProgram = new _ur_program_handle_t(_ur_program_handle_t::IL,
+                                                                Context,
+                                                                IL,
+                                                                Length);
+    *Program = reinterpret_cast<ur_program_handle_t>(UrProgram);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
+}
+
+UR_APIEXPORT ur_result_t UR_APICALL urProgramCreateWithBinary(
+    ur_context_handle_t Context, ///< [in] handle of the context instance
+    ur_device_handle_t Device,            ///< [in] handle to device associated with binary.
+    size_t Size,            ///< [in] size in bytes.
+    const uint8_t *Binary, ///< [in] pointer to binary.
+    ur_program_handle_t *Program ///< [out] pointer to handle of Program object created.
+) {
+  // In OpenCL, clCreateProgramWithBinary() can be used to load any of the
+  // following: "program executable", "compiled program", or "library of
+  // compiled programs".  In addition, the loaded program can be either
+  // IL (SPIR-v) or native device code.  For now, we assume that
+  // piProgramCreateWithBinary() is only used to load a "program executable"
+  // as native device code.
+  // If we wanted to support all the same cases as OpenCL, we would need to
+  // somehow examine the binary image to distinguish the cases.  Alternatively,
+  // we could change the PI interface and have the caller pass additional
+  // information to distinguish the cases.
+
+  try {
+     _ur_program_handle_t *UrProgram = new _ur_program_handle_t(_ur_program_handle_t::Native,
+                                                                Context,
+                                                                Binary,
+                                                                Size);
+    *Program = reinterpret_cast<ur_program_handle_t>(UrProgram);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+
+  return UR_RESULT_SUCCESS;
+}
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramBuild(
+    ur_context_handle_t Context, ///< [in] handle of the context instance.
+    ur_program_handle_t Program, ///< [in] Handle of the program to build.
+    const char *Options          ///< [in][optional] pointer to build options null-terminated string.
+) {
+  // printf("%s %d Program %lx\n", __FILE__, __LINE__, (unsigned long int)Program);
+  std::scoped_lock<pi_shared_mutex> Guard(Program->Mutex);
+  // printf("%s %d\n", __FILE__, __LINE__);
+
+  // Ask Level Zero to build and load the native code onto the device.
+  // printf("%s %d\n", __FILE__, __LINE__);
+  ZeStruct<ze_module_desc_t> ZeModuleDesc;
+  _ur_program_handle_t::SpecConstantShim Shim(Program);
+  // printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDesc.format = (Program->State == _ur_program_handle_t::IL)
+                            ? ZE_MODULE_FORMAT_IL_SPIRV
+                            : ZE_MODULE_FORMAT_NATIVE;
+                            // printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDesc.inputSize = Program->CodeLength;
+  // printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDesc.pInputModule = Program->Code.get();
+  // printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDesc.pBuildFlags = Options;
+  // printf("%s %d\n", __FILE__, __LINE__);
+  ZeModuleDesc.pConstants = Shim.ze();
+
+  // printf("%s %d\n", __FILE__, __LINE__);
+
+  ze_device_handle_t ZeDevice = Context->Devices[0]->ZeDevice;
+  ze_context_handle_t ZeContext = Program->Context->ZeContext;
+  ze_module_handle_t ZeModule = nullptr;
+
+  // printf("%s %d\n", __FILE__, __LINE__);
+
+  ur_result_t Result = UR_RESULT_SUCCESS;
+  Program->State = _ur_program_handle_t::Exe;
+  ze_result_t ZeResult = zeModuleCreate(ZeContext,
+                                        ZeDevice,
+                                        &ZeModuleDesc,
+                                        &ZeModule,
+                                        &Program->ZeBuildLog);
+  if (ZeResult != ZE_RESULT_SUCCESS) {
+    // printf("%s %d\n", __FILE__, __LINE__);
+    // We adjust pi_program below to avoid attempting to release zeModule when
+    // RT calls piProgramRelease().
+    Program->State = _ur_program_handle_t::Invalid;
+    Result = ze2urResult(ZeResult);
+    if (Program->ZeBuildLog) {
+      ZE_CALL_NOCHECK(zeModuleBuildLogDestroy, (Program->ZeBuildLog));
+      Program->ZeBuildLog = nullptr;
+    }
+    if (ZeModule) {
+      ZE_CALL_NOCHECK(zeModuleDestroy, (ZeModule));
+      ZeModule = nullptr;
+    }
+  } else {
+    // printf("%s %d\n", __FILE__, __LINE__);
+    // The call to zeModuleCreate does not report an error if there are
+    // unresolved symbols because it thinks these could be resolved later via a
+    // call to zeModuleDynamicLink.  However, modules created with
+    // piProgramBuild are supposed to be fully linked and ready to use.
+    // Therefore, do an extra check now for unresolved symbols.
+    ZeResult = checkUnresolvedSymbols(ZeModule, &Program->ZeBuildLog);
+    if (ZeResult != ZE_RESULT_SUCCESS) {
+      Program->State = _ur_program_handle_t::Invalid;
+      Result = (ZeResult == ZE_RESULT_ERROR_MODULE_LINK_FAILURE)
+                   ? UR_RESULT_ERROR_BUILD_PROGRAM_FAILURE
+                   : ze2urResult(ZeResult);
+      if (ZeModule) {
+        ZE_CALL_NOCHECK(zeModuleDestroy, (ZeModule));
+        ZeModule = nullptr;
+      }
+    }
+  }
+  // printf("%s %d\n", __FILE__, __LINE__);
+
+  // We no longer need the IL / native code.
+  Program->Code.reset();
+  Program->ZeModule = ZeModule;
+  return Result;
+}
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramCompile(
+    ur_context_handle_t Context, ///< [in] handle of the context instance.
+    ur_program_handle_t Program, ///< [in][out] handle of the program to compile.
+    const char *Options          ///< [in][optional] pointer to build options null-terminated string.
+) {
+
+  std::scoped_lock<pi_shared_mutex> Guard(Program->Mutex);
+
+  // It's only valid to compile a program created from IL (we don't support
+  // programs created from source code).
+  //
+  // The OpenCL spec says that the header parameters are ignored when compiling
+  // IL programs, so we don't validate them.
+  if (Program->State != _ur_program_handle_t::IL)
+    return UR_RESULT_ERROR_INVALID_OPERATION;
+
+  // We don't compile anything now.  Instead, we delay compilation until
+  // piProgramLink, where we do both compilation and linking as a single step.
+  // This produces better code because the driver can do cross-module
+  // optimizations.  Therefore, we just remember the compilation flags, so we
+  // can use them later.
+  if (Options)
+    Program->BuildFlags = Options;
+  Program->State = _ur_program_handle_t::Object;
+
+  return UR_RESULT_SUCCESS;
+}
+
+UR_APIEXPORT ur_result_t UR_APICALL
+urProgramLink(
+    ur_context_handle_t Context,          ///< [in] handle of the context instance.
+    uint32_t Count,                        ///< [in] number of program handles in `phPrograms`.
+    const ur_program_handle_t *Programs, ///< [in][range(0, count)] pointer to array of program handles.
+    const char *Options,                  ///< [in][optional] pointer to linker options null-terminated string.
+    ur_program_handle_t *Program         ///< [out] pointer to handle of program object created.
+) {
+  // We do not support any link flags at this time because the Level Zero API
+  // does not have any way to pass flags that are specific to linking.
+  if (Options && *Options != '\0') {
+    std::string ErrorMessage(
+        "Level Zero does not support kernel link flags: \"");
+    ErrorMessage.append(Options);
+    ErrorMessage.push_back('\"');
+    _ur_program_handle_t *UrProgram = new _ur_program_handle_t(_ur_program_handle_t::Invalid,
+                                                             Context,
+                                                             ErrorMessage);
+    *Program = reinterpret_cast<ur_program_handle_t>(UrProgram);
+    return UR_RESULT_ERROR_MODULE_LINK_FAILURE;
+  }
+
+  ur_result_t UrResult = UR_RESULT_SUCCESS;
+  try {
+    // Acquire a "shared" lock on each of the input programs, and also validate
+    // that they are all in Object state.
+    //
+    // There is no danger of deadlock here even if two threads call
+    // piProgramLink simultaneously with the same input programs in a different
+    // order.  If we were acquiring these with "exclusive" access, this could
+    // lead to a classic lock ordering deadlock.  However, there is no such
+    // deadlock potential with "shared" access.  There could also be a deadlock
+    // potential if there was some other code that holds more than one of these
+    // locks simultaneously with "exclusive" access.  However, there is no such
+    // code like that, so this is also not a danger.
+    std::vector<std::shared_lock<pi_shared_mutex>> Guards(Count);
+    for (pi_uint32 I = 0; I < Count; I++) {
+      std::shared_lock<pi_shared_mutex> Guard(Programs[I]->Mutex);
+      Guards[I].swap(Guard);
+      if (Programs[I]->State != _ur_program_handle_t::Object) {
+        return UR_RESULT_ERROR_INVALID_OPERATION;
+      }
+    }
+
+    // Previous calls to piProgramCompile did not actually compile the SPIR-V.
+    // Instead, we postpone compilation until this point, when all the modules
+    // are linked together.  By doing compilation and linking together, the JIT
+    // compiler is able see all modules and do cross-module optimizations.
+    //
+    // Construct a ze_module_program_exp_desc_t which contains information about
+    // all of the modules that will be linked together.
+    ZeStruct<ze_module_program_exp_desc_t> ZeExtModuleDesc;
+    std::vector<size_t> CodeSizes(Count);
+    std::vector<const uint8_t *> CodeBufs(Count);
+    std::vector<const char *> BuildFlagPtrs(Count);
+    std::vector<const ze_module_constants_t *> SpecConstPtrs(Count);
+    std::vector<_ur_program_handle_t::SpecConstantShim> SpecConstShims;
+    SpecConstShims.reserve(Count);
+
+    for (pi_uint32 I = 0; I < Count; I++) {
+      ur_program_handle_t Program = Programs[I];
+      CodeSizes[I] = Program->CodeLength;
+      CodeBufs[I] = Program->Code.get();
+      BuildFlagPtrs[I] = Program->BuildFlags.c_str();
+      SpecConstShims.emplace_back(Program);
+      SpecConstPtrs[I] = SpecConstShims[I].ze();
+    }
+
+    ZeExtModuleDesc.count = Count;
+    ZeExtModuleDesc.inputSizes = CodeSizes.data();
+    ZeExtModuleDesc.pInputModules = CodeBufs.data();
+    ZeExtModuleDesc.pBuildFlags = BuildFlagPtrs.data();
+    ZeExtModuleDesc.pConstants = SpecConstPtrs.data();
+
+    ZeStruct<ze_module_desc_t> ZeModuleDesc;
+    ZeModuleDesc.pNext = &ZeExtModuleDesc;
+    ZeModuleDesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
+
+    // This works around a bug in the Level Zero driver.  When "ZE_DEBUG=-1",
+    // the driver does validation of the API calls, and it expects
+    // "pInputModule" to be non-NULL and "inputSize" to be non-zero.  This
+    // validation is wrong when using the "ze_module_program_exp_desc_t"
+    // extension because those fields are supposed to be ignored.  As a
+    // workaround, set both fields to 1.
+    //
+    // TODO: Remove this workaround when the driver is fixed.
+    ZeModuleDesc.pInputModule = reinterpret_cast<const uint8_t *>(1);
+    ZeModuleDesc.inputSize = 1;
+
+    // We need a Level Zero extension to compile multiple programs together into
+    // a single Level Zero module.  However, we don't need that extension if
+    // there happens to be only one input program.
+    //
+    // The "|| (NumInputPrograms == 1)" term is a workaround for a bug in the
+    // Level Zero driver.  The driver's "ze_module_program_exp_desc_t"
+    // extension should work even in the case when there is just one input
+    // module.  However, there is currently a bug in the driver that leads to a
+    // crash.  As a workaround, do not use the extension when there is one
+    // input module.
+    //
+    // TODO: Remove this workaround when the driver is fixed.
+    if (!Context->Devices[0]->Platform->ZeDriverModuleProgramExtensionFound ||
+        (Count == 1)) {
+      if (Count == 1) {
+        ZeModuleDesc.pNext = nullptr;
+        ZeModuleDesc.inputSize = ZeExtModuleDesc.inputSizes[0];
+        ZeModuleDesc.pInputModule = ZeExtModuleDesc.pInputModules[0];
+        ZeModuleDesc.pBuildFlags = ZeExtModuleDesc.pBuildFlags[0];
+        ZeModuleDesc.pConstants = ZeExtModuleDesc.pConstants[0];
+      } else {
+        zePrint("piProgramLink: level_zero driver does not have static linking "
+                "support.");
+        return UR_RESULT_ERROR_INVALID_VALUE;
+      }
+    }
+
+    // Call the Level Zero API to compile, link, and create the module.
+    ze_device_handle_t ZeDevice = Context->Devices[0]->ZeDevice;
+    ze_context_handle_t ZeContext = Context->ZeContext;
+    ze_module_handle_t ZeModule = nullptr;
+    ze_module_build_log_handle_t ZeBuildLog = nullptr;
+    ze_result_t ZeResult =
+        ZE_CALL_NOCHECK(zeModuleCreate, (ZeContext, ZeDevice, &ZeModuleDesc,
+                                         &ZeModule, &ZeBuildLog));
+
+    // We still create a _ur_program_handle_t object even if there is a BUILD_FAILURE
+    // because we need the object to hold the ZeBuildLog.  There is no build
+    // log created for other errors, so we don't create an object.
+    UrResult = ze2urResult(ZeResult);
+    if (ZeResult != ZE_RESULT_SUCCESS &&
+        ZeResult != ZE_RESULT_ERROR_MODULE_BUILD_FAILURE) {
+      return ze2urResult(ZeResult);
+    }
+
+    // The call to zeModuleCreate does not report an error if there are
+    // unresolved symbols because it thinks these could be resolved later via a
+    // call to zeModuleDynamicLink.  However, modules created with piProgramLink
+    // are supposed to be fully linked and ready to use.  Therefore, do an extra
+    // check now for unresolved symbols.  Note that we still create a
+    // _ur_program_handle_t if there are unresolved symbols because the ZeBuildLog tells
+    // which symbols are unresolved.
+    if (ZeResult == ZE_RESULT_SUCCESS) {
+      ZeResult = checkUnresolvedSymbols(ZeModule, &ZeBuildLog);
+      if (ZeResult == ZE_RESULT_ERROR_MODULE_LINK_FAILURE) {
+        UrResult = UR_RESULT_ERROR_UNKNOWN; // TODO: UR_RESULT_ERROR_PROGRAM_LINK_FAILURE;
+      } else if (ZeResult != ZE_RESULT_SUCCESS) {
+        return ze2urResult(ZeResult);
+      }
+    }
+
+    _ur_program_handle_t::state State =
+        (UrResult == UR_RESULT_SUCCESS) ? _ur_program_handle_t::Exe : _ur_program_handle_t::Invalid;
+    _ur_program_handle_t *UrProgram = new _ur_program_handle_t(State, Context, ZeModule, ZeBuildLog);
+    *Program = reinterpret_cast<ur_program_handle_t>(UrProgram);
+  } catch (const std::bad_alloc &) {
+    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return UR_RESULT_ERROR_UNKNOWN;
+  }
+  return UrResult;
+}
+
+
+#if 0
+UR_APIEXPORT ur_result_t UR_APICALL urProgramCreate(
+    ur_context_handle_t Context, ///< [in] handle of the context instance
+    uint32_t Count, ///< [in] number of module handles in module list.
+    const ur_module_handle_t *Modules, ///< [in][range(0, count)] pointer to array of modules.
+    const char *Options, ///< [in][optional] pointer to linker options
+                          ///< null-terminated string.
+    ur_program_handle_t *Program ///< [out] pointer to handle of program object created.
+) {
+
+  // Ask Level Zero to build and load the native code onto the device.
+  ZeStruct<ze_module_desc_t> ZeModuleDesc;
+  _ur_program_handle_t::SpecConstantShim Shim(Program);
+  ZeModuleDesc.format = (Program->State == _ur_program_handle_t::IL)
+                            ? ZE_MODULE_FORMAT_IL_SPIRV
+                            : ZE_MODULE_FORMAT_NATIVE;
+  ZeModuleDesc.inputSize = Program->CodeLength;
+  ZeModuleDesc.pInputModule = Program->Code.get();
+  ZeModuleDesc.pBuildFlags = Options;
+  ZeModuleDesc.pConstants = Shim.ze();
+
+  ze_device_handle_t ZeDevice = DeviceList[0]->ZeDevice;
+  ze_context_handle_t ZeContext = Program->Context->ZeContext;
+  ze_module_handle_t ZeModule = nullptr;
+
+  ze_result_t ZeResult = zeModuleCreate(ZeContext,
+                                        ZeDevice,
+                                        &ZeModuleDesc,
+                                        &ZeModule,
+                                        &Program->ZeBuildLog);
+
+
+  return ze2urResult(ZeResult);
+
+#if 0
   // Construct a ze_module_program_exp_desc_t which contains information about
   // all of the modules that will be linked together.
   ZeStruct<ze_module_program_exp_desc_t> ZeModuleDescExp;
@@ -72,17 +427,14 @@ UR_APIEXPORT ur_result_t UR_APICALL urProgramCreate(
     CodeBufs[i] = reinterpret_cast<const uint8_t*>(const_cast<const void *>(UrModule->pIL));
   }
 
-printf("%s %d\n", __FILE__, __LINE__);
   ZeModuleDescExp.count = count;
   ZeModuleDescExp.inputSizes = CodeSizes.data();
-  printf("%s %d CodeSizes.size() %zd\n", __FILE__, __LINE__, CodeSizes.size());
   ZeModuleDescExp.pInputModules = CodeBufs.data();
   ZeModuleDescExp.pBuildFlags = BuildFlagPtrs.data();
-printf("%s %d\n", __FILE__, __LINE__);
   ZeStruct<ze_module_desc_t> ZeModuleDesc;
   ZeModuleDesc.pNext = &ZeModuleDescExp;
   ZeModuleDesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
-printf("%s %d\n", __FILE__, __LINE__);
+
   // This works around a bug in the Level Zero driver.  When "ZE_DEBUG=-1",
   // the driver does validation of the API calls, and it expects
   // "pInputModule" to be non-NULL and "inputSize" to be non-zero.  This
@@ -93,7 +445,6 @@ printf("%s %d\n", __FILE__, __LINE__);
   // TODO: Remove this workaround when the driver is fixed.
   ZeModuleDesc.pInputModule = reinterpret_cast<const uint8_t *>(1);
   ZeModuleDesc.inputSize = 1;
-  printf("%s %d\n", __FILE__, __LINE__);
   ZeModuleDesc.pNext = nullptr;
   ZeModuleDesc.inputSize = ZeModuleDescExp.inputSizes[0];
   ZeModuleDesc.pInputModule = ZeModuleDescExp.pInputModules[0];
@@ -101,7 +452,7 @@ printf("%s %d\n", __FILE__, __LINE__);
 #if 0
   ZeModuleDesc.pConstants = ZeModuleDescExp.pConstants[0];
 #endif
-  printf("%s %d\n", __FILE__, __LINE__);
+
   // Call the Level Zero API to compile, link, and create the module.
   _ur_context_handle_t *UrContext = reinterpret_cast<_ur_context_handle_t *>(hContext);
   ze_device_handle_t ZeDevice = UrContext->Devices[0]->ZeDevice;
@@ -111,7 +462,7 @@ printf("%s %d\n", __FILE__, __LINE__);
   ze_result_t ZeResult = zeModuleCreate(ZeContext,
                               ZeDevice, &ZeModuleDesc,
                               &ZeModule, &ZeBuildLog);
-  printf("%s %d\n", __FILE__, __LINE__);
+
   // The call to zeModuleCreate does not report an error if there are
   // unresolved symbols because it thinks these could be resolved later via a
   // call to zeModuleDynamicLink.  However, modules created with piProgramLink
@@ -135,45 +486,10 @@ printf("%s %d\n", __FILE__, __LINE__);
 
   *phProgram = reinterpret_cast<ur_program_handle_t>(UrProgram);
 
-  printf("%s %d\n", __FILE__, __LINE__);
   return UrResult;
+#endif
 }
-
-UR_APIEXPORT ur_result_t UR_APICALL urProgramCreateWithBinary(
-    ur_context_handle_t Context, ///< [in] handle of the context instance
-    ur_device_handle_t Device,            ///< [in] handle to device associated with binary.
-    size_t Size,            ///< [in] size in bytes.
-    const uint8_t *Binary, ///< [in] pointer to binary.
-    ur_program_handle_t *Program ///< [out] pointer to handle of Program object created.
-) {
-
-  size_t Length = Size;
-
-  // In OpenCL, clCreateProgramWithBinary() can be used to load any of the
-  // following: "program executable", "compiled program", or "library of
-  // compiled programs".  In addition, the loaded program can be either
-  // IL (SPIR-v) or native device code.  For now, we assume that
-  // piProgramCreateWithBinary() is only used to load a "program executable"
-  // as native device code.
-  // If we wanted to support all the same cases as OpenCL, we would need to
-  // somehow examine the binary image to distinguish the cases.  Alternatively,
-  // we could change the PI interface and have the caller pass additional
-  // information to distinguish the cases.
-
-  try {
-    auto RetProgram = new _ur_program_handle_t(_ur_program_handle_t::Native,
-                               Context,
-                               Binary,
-                               Length);
-    *Program = reinterpret_cast<ur_program_handle_t>(RetProgram);
-  } catch (const std::bad_alloc &) {
-    return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
-  } catch (...) {
-    return UR_RESULT_ERROR_UNKNOWN;
-  }
-
-  return UR_RESULT_SUCCESS;
-}
+#endif
 
 UR_APIEXPORT ur_result_t UR_APICALL urProgramRetain(
     ur_program_handle_t hProgram ///< [in] handle for the Program to retain
@@ -188,10 +504,10 @@ UR_APIEXPORT ur_result_t UR_APICALL urProgramRelease(
   if (!Program->RefCount.decrementAndTest())
     return UR_RESULT_SUCCESS;
   
-  printf("%s %d Program %lx\n", __FILE__, __LINE__, (unsigned long int)Program);
+  // printf("%s %d Program %lx\n", __FILE__, __LINE__, (unsigned long int)Program);
   delete Program;
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   return UR_RESULT_SUCCESS;
 }
 
@@ -527,15 +843,15 @@ _ur_program_handle_t::~_ur_program_handle_t() {
   // According to Level Zero Specification, all kernels and build logs
   // must be destroyed before the Module can be destroyed.  So, be sure
   // to destroy build log before destroying the module.
-  printf("ZeBuildLog %lx\n", (unsigned long int)ZeBuildLog);
+  // printf("ZeBuildLog %lx\n", (unsigned long int)ZeBuildLog);
   if (ZeBuildLog) {
-    printf("%s %d\n", __FILE__, __LINE__);
+    // printf("%s %d\n", __FILE__, __LINE__);
     ZE_CALL_NOCHECK(zeModuleBuildLogDestroy, (ZeBuildLog));
   }
 
-  printf("ZeModule %lx OwnZeModule %d\n", (unsigned long int)ZeModule, OwnZeModule);
+  // printf("ZeModule %lx OwnZeModule %d\n", (unsigned long int)ZeModule, OwnZeModule);
   if (ZeModule && OwnZeModule) {
-    printf("%s %d\n", __FILE__, __LINE__);
+    // printf("%s %d\n", __FILE__, __LINE__);
     ZE_CALL_NOCHECK(zeModuleDestroy, (ZeModule));
   }
 }

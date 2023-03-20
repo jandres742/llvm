@@ -1962,7 +1962,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urMemBufferCreate(
       (flags & UR_MEM_FLAG_USE_HOST_POINTER) ? reinterpret_cast<char *>(pHost) : nullptr;
   try {
     Buffer = new _pi_buffer(hContext, size, HostPtrOrNull, HostPtrImported);
-    printf("%s %d Buffer %lx\n", __FILE__, __LINE__, (unsigned long int)Buffer);
+    // printf("%s %d Buffer %lx\n", __FILE__, __LINE__, (unsigned long int)Buffer);
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -3061,7 +3061,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
         NeedCopy = false;
     }
 
-    printf("%s %d\n", __FILE__, __LINE__);
+    // printf("%s %d\n", __FILE__, __LINE__);
 
     if (NeedCopy) {
       // Copy valid buffer data to this allocation.
@@ -3077,16 +3077,16 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
                                         LastDeviceWithValidAllocation->ZeDevice,
                                         &P2P));
       if (!P2P) {
-        printf("%s %d\n", __FILE__, __LINE__);
+        // printf("%s %d\n", __FILE__, __LINE__);
         // P2P copy is not possible, so copy through the host.
         auto &HostAllocation = Allocations[nullptr];
         // The host allocation may already exists, e.g. with imported
         // host ptr, or in case of interop buffer.
-        printf("%s %d\n", __FILE__, __LINE__);
+        // printf("%s %d\n", __FILE__, __LINE__);
         if (!HostAllocation.ZeHandle) {
           void *ZeHandleHost;
           if (USMAllocatorConfigInstance.EnableBuffers) {
-            printf("%s %d\n", __FILE__, __LINE__);
+            // printf("%s %d\n", __FILE__, __LINE__);
             HostAllocation.ReleaseAction = allocation_t::free;
             UR_CALL(urUSMHostAlloc(UrContext,
                                    nullptr,
@@ -3094,15 +3094,15 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
                                    getAlignment(),
                                    &ZeHandleHost));
           } else {
-            printf("%s %d\n", __FILE__, __LINE__);
+            // printf("%s %d\n", __FILE__, __LINE__);
             HostAllocation.ReleaseAction = allocation_t::free_native;
             UR_CALL(ZeHostMemAllocHelper(&ZeHandleHost, UrContext, Size));
           }
-          printf("%s %d\n", __FILE__, __LINE__);
+          // printf("%s %d\n", __FILE__, __LINE__);
           HostAllocation.ZeHandle = reinterpret_cast<char *>(ZeHandleHost);
           HostAllocation.Valid = false;
         }
-        printf("%s %d\n", __FILE__, __LINE__);
+        // printf("%s %d\n", __FILE__, __LINE__);
         std::scoped_lock<pi_mutex> Lock(UrContext->ImmediateCommandListMutex);
         if (!HostAllocation.Valid) {
           ZE2UR_CALL(zeCommandListAppendMemoryCopy,(UrContext->ZeCommandListInit,
@@ -3117,7 +3117,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
           // read-only.
           HostAllocation.Valid = true;
         }
-        printf("%s %d\n", __FILE__, __LINE__);
+        // printf("%s %d\n", __FILE__, __LINE__);
         ZE2UR_CALL(zeCommandListAppendMemoryCopy,(UrContext->ZeCommandListInit,
                                                ZeHandle,
                                                HostAllocation.ZeHandle,
@@ -3126,7 +3126,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
                                                0,
                                                nullptr));
       } else {
-        printf("%s %d\n", __FILE__, __LINE__);
+        // printf("%s %d\n", __FILE__, __LINE__);
         // Perform P2P copy.
         std::scoped_lock<pi_mutex> Lock(UrContext->ImmediateCommandListMutex);
         ZE2UR_CALL(zeCommandListAppendMemoryCopy,
@@ -3142,7 +3142,7 @@ ur_result_t _pi_buffer::getZeHandle(char *&ZeHandle,
     Allocation.Valid = true;
     LastDeviceWithValidAllocation = Device;
   }
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   // Invalidate other allocations that would become not valid if
   // this access is not read-only.

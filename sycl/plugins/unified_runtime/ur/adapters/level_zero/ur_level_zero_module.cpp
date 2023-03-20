@@ -48,13 +48,13 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   _ur_queue_handle_t *UrQueue = ur_cast<_ur_queue_handle_t *>(hQueue);
   _ur_kernel_handle_t *UrKernel = ur_cast<_ur_kernel_handle_t *>(hKernel);
 
-  printf("%s %d UrQueue %lx\n", __FILE__, __LINE__, (unsigned long int)UrQueue);
-  printf("%s %d UrQueue->Device %lx\n", __FILE__, __LINE__, (unsigned long int)UrQueue->Device);
-  printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
-  if (UrKernel) {
-    printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
-  }
-  printf("%s %d phEvent %lx\n", __FILE__, __LINE__, (unsigned long int)phEvent);
+  // printf("%s %d UrQueue %lx\n", __FILE__, __LINE__, (unsigned long int)UrQueue);
+  // printf("%s %d UrQueue->Device %lx\n", __FILE__, __LINE__, (unsigned long int)UrQueue->Device);
+  // printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
+  // if (UrKernel) {
+  //   printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
+  // }
+  // printf("%s %d phEvent %lx\n", __FILE__, __LINE__, (unsigned long int)phEvent);
   
 
   // Lock automatically releases when this goes out of scope.
@@ -78,25 +78,25 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     // the kernel argument declared as a pointer to global or constant memory.
     char **ZeHandlePtr = nullptr;
     if (Arg.Value) {
-        printf("%s %d Arg.Value %lx\n", __FILE__, __LINE__, (unsigned long int)Arg.Value);
+        // printf("%s %d Arg.Value %lx\n", __FILE__, __LINE__, (unsigned long int)Arg.Value);
     //   _pi_buffer *ArgumentBuffer = reinterpret_cast<_pi_buffer *>(Arg.Value);
       UR_CALL(Arg.Value->getZeHandlePtr(ZeHandlePtr,
                                         Arg.AccessMode,
                                         UrQueue->Device));
-        printf("%s %d\n", __FILE__, __LINE__);
+        // printf("%s %d\n", __FILE__, __LINE__);
     }
-    printf("%s %d\n", __FILE__, __LINE__);
+    // printf("%s %d\n", __FILE__, __LINE__);
     ZE2UR_CALL(zeKernelSetArgumentValue, (UrKernel->ZeKernel,
                                           Arg.Index,
                                           Arg.Size,
                                           ZeHandlePtr));
   }
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   UrKernel->PendingArguments.clear();
 
   ze_group_count_t ZeThreadGroupDimensions{1, 1, 1};
   uint32_t WG[3] {};
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
 #if 0
   // global_work_size of unused dimensions must be set to 1
@@ -150,7 +150,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     }
   }
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   // TODO: assert if sizes do not fit into 32-bit?
 
@@ -181,7 +181,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     return UR_RESULT_ERROR_INVALID_VALUE;
   }
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   // Error handling for non-uniform group size case
   if (pGlobalWorkSize[0] !=
@@ -203,7 +203,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     return UR_RESULT_ERROR_INVALID_WORK_GROUP_SIZE;
   }
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   ZE2UR_CALL(zeKernelSetGroupSize, (UrKernel->ZeKernel,
                                     WG[0],
@@ -212,7 +212,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
 
   bool UseCopyEngine = false;
   _pi_ze_event_list_t TmpWaitList;
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   UR_CALL(TmpWaitList.createAndRetainPiZeEventList(numEventsInWaitList,
                                                           reinterpret_cast<const ur_event_handle_t *>(phEventWaitList),
                                                           reinterpret_cast<ur_queue_handle_t>(UrQueue), 
@@ -236,11 +236,11 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   ur_event_handle_t *hEvent = phEvent ? phEvent : &InternalEvent;
 #endif
 
-  printf("%s %d IsInternal %d phEvent %lx hEvent %lx\n",
-    __FILE__, __LINE__,
-    IsInternal,
-    (unsigned long int)phEvent,
-    (unsigned long int)hEvent);
+  // printf("%s %d IsInternal %d phEvent %lx hEvent %lx\n",
+  //   __FILE__, __LINE__,
+  //   IsInternal,
+  //   (unsigned long int)phEvent,
+  //   (unsigned long int)hEvent);
 
   UR_CALL(createEventAndAssociateQueue(hQueue,
                                        hEvent,
@@ -248,7 +248,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
                                        CommandList,
                                        IsInternal));
   
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   _ur_event_handle_t **pUrEvent = reinterpret_cast<_ur_event_handle_t **>(phEvent);
   
   ZeEvent = (*pUrEvent)->ZeEvent;
@@ -305,7 +305,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
                                                  (*pUrEvent)->WaitList.ZeEventList));
   }
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   zePrint("calling zeCommandListAppendLaunchKernel() with"
           "  ZeEvent %#llx\n", ur_cast<std::uintptr_t>(ZeEvent));
@@ -317,7 +317,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   // to track down its completion.
   UR_CALL(UrQueue->executeCommandList(CommandList, false, true));
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   return UR_RESULT_SUCCESS;
 }
@@ -448,7 +448,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelCreate(
     return UR_RESULT_ERROR_INVALID_PROGRAM_EXECUTABLE;
   }
 
-  printf("%s %d UrProgram %lx\n", __FILE__, __LINE__, (unsigned long int)UrProgram);
+  // printf("%s %d UrProgram %lx\n", __FILE__, __LINE__, (unsigned long int)UrProgram);
 
   ZeStruct<ze_kernel_desc_t> ZeKernelDesc;
   ZeKernelDesc.flags = 0;
@@ -460,8 +460,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelCreate(
   try {
     _ur_kernel_handle_t *UrKernel = new _ur_kernel_handle_t(ZeKernel, true, hProgram);
     *phKernel = reinterpret_cast<ur_kernel_handle_t>(UrKernel);
-    printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
-    printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
+    // printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
+    // printf("%s %d UrKernel->Program %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel->Program);
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -630,15 +630,14 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelGetGroupInfo(
 UR_APIEXPORT ur_result_t UR_APICALL urKernelGetSubGroupInfo(
     ur_kernel_handle_t Kernel, ///< [in] handle of the Kernel object
     ur_device_handle_t Device, ///< [in] handle of the Device object
-    ur_kernel_sub_group_info_t
-        PropName,     ///< [in] name of the SubGroup property to query
+    ur_kernel_sub_group_info_t PropName,     ///< [in] name of the SubGroup property to query
     size_t PropSize,  ///< [in] size of the Kernel SubGroup property value
     void *PropValue, ///< [in,out][range(0, propSize)][optional] value of the
                       ///< Kernel SubGroup property.
     size_t *PropSizeRet ///< [out][optional] pointer to the actual size in
                          ///< bytes of data being queried by propName.
 ) {
-  (void)Device;
+  std::ignore = Device;
 
   UrReturnHelper ReturnValue(PropSize, PropValue, PropSizeRet);
 
@@ -749,7 +748,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urKernelSetArgMemObj(
 
   _ur_mem_handle_t *UrMem = ur_cast<_ur_mem_handle_t *>(ArgValue);
 
-  printf("%s %d ArgValue %lx\n", __FILE__, __LINE__, (unsigned long int)ArgValue);
+  // printf("%s %d ArgValue %lx\n", __FILE__, __LINE__, (unsigned long int)ArgValue);
 
   auto Arg = UrMem ? UrMem : nullptr;
   Kernel->PendingArguments.push_back(
@@ -807,23 +806,23 @@ UR_APIEXPORT ur_result_t UR_APICALL urModuleCreate(
     ur_module_handle_t
         *phModule ///< [out] pointer to handle of Module object created.
 ) {
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   // Construct a ze_module_program_exp_desc_t which contains information about
   // all of the modules that will be linked together.
   ZeStruct<ze_module_program_exp_desc_t> ZeModuleDescExp;
   std::vector<size_t> CodeSizes(1u);
   std::vector<const uint8_t *> CodeBufs(1u);
   std::vector<const char *> BuildFlagPtrs(1u);
-printf("%s %d\n", __FILE__, __LINE__);
+// printf("%s %d\n", __FILE__, __LINE__);
   ZeModuleDescExp.count = 1u;
   ZeModuleDescExp.inputSizes = &length;
   ZeModuleDescExp.pInputModules = reinterpret_cast<const uint8_t **>(&pIL);
   ZeModuleDescExp.pBuildFlags = BuildFlagPtrs.data();
-printf("%s %d\n", __FILE__, __LINE__);
+// printf("%s %d\n", __FILE__, __LINE__);
   ZeStruct<ze_module_desc_t> ZeModuleDesc;
   ZeModuleDesc.pNext = &ZeModuleDescExp;
   ZeModuleDesc.format = ZE_MODULE_FORMAT_IL_SPIRV;
-printf("%s %d\n", __FILE__, __LINE__);
+// printf("%s %d\n", __FILE__, __LINE__);
   // This works around a bug in the Level Zero driver.  When "ZE_DEBUG=-1",
   // the driver does validation of the API calls, and it expects
   // "pInputModule" to be non-NULL and "inputSize" to be non-zero.  This
@@ -834,7 +833,7 @@ printf("%s %d\n", __FILE__, __LINE__);
   // TODO: Remove this workaround when the driver is fixed.
   ZeModuleDesc.pInputModule = reinterpret_cast<const uint8_t *>(1);
   ZeModuleDesc.inputSize = 1;
-printf("%s %d\n", __FILE__, __LINE__);
+// printf("%s %d\n", __FILE__, __LINE__);
   ZeModuleDesc.pNext = nullptr;
   ZeModuleDesc.inputSize = ZeModuleDescExp.inputSizes[0];
   ZeModuleDesc.pInputModule = ZeModuleDescExp.pInputModules[0];
@@ -842,25 +841,25 @@ printf("%s %d\n", __FILE__, __LINE__);
 #if 0
   ZeModuleDesc.pConstants = ZeModuleDescExp.pConstants[0];
 #endif
-printf("%s %d\n", __FILE__, __LINE__);
+// printf("%s %d\n", __FILE__, __LINE__);
   // Call the Level Zero API to compile, link, and create the module.
   _ur_context_handle_t *UrContext = reinterpret_cast<_ur_context_handle_t *>(hContext);
-  printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
-    (unsigned long int)UrContext);
-  if (UrContext) {
-    printf("%s %d UrContext->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext->Devices[0]);
-  }
+  // printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
+    // (unsigned long int)UrContext);
+  // if (UrContext) {
+  //   printf("%s %d UrContext->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext->Devices[0]);
+  // }
   ze_device_handle_t ZeDevice = UrContext->Devices[0]->ZeDevice;
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   ze_context_handle_t ZeContext = UrContext->ZeContext;
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   ze_module_handle_t ZeModule = nullptr;
   ze_module_build_log_handle_t ZeBuildLog = nullptr;
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   ZE2UR_CALL(zeModuleCreate, (ZeContext,
                               ZeDevice, &ZeModuleDesc,
                               &ZeModule, &ZeBuildLog));
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   _ur_module_handle_t *UrModule = new _ur_module_handle_t(hContext, pIL, length);
 

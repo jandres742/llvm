@@ -291,12 +291,12 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueCreate(
 
   Context->Devices[0] = Device;
 
-  printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
-    (unsigned long int)Context);
+  // printf("%s %d UrContext %lx\n", __FILE__, __LINE__,
+    // (unsigned long int)Context);
   if (Context) {
-    printf("%s %d Context->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]);
+    // printf("%s %d Context->Devices[0] %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]);
     if (Context->Devices[0]) {
-      printf("%s %d Context->Devices[0]->ZeDevice %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]->ZeDevice);
+      // printf("%s %d Context->Devices[0]->ZeDevice %lx\n", __FILE__, __LINE__, (unsigned long int)Context->Devices[0]->ZeDevice);
     }
   }
 
@@ -1319,25 +1319,25 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
   if (!ForceHostVisible)
     ForceHostVisible = DeviceEventsSetting == AllHostVisible;
 
-  printf("%s %d Event %lx\n", __FILE__, __LINE__, (unsigned long int)Event);
-  printf("%s %d Queue %lx\n", __FILE__, __LINE__, (unsigned long int)Queue);
+  // printf("%s %d Event %lx\n", __FILE__, __LINE__, (unsigned long int)Event);
+  // printf("%s %d Queue %lx\n", __FILE__, __LINE__, (unsigned long int)Queue);
 
   // If event is discarded then try to get event from the queue cache.
   *Event =
       IsInternal ? Queue->getEventFromQueueCache(ForceHostVisible) : nullptr;
 
-  printf("%s %d IsInternal %d *Event %lx\n", __FILE__, __LINE__, IsInternal, (unsigned long int)*Event);
+  // printf("%s %d IsInternal %d *Event %lx\n", __FILE__, __LINE__, IsInternal, (unsigned long int)*Event);
 
   if (*Event == nullptr)
     UR_CALL(EventCreate(Queue->Context, Queue, ForceHostVisible, Event));
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   (*Event)->UrQueue = Queue;
   (*Event)->CommandType = CommandType;
   (*Event)->IsDiscarded = IsInternal;
   (*Event)->CommandList = CommandList;
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
   // Discarded event doesn't own ze_event, it is used by multiple pi_event
   // objects. We destroy corresponding ze_event by releasing events from the
   // events cache at queue destruction. Event in the cache owns the Level Zero
@@ -1345,7 +1345,7 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
   if (IsInternal)
     (*Event)->OwnZeEvent = false;
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   // Append this Event to the CommandList, if any
   if (CommandList != Queue->CommandListMap.end()) {
@@ -1353,7 +1353,7 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
     (*Event)->RefCount.increment();
   }
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   // We need to increment the reference counter here to avoid pi_queue
   // being released before the associated pi_event is released because
@@ -1362,7 +1362,7 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
   // to release it.
   Queue->RefCount.increment();
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   // SYCL RT does not track completion of the events, so it could
   // release a PI event as soon as that's not being waited in the app.
@@ -1377,7 +1377,7 @@ ur_result_t createEventAndAssociateQueue(ur_queue_handle_t Queue,
     UR_CALL(piEventRetain(*Event));
 #endif
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   return UR_RESULT_SUCCESS;
 }

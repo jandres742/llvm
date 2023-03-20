@@ -51,5 +51,13 @@ ur_result_t ze2urResult(ze_result_t ZeResult) {
   return It->second;
 }
 
+void urPrint(const char *Format, ...) {
+  if (UrL0Debug & UR_L0_DEBUG_BASIC) {
+    va_list Args;
+    va_start(Args, Format);
+    vfprintf(stderr, Format, Args);
+    va_end(Args);
+  }
+}
 
 usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;

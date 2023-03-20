@@ -11,6 +11,7 @@
 
 #include "pi2ur_context.hpp"
 
+#include "ur/adapters/level_zero/ur_level_zero_common.hpp"
 #include "ur_api.h"
 #include <sycl/detail/pi.h>
 #include <ur/ur.hpp>
@@ -735,8 +736,6 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
   HANDLE_ERRORS(urContextCreate(DeviceCount,
                                 UrDevices.data(),
                                 &UrContext));
-
-  printf("%s %d UrContext %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext);
   
   try {
     // _pi_context *Context = new _pi_context(*phContext);
@@ -749,7 +748,7 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
     return PI_ERROR_UNKNOWN;
   }
 
-  printf("%s %d *RetContext %lx\n", __FILE__, __LINE__, (unsigned long int)*RetContext);
+  // printf("%s %d *RetContext %lx\n", __FILE__, __LINE__, (unsigned long int)*RetContext);
 
   // printf("%s %d  *RetContext %lx PiContext %lx UrContext %lx\n",
   //   __FILE__, __LINE__, (unsigned long int) *RetContext, (unsigned long int)PiContext,
@@ -893,7 +892,7 @@ piContextRelease(pi_context Context) {
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
   ur_context_handle_t UrContext = PiContext->UrContext;
 
-  printf("%s %d hContext %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext);
+  // printf("%s %d hContext %lx\n", __FILE__, __LINE__, (unsigned long int)UrContext);
 
   HANDLE_ERRORS(urContextRelease(UrContext));
 
@@ -906,7 +905,7 @@ piContextRelease(pi_context Context) {
 // Queue
 inline pi_result piQueueCreate(pi_context Context, pi_device Device,
                         pi_queue_properties Flags, pi_queue *Queue) {
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
   ur_context_handle_t UrContext = PiContext->UrContext;
@@ -915,9 +914,9 @@ inline pi_result piQueueCreate(pi_context Context, pi_device Device,
   ur_queue_property_t Props {};
   ur_queue_handle_t UrQueue {};
 
-  printf("%s %d Queue %lx PiContext %lx Context %lx\n",
-    __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
-    (unsigned long int)PiContext->UrContext);
+  // printf("%s %d Queue %lx PiContext %lx Context %lx\n",
+    // __FILE__, __LINE__, (unsigned long int)Queue, (unsigned long int)PiContext,
+    // (unsigned long int)PiContext->UrContext);
 
   HANDLE_ERRORS(urQueueCreate(UrContext, 
                               UrDevice,
@@ -1183,22 +1182,34 @@ piQueueFlush(pi_queue Queue) {
 ///////////////////////////////////////////////////////////////////////////////
 // Program
 
-inline pi_result piProgramCreate(pi_context Context, const void *ILBytes,
-                          size_t Length, pi_program *Program) {
+inline pi_result piProgramCreate(pi_context Context,
+                                 const void *ILBytes,
+                                 size_t Length,
+                                 pi_program *Program) {
 
   PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
   PI_ASSERT(ILBytes && Length, PI_ERROR_INVALID_VALUE);
   PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  ur_program_properties_t UrProperties {};
+  ur_program_handle_t UrProgram {};
+  HANDLE_ERRORS(urProgramCreateWithIL(UrContext,
+                                      ILBytes,
+                                      Length,
+                                      &UrProperties,
+                                      &UrProgram));
 
   try {
     _pi_program * PiProgram = new _pi_program(_pi_program::IL,
                                               reinterpret_cast<_pi_context *>(Context),
                                               ILBytes,
                                               Length);
+    PiProgram->UrProgram = UrProgram;
     *Program = reinterpret_cast<pi_program>(PiProgram);
-
-    printf("%s %d *Program %lx\n", __FILE__, __LINE__, (unsigned long int)*Program);
-
+    // printf("%s %d PiProgram %lx\n", __FILE__, __LINE__, (unsigned long int)PiProgram);
   } catch (const std::bad_alloc &) {
     return PI_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -1206,6 +1217,271 @@ inline pi_result piProgramCreate(pi_context Context, const void *ILBytes,
   }
   return PI_SUCCESS;
 }
+
+inline pi_result
+piProgramCreateWithBinary(pi_context Context,
+                          pi_uint32 NumDevices,
+                          const pi_device *DeviceList,
+                          const size_t *Lengths,
+                          const unsigned char **Binaries,
+                          size_t NumMetadataEntries,
+                          const pi_device_binary_property *Metadata,
+                          pi_int32 *BinaryStatus,
+                          pi_program *Program) {
+  std::ignore = Metadata;
+  std::ignore = NumMetadataEntries;
+
+  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
+  PI_ASSERT(DeviceList && NumDevices, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Binaries && Lengths, PI_ERROR_INVALID_VALUE);
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  // For now we support only one device.
+  if (NumDevices != 1) {
+    printf("piProgramCreateWithBinary: level_zero supports only one device.");
+    return PI_ERROR_INVALID_VALUE;
+  }
+  if (!Binaries[0] || !Lengths[0]) {
+    if (BinaryStatus)
+      *BinaryStatus = PI_ERROR_INVALID_VALUE;
+    return PI_ERROR_INVALID_VALUE;
+  }
+  
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(DeviceList[0]);
+  ur_device_handle_t UrDevice = PiDevice->UrDevice;
+
+  ur_program_handle_t UrProgram {};
+  HANDLE_ERRORS(urProgramCreateWithBinary(UrContext,
+                                          UrDevice,
+                                          Lengths[0],
+                                          Binaries[0],
+                                          &UrProgram));
+
+  try {
+    _pi_program *PiProgram = new _pi_program(_pi_program::state::Native,
+                                             PiContext,
+                                             Binaries[0],
+                                             Lengths[0]);
+    PiProgram->UrProgram = UrProgram;
+    *Program = reinterpret_cast<pi_program>(PiProgram);
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
+  if (BinaryStatus)
+    *BinaryStatus = PI_SUCCESS;
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piclProgramCreateWithSource(pi_context Context,
+                            pi_uint32 Count,
+                            const char **Strings,
+                            const size_t *Lengths,
+                            pi_program *RetProgram) {
+  std::ignore = Context;
+  std::ignore = Count;
+  std::ignore = Strings;
+  std::ignore = Lengths;
+  std::ignore = RetProgram;
+  urPrint("piclProgramCreateWithSource: not supported in UR\n");
+  return PI_ERROR_INVALID_OPERATION;
+}
+
+inline pi_result
+piProgramGetInfo(pi_program Program,
+                 pi_program_info ParamName,
+                 size_t ParamValueSize,
+                 void *ParamValue,
+                 size_t *ParamValueSizeRet) {
+
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+  
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+
+  ur_program_info_t PropName {};
+
+  switch(ParamName) {
+    case PI_PROGRAM_INFO_REFERENCE_COUNT: {
+      PropName = UR_PROGRAM_INFO_REFERENCE_COUNT;
+      break;
+    }
+    case PI_PROGRAM_INFO_CONTEXT: {
+      PropName = UR_PROGRAM_INFO_CONTEXT;
+      break;
+    }
+    case PI_PROGRAM_INFO_NUM_DEVICES: {
+      PropName = UR_PROGRAM_INFO_NUM_DEVICES;
+      break;
+    }
+    case PI_PROGRAM_INFO_DEVICES: {
+      PropName = UR_PROGRAM_INFO_DEVICES;
+      break;
+    }
+    case PI_PROGRAM_INFO_SOURCE: {
+      PropName = UR_PROGRAM_INFO_SOURCE;
+      break;
+    }
+    case PI_PROGRAM_INFO_BINARY_SIZES: {
+      PropName = UR_PROGRAM_INFO_BINARY_SIZES;
+      break;
+    }
+    case PI_PROGRAM_INFO_BINARIES: {
+      PropName = UR_PROGRAM_INFO_BINARIES;
+      break;
+    }
+    case PI_PROGRAM_INFO_NUM_KERNELS: {
+      PropName = UR_PROGRAM_INFO_NUM_KERNELS;
+      break;
+    }
+    case PI_PROGRAM_INFO_KERNEL_NAMES: {
+      PropName = UR_PROGRAM_INFO_KERNEL_NAMES;
+      break;
+    }
+    default: {
+      die("urProgramGetInfo: not implemented");
+    }
+  }
+
+  HANDLE_ERRORS(urProgramGetInfo(UrProgram,
+                                 PropName,
+                                 ParamValueSize,
+                                 ParamValue,
+                                 ParamValueSizeRet));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result piProgramLink(pi_context Context,
+                               pi_uint32 NumDevices,
+                               const pi_device *DeviceList,
+                               const char *Options,
+                               pi_uint32 NumInputPrograms,
+                               const pi_program *InputPrograms,
+                               void (*PFnNotify)(pi_program Program, void *UserData),
+                               void *UserData,
+                               pi_program *RetProgram) {
+  // We only support one device with Level Zero currently.
+  if (NumDevices != 1) {
+    urPrint("piProgramLink: level_zero supports only one device.");
+    return PI_ERROR_INVALID_VALUE;
+  }
+
+  // Validate input parameters.
+  PI_ASSERT(DeviceList, PI_ERROR_INVALID_DEVICE);
+  // PI_ASSERT(Context->isValidDevice(DeviceList[0]), PI_ERROR_INVALID_DEVICE);
+  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
+  if (NumInputPrograms == 0 || InputPrograms == nullptr)
+    return PI_ERROR_INVALID_VALUE;
+
+  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
+  ur_context_handle_t UrContext = PiContext->UrContext;
+
+  std::vector<ur_program_handle_t> UrPrograms(NumInputPrograms);
+  for (uint32_t i = 0 ; i < NumInputPrograms; i++) {
+    _pi_program *Program = reinterpret_cast<_pi_program *>(InputPrograms[i]);
+    UrPrograms[i] = Program->UrProgram;
+  }
+
+  ur_program_handle_t UrProgram = {};
+  HANDLE_ERRORS(urProgramLink(UrContext,
+                                NumInputPrograms,
+                                UrPrograms.data(),
+                                Options,
+                                &UrProgram));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result
+piProgramCompile(pi_program Program,
+                 pi_uint32 NumDevices,
+                 const pi_device *DeviceList,
+                 const char *Options,
+                 pi_uint32 NumInputHeaders,
+                 const pi_program *InputHeaders,
+                 const char **HeaderIncludeNames,
+                 void (*PFnNotify)(pi_program Program, void *UserData),
+                 void *UserData) {
+
+  std::ignore = NumInputHeaders;
+  std::ignore = InputHeaders;
+  std::ignore = HeaderIncludeNames;
+
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+
+  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
+    return PI_ERROR_INVALID_VALUE;
+
+  // These aren't supported.
+  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  ur_context_handle_t UrContext = PiProgram->Context->UrContext;
+
+  HANDLE_ERRORS(urProgramCompile(UrContext,
+                                 UrProgram,
+                                 Options));
+
+  return PI_SUCCESS;
+}
+
+inline pi_result piProgramBuild(pi_program Program,
+                                pi_uint32 NumDevices,
+                                const pi_device *DeviceList,
+                                const char *Options,
+                                void (*PFnNotify)(pi_program Program, void *UserData),
+                                void *UserData) {
+  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
+  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
+    return PI_ERROR_INVALID_VALUE;
+
+  // We only support build to one device with Level Zero now.
+  // TODO: we should eventually build to the possibly multiple root
+  // devices in the context.
+  if (NumDevices != 1) {
+    urPrint("piProgramBuild: level_zero supports only one device.");
+    return PI_ERROR_INVALID_VALUE;
+  }
+
+  // These aren't supported.
+  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
+
+  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
+
+  // Check if device belongs to associated context.
+  PI_ASSERT(PiProgram->Context, PI_ERROR_INVALID_PROGRAM);
+  // PI_ASSERT(PiProgram->Context->isValidDevice(DeviceList[0]),
+  //           PI_ERROR_INVALID_VALUE); // TODO
+
+  // It is legal to build a program created from either IL or from native
+  // device code.
+  if (PiProgram->State != _pi_program::IL &&
+      PiProgram->State != _pi_program::Native)
+    return PI_ERROR_INVALID_OPERATION;
+
+  // We should have either IL or native device code.
+  PI_ASSERT(PiProgram->Code, PI_ERROR_INVALID_PROGRAM);
+
+  ur_program_handle_t UrProgram = PiProgram->UrProgram;
+  ur_context_handle_t UrContext = PiProgram->Context->UrContext;
+
+  // printf("%s %d PiProgram %lx\n", __FILE__, __LINE__, (unsigned long int)PiProgram);
+
+  HANDLE_ERRORS(urProgramBuild(UrContext,
+                              UrProgram,
+                              Options));
+
+  return PI_SUCCESS;
+}
+
 
 inline pi_result piextProgramSetSpecializationConstant(pi_program ProgramIn,
                                                 pi_uint32 SpecID, size_t Size,
@@ -1225,316 +1501,6 @@ inline pi_result piextProgramSetSpecializationConstant(pi_program ProgramIn,
   return PI_SUCCESS;
 }
 
-inline pi_result piProgramBuild(pi_program ProgramIn, pi_uint32 NumDevices,
-                         const pi_device *DeviceList, const char *Options,
-                         void (*PFnNotify)(pi_program Program, void *UserData),
-                         void *UserData) {
-  PI_ASSERT(ProgramIn, PI_ERROR_INVALID_PROGRAM);
-  printf("%s %d\n", __FILE__, __LINE__);
-  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
-    return PI_ERROR_INVALID_VALUE;
-
-  printf("%s %d\n", __FILE__, __LINE__);
-
-  _pi_program *Program = reinterpret_cast<_pi_program *>(ProgramIn);
-
-#if 0
-  // We only support build to one device with Level Zero now.
-  // TODO: we should eventually build to the possibly multiple root
-  // devices in the context.
-  if (NumDevices != 1) {
-    zePrint("piProgramBuild: level_zero supports only one device.");
-    return PI_ERROR_INVALID_VALUE;
-  }
-#endif
-
-  // These aren't supported.
-  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
-  printf("%s %d\n", __FILE__, __LINE__);
-  std::scoped_lock<pi_shared_mutex> Guard(Program->Mutex);
-  // Check if device belongs to associated context.
-  PI_ASSERT(Program->Context, PI_ERROR_INVALID_PROGRAM);
-  // PI_ASSERT(Program->Context->isValidDevice(DeviceList[0]),
-  //           PI_ERROR_INVALID_VALUE);
-
-#if 0
-  // It is legal to build a program created from either IL or from native
-  // device code.
-  if (Program->State != _pi_program::IL &&
-      Program->State != _pi_program::Native)
-    return PI_ERROR_INVALID_OPERATION;
-#endif
-
-#if 0
-  // We should have either IL or native device code.
-  PI_ASSERT(Program->Code, PI_ERROR_INVALID_PROGRAM);
-#endif
-
-#if 0
-  // Ask Level Zero to build and load the native code onto the device.
-  // ZeStruct<ze_module_desc_t> ZeModuleDesc;
-  _pi_program::SpecConstantShim Shim(Program);
-  ZeModuleDesc.format = (Program->State == _pi_program::IL)
-                            ? ZE_MODULE_FORMAT_IL_SPIRV
-                            : ZE_MODULE_FORMAT_NATIVE;
-#endif
-
-#if 0
-  for (auto SpecTuple : Program->SpecConstants) {
-    HANDLE_ERRORS(urProgramSetSpecializationConstant(Program->UrProgram,
-                                                     SpecTuple.first,
-                                                     sizeof(void *),
-                                                     SpecTuple.second));
-  }
-#endif
-  printf("%s %d\n", __FILE__, __LINE__);
-  // ze_device_handle_t ZeDevice = DeviceList[0]->ZeDevice;
-  ur_context_handle_t UrContext = Program->Context->UrContext;
-  ur_module_handle_t UrModule = nullptr;
-
-  printf("%s %d Program->Context->UrContext %lx\n", __FILE__, __LINE__,
-    (unsigned long int)Program->Context->UrContext);
-
-  pi_result Result = PI_SUCCESS;
-  Program->State = _pi_program::Exe;
-  HANDLE_ERRORS(urModuleCreate(UrContext,
-                               Program->Code.get(),
-                               Program->CodeLength,
-                               Options,
-                               nullptr,
-                               nullptr,
-                               &UrModule));
-  printf("%s %d\n", __FILE__, __LINE__);
-  
-    printf("%s %d Program->UrModules.size() %zd\n", __FILE__, __LINE__, Program->UrModules.size());
-  
-    Program->UrModules.resize(1u);
-    printf("%s %d Program->UrModules.size() %zd\n", __FILE__, __LINE__, Program->UrModules.size());
-    Program->UrModules[0] = UrModule;
-    printf("%s %d\n", __FILE__, __LINE__);
-    ur_program_handle_t UrProgram = {};
-    HANDLE_ERRORS(urProgramCreate(UrContext,
-                                  1u,
-                                  &UrModule,
-                                  nullptr,
-                                  &UrProgram));
-
-    Program->UrProgram = UrProgram;
-
-    printf("%s %d PiProgram %lx UrProgram %lx\n", __FILE__, __LINE__,
-      (unsigned long int)Program,
-      (unsigned long int)Program->UrProgram);
-
-#if 0
-  if (ZeResult != ZE_RESULT_SUCCESS) {
-    // We adjust pi_program below to avoid attempting to release zeModule when
-    // RT calls piProgramRelease().
-    ZeModule = nullptr;
-    Program->State = _pi_program::Invalid;
-    Result = mapError(ZeResult);
-  } else
-#endif
-
-#if 0
-  {
-    // The call to zeModuleCreate does not report an error if there are
-    // unresolved symbols because it thinks these could be resolved later via a
-    // call to zeModuleDynamicLink.  However, modules created with
-    // piProgramBuild are supposed to be fully linked and ready to use.
-    // Therefore, do an extra check now for unresolved symbols.
-    ZeResult = checkUnresolvedSymbols(ZeModule, &Program->ZeBuildLog);
-    if (ZeResult != ZE_RESULT_SUCCESS) {
-      Program->State = _pi_program::Invalid;
-      Result = (ZeResult == ZE_RESULT_ERROR_MODULE_LINK_FAILURE)
-                   ? PI_ERROR_BUILD_PROGRAM_FAILURE
-                   : mapError(ZeResult);
-    }
-  }
-#endif
-printf("%s %d\n", __FILE__, __LINE__);
-  // We no longer need the IL / native code.
-  Program->Code.reset();
-  Program->UrModule = UrModule;
-  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(DeviceList[0]);
-  Program->UrDevice = PiDevice->UrDevice;
-
-  printf("%s %d Program %lx UrProgram %lx\n", __FILE__, __LINE__,
-      (unsigned long int)Program,
-      (unsigned long int)Program->UrProgram);
-
-  return Result;
-}
-
-
-
-inline pi_result piProgramLink(pi_context Context,
-                               pi_uint32 NumDevices,
-                               const pi_device *DeviceList,
-                               const char *Options,
-                               pi_uint32 NumInputPrograms,
-                               const pi_program *InputPrograms,
-                               void (*PFnNotify)(pi_program Program, void *UserData),
-                               void *UserData,
-                               pi_program *RetProgram) {
-
-  // We only support one device with Level Zero currently.
-  if (NumDevices != 1) {
-    printf("piProgramLink: level_zero supports only one device.");
-    return PI_ERROR_INVALID_VALUE;
-  }
-
-  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
-
-  // We do not support any link flags at this time because the Level Zero API
-  // does not have any way to pass flags that are specific to linking.
-  if (Options && *Options != '\0') {
-    std::string ErrorMessage(
-        "Level Zero does not support kernel link flags: \"");
-    ErrorMessage.append(Options);
-    ErrorMessage.push_back('\"');
-    _pi_program *PiProgram =
-        new _pi_program(_pi_program::Invalid, PiContext, ErrorMessage);
-    *RetProgram = reinterpret_cast<pi_program>(PiProgram);
-    printf("%s %d *RetProgram %lx\n", __FILE__, __LINE__, (unsigned long int)*RetProgram);
-    return PI_ERROR_LINK_PROGRAM_FAILURE;
-  }
-
-#if 0
-  // Validate input parameters.
-  PI_ASSERT(DeviceList, PI_ERROR_INVALID_DEVICE);
-  // PI_ASSERT(Context->isValidDevice(DeviceList[0]), PI_ERROR_INVALID_DEVICE);
-  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
-#endif
-  if (NumInputPrograms == 0 || InputPrograms == nullptr)
-    return PI_ERROR_INVALID_VALUE;
-
-  pi_result Result = PI_SUCCESS;
-  try {
-    // Acquire a "shared" lock on each of the input programs, and also validate
-    // that they are all in Object state.
-    //
-    // There is no danger of deadlock here even if two threads call
-    // piProgramLink simultaneously with the same input programs in a different
-    // order.  If we were acquiring these with "exclusive" access, this could
-    // lead to a classic lock ordering deadlock.  However, there is no such
-    // deadlock potential with "shared" access.  There could also be a deadlock
-    // potential if there was some other code that holds more than one of these
-    // locks simultaneously with "exclusive" access.  However, there is no such
-    // code like that, so this is also not a danger.
-    std::vector<std::shared_lock<pi_shared_mutex>> Guards(NumInputPrograms);
-    for (pi_uint32 I = 0; I < NumInputPrograms; I++) {
-      _pi_program *PiProgram = reinterpret_cast<_pi_program *>(InputPrograms[I]);
-      std::shared_lock<pi_shared_mutex> Guard(PiProgram->Mutex);
-      Guards[I].swap(Guard);
-      if (PiProgram->State != _pi_program::Object) {
-        printf("%s %d\n", __FILE__, __LINE__);
-        return PI_ERROR_INVALID_OPERATION;
-      }
-    }
-
-    // Previous calls to piProgramCompile did not actually compile the SPIR-V.
-    // Instead, we postpone compilation until this point, when all the modules
-    // are linked together.  By doing compilation and linking together, the JIT
-    // compiler is able see all modules and do cross-module optimizations.
-    //
-#if 0
-    std::vector<const ze_module_constants_t *> SpecConstPtrs(NumInputPrograms);
-    std::vector<_pi_program::SpecConstantShim> SpecConstShims;
-    SpecConstShims.reserve(NumInputPrograms);
-
-    for (pi_uint32 I = 0; I < NumInputPrograms; I++) {
-      pi_program Program = InputPrograms[I];
-      CodeSizes[I] = Program->CodeLength;
-      CodeBufs[I] = Program->Code.get();
-      BuildFlagPtrs[I] = Program->BuildFlags.c_str();
-      SpecConstShims.emplace_back(Program);
-      SpecConstPtrs[I] = SpecConstShims[I].ze();
-    }
-#endif
-
-#if 0
-    // We need a Level Zero extension to compile multiple programs together into
-    // a single Level Zero module.  However, we don't need that extension if
-    // there happens to be only one input program.
-    //
-    // The "|| (NumInputPrograms == 1)" term is a workaround for a bug in the
-    // Level Zero driver.  The driver's "ze_module_program_exp_desc_t"
-    // extension should work even in the case when there is just one input
-    // module.  However, there is currently a bug in the driver that leads to a
-    // crash.  As a workaround, do not use the extension when there is one
-    // input module.
-    //
-    // TODO: Remove this workaround when the driver is fixed.
-    if (DeviceList[0]->Platform->ZeDriverModuleProgramExtensionFound &&
-        (NumInputPrograms != 1)) {
-      printf("piProgramLink: level_zero driver does not have static linking "
-              "support.");
-      printf("%s %d\n", __FILE__, __LINE__);
-      return PI_ERROR_INVALID_VALUE;
-    }
-#endif
-
-    ur_context_handle_t UrContext = PiContext->UrContext;
-
-    std::vector<ur_module_handle_t> UrModules(NumInputPrograms);
-    for (uint32_t i = 0 ; i < NumInputPrograms; i++) {
-      _pi_program *Program = reinterpret_cast<_pi_program *>(InputPrograms[i]);
-      UrModules[i] = Program->UrModule;
-    }
-
-    _pi_program * PiProgram = nullptr;
-    try {
-      _pi_program *PiProgram = reinterpret_cast<_pi_program *>(InputPrograms[0]);
-      PiProgram = new _pi_program(_pi_program::state::Exe,
-                                  PiContext,
-                                  PiProgram->Code.get(),
-                                  PiProgram->CodeLength);
-      *RetProgram = reinterpret_cast<pi_program>(PiProgram);
-      printf("%s %d *RetProgram %lx\n", __FILE__, __LINE__, (unsigned long int)*RetProgram);
-    } catch (const std::bad_alloc &) {
-      return PI_ERROR_OUT_OF_HOST_MEMORY;
-    } catch (...) {
-      return PI_ERROR_UNKNOWN;
-    }
-
-    PiProgram->UrModules.resize(NumInputPrograms);
-
-    for (uint32_t i = 0 ; i < NumInputPrograms; i++) {
-      PiProgram->UrModules[i] = UrModules[i];
-    }
-
-    ur_program_handle_t UrProgram = {};
-    HANDLE_ERRORS(urProgramCreate(UrContext,
-                                  NumInputPrograms,
-                                  UrModules.data(),
-                                  nullptr,
-                                  &UrProgram));
-
-    PiProgram->UrProgram = UrProgram;
-
-    printf("%s %d PiProgram %lx UrProgram %lx\n", __FILE__, __LINE__,
-      (unsigned long int)PiProgram,
-      (unsigned long int)PiProgram->UrProgram);
-
-#if 0
-    // We still create a _pi_program object even if there is a BUILD_FAILURE
-    // because we need the object to hold the ZeBuildLog.  There is no build
-    // log created for other errors, so we don't create an object.
-    Result = mapError(ZeResult);
-    if (ZeResult != ZE_RESULT_SUCCESS &&
-        ZeResult != ZE_RESULT_ERROR_MODULE_BUILD_FAILURE) {
-      return Result;
-    }
-#endif
-  } catch (const std::bad_alloc &) {
-    return PI_ERROR_OUT_OF_HOST_MEMORY;
-  } catch (...) {
-    return PI_ERROR_UNKNOWN;
-  }
-
-  return Result;
-}
-
 inline pi_result piKernelCreate(pi_program ProgramIn, const char *KernelName,
                          pi_kernel *RetKernel) {
   PI_ASSERT(ProgramIn, PI_ERROR_INVALID_PROGRAM);
@@ -1548,8 +1514,8 @@ inline pi_result piKernelCreate(pi_program ProgramIn, const char *KernelName,
   try {
     _pi_kernel *PiKernel = new _pi_kernel(UrKernel);
     *RetKernel = reinterpret_cast<pi_kernel>(PiKernel);
-    printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
-    printf("%s %d *RetKernel %lx\n", __FILE__, __LINE__, (unsigned long int)*RetKernel);
+    // printf("%s %d UrKernel %lx\n", __FILE__, __LINE__, (unsigned long int)UrKernel);
+    // printf("%s %d *RetKernel %lx\n", __FILE__, __LINE__, (unsigned long int)*RetKernel);
   } catch (const std::bad_alloc &) {
     return PI_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -1659,7 +1625,7 @@ inline pi_result piextKernelSetArgMemObj(pi_kernel Kernel, pi_uint32 ArgIndex,
 
   _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
 
-  printf("%s %d UrMemory %lx\n", __FILE__, __LINE__, (unsigned long int)UrMemory);
+  // printf("%s %d UrMemory %lx\n", __FILE__, __LINE__, (unsigned long int)UrMemory);
 
   HANDLE_ERRORS(urKernelSetArgMemObj(PiKernel->UrKernel,
                                      ArgIndex,
@@ -1945,7 +1911,7 @@ piKernelRelease(pi_kernel Kernel) {
   _pi_kernel *PiKernel = reinterpret_cast<_pi_kernel *>(Kernel);
   ur_kernel_handle_t UrKernel = PiKernel->UrKernel;
 
-  HANDLE_ERRORS(urKernelRetain(UrKernel));
+  HANDLE_ERRORS(urKernelRelease(UrKernel));
 
   return PI_SUCCESS;
 }
@@ -2022,189 +1988,6 @@ piKernelGetSubGroupInfo(pi_kernel Kernel,
                                         ParamValueSize,
                                         ParamValue,
                                         ParamValueSizeRet));
-
-  return PI_SUCCESS;
-}
-
-
-inline pi_result
-piProgramCreateWithBinary(pi_context Context,
-                          pi_uint32 NumDevices,
-                          const pi_device *DeviceList,
-                          const size_t *Lengths,
-                          const unsigned char **Binaries,
-                          size_t NumMetadataEntries,
-                          const pi_device_binary_property *Metadata,
-                          pi_int32 *BinaryStatus,
-                          pi_program *Program) {
-
-  PI_ASSERT(Context, PI_ERROR_INVALID_CONTEXT);
-  PI_ASSERT(DeviceList && NumDevices, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(Binaries && Lengths, PI_ERROR_INVALID_VALUE);
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  // For now we support only one device.
-  if (NumDevices != 1) {
-    printf("piProgramCreateWithBinary: level_zero supports only one device.");
-    return PI_ERROR_INVALID_VALUE;
-  }
-  if (!Binaries[0] || !Lengths[0]) {
-    if (BinaryStatus)
-      *BinaryStatus = PI_ERROR_INVALID_VALUE;
-    return PI_ERROR_INVALID_VALUE;
-  }
-  
-  _pi_context *PiContext = reinterpret_cast<_pi_context *>(Context);
-  ur_context_handle_t UrContext = PiContext->UrContext;
-  _pi_device *PiDevice = reinterpret_cast<_pi_device *>(DeviceList[0]);
-  ur_device_handle_t UrDevice = PiDevice->UrDevice;
-
-  ur_program_handle_t UrProgram {};
-  HANDLE_ERRORS(urProgramCreateWithBinary(UrContext,
-                                          UrDevice,
-                                          Lengths[0],
-                                          Binaries[0],
-                                          &UrProgram));
-
-  try {
-    _pi_program *PiProgram = new _pi_program(_pi_program::state::Native,
-                                             PiContext,
-                                             Binaries[0],
-                                             Lengths[0]);
-    PiProgram->UrProgram = UrProgram;
-    *Program = reinterpret_cast<pi_program>(PiProgram);
-  } catch (const std::bad_alloc &) {
-    return PI_ERROR_OUT_OF_HOST_MEMORY;
-  } catch (...) {
-    return PI_ERROR_UNKNOWN;
-  }
-
-  if (BinaryStatus)
-    *BinaryStatus = PI_SUCCESS;
-
-  return PI_SUCCESS;
-}
-
-inline pi_result
-piclProgramCreateWithSource(pi_context Context, pi_uint32 Count,
-                            const char **Strings,
-                            const size_t *Lengths,
-                            pi_program *RetProgram) {
-  (void)Context;
-  (void)Count;
-  (void)Strings;
-  (void)Lengths;
-  (void)RetProgram;
-  // zePrint("piclProgramCreateWithSource: not supported in Level Zero\n");
-  return PI_ERROR_INVALID_OPERATION;
-}
-
-inline pi_result
-piProgramGetInfo(pi_program Program, pi_program_info ParamName,
-                           size_t ParamValueSize, void *ParamValue,
-                           size_t *ParamValueSizeRet) {
-
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-  
-  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
-  ur_program_handle_t UrProgram = PiProgram->UrProgram;
-
-  ur_program_info_t PropName {};
-
-  switch(ParamName) {
-    case PI_PROGRAM_INFO_REFERENCE_COUNT: {
-      PropName = UR_PROGRAM_INFO_REFERENCE_COUNT;
-      break;
-    }
-    case PI_PROGRAM_INFO_CONTEXT: {
-      PropName = UR_PROGRAM_INFO_CONTEXT;
-      break;
-    }
-    case PI_PROGRAM_INFO_NUM_DEVICES: {
-      PropName = UR_PROGRAM_INFO_NUM_DEVICES;
-      break;
-    }
-    case PI_PROGRAM_INFO_DEVICES: {
-      PropName = UR_PROGRAM_INFO_DEVICES;
-      break;
-    }
-    case PI_PROGRAM_INFO_SOURCE: {
-      PropName = UR_PROGRAM_INFO_SOURCE;
-      break;
-    }
-    case PI_PROGRAM_INFO_BINARY_SIZES: {
-      PropName = UR_PROGRAM_INFO_BINARY_SIZES;
-      break;
-    }
-    case PI_PROGRAM_INFO_BINARIES: {
-      PropName = UR_PROGRAM_INFO_BINARIES;
-      break;
-    }
-    case PI_PROGRAM_INFO_NUM_KERNELS: {
-      PropName = UR_PROGRAM_INFO_NUM_KERNELS;
-      break;
-    }
-    case PI_PROGRAM_INFO_KERNEL_NAMES: {
-      PropName = UR_PROGRAM_INFO_KERNEL_NAMES;
-      break;
-    }
-    default: {
-      die("urProgramGetInfo: not implemented");
-    }
-  }
-
-  HANDLE_ERRORS(urProgramGetInfo(UrProgram,
-                                 PropName,
-                                 ParamValueSize,
-                                 ParamValue,
-                                 ParamValueSizeRet));
-
-  return PI_SUCCESS;
-}
-
-inline pi_result
-piProgramCompile(pi_program Program,
-                 pi_uint32 NumDevices,
-                 const pi_device *DeviceList,
-                 const char *Options,
-                 pi_uint32 NumInputHeaders,
-                 const pi_program *InputHeaders,
-                 const char **HeaderIncludeNames,
-                 void (*PFnNotify)(pi_program Program, void *UserData),
-                 void *UserData) {
-
-  (void)NumInputHeaders;
-  (void)InputHeaders;
-  (void)HeaderIncludeNames;
-
-  PI_ASSERT(Program, PI_ERROR_INVALID_PROGRAM);
-
-  if ((NumDevices && !DeviceList) || (!NumDevices && DeviceList))
-    return PI_ERROR_INVALID_VALUE;
-
-  // These aren't supported.
-  PI_ASSERT(!PFnNotify && !UserData, PI_ERROR_INVALID_VALUE);
-
-  _pi_program *PiProgram = reinterpret_cast<_pi_program *>(Program);
-
-  std::scoped_lock<pi_shared_mutex> Guard(PiProgram->Mutex);
-
-  // It's only valid to compile a program created from IL (we don't support
-  // programs created from source code).
-  //
-  // The OpenCL spec says that the header parameters are ignored when compiling
-  // IL programs, so we don't validate them.
-  if (PiProgram->State != _pi_program::IL)
-    return PI_ERROR_INVALID_OPERATION;
-
-  // We don't compile anything now.  Instead, we delay compilation until
-  // piProgramLink, where we do both compilation and linking as a single step.
-  // This produces better code because the driver can do cross-module
-  // optimizations.  Therefore, we just remember the compilation flags, so we
-  // can use them later.
-  if (Options)
-    PiProgram->BuildFlags = Options;
-  PiProgram->State = _pi_program::Object;
 
   return PI_SUCCESS;
 }
@@ -2412,8 +2195,8 @@ inline pi_result piMemBufferCreate(pi_context Context, pi_mem_flags Flags, size_
     return PI_ERROR_UNKNOWN;
   }
 
-  printf("%s %d *RetMem %lx\n", __FILE__, __LINE__, (unsigned long int)*RetMem);
-  printf("%s %d UrBuffer %lx\n", __FILE__, __LINE__, (unsigned long int)UrBuffer);
+  // printf("%s %d *RetMem %lx\n", __FILE__, __LINE__, (unsigned long int)*RetMem);
+  // printf("%s %d UrBuffer %lx\n", __FILE__, __LINE__, (unsigned long int)UrBuffer);
 
   return PI_SUCCESS;
 }
@@ -3062,7 +2845,7 @@ piEnqueueKernelLaunch(pi_queue Queue,
     UrEvent = &InternalEvent;
   }
 
-  printf("%s %d OutEvent %lx UrEvent %lx\n", __FILE__, __LINE__, (unsigned long int)OutEvent, (unsigned long int)UrEvent);
+  // printf("%s %d OutEvent %lx UrEvent %lx\n", __FILE__, __LINE__, (unsigned long int)OutEvent, (unsigned long int)UrEvent);
 
   HANDLE_ERRORS(urEnqueueKernelLaunch(UrQueue,
                                       hKernel,
@@ -3090,7 +2873,7 @@ piEnqueueKernelLaunch(pi_queue Queue,
   }
 
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   return PI_SUCCESS;
 }
@@ -3783,32 +3566,32 @@ piEventGetProfilingInfo(pi_event Event,
   _pi_event *PiEvent = reinterpret_cast<_pi_event *>(Event);
   ur_event_handle_t UrEvent = PiEvent->UrEvent;
 
-  printf("%s %d ParamName %d\n", __FILE__, __LINE__, (uint32_t)ParamName);
+  // printf("%s %d ParamName %d\n", __FILE__, __LINE__, (uint32_t)ParamName);
 
   ur_profiling_info_t PropName {};
   switch(ParamName) {
     case PI_PROFILING_INFO_COMMAND_QUEUED: {
-      printf("%s %d\n", __FILE__, __LINE__);
+      // printf("%s %d\n", __FILE__, __LINE__);
       PropName = UR_PROFILING_INFO_COMMAND_QUEUED;
       break;
     }
     case PI_PROFILING_INFO_COMMAND_SUBMIT: {
-      printf("%s %d\n", __FILE__, __LINE__);
+      // printf("%s %d\n", __FILE__, __LINE__);
       PropName = UR_PROFILING_INFO_COMMAND_SUBMIT;
       break;
     }
     case PI_PROFILING_INFO_COMMAND_START: {
-      printf("%s %d\n", __FILE__, __LINE__);
+      // printf("%s %d\n", __FILE__, __LINE__);
       PropName = UR_PROFILING_INFO_COMMAND_START;
       break;
     }
     case PI_PROFILING_INFO_COMMAND_END: {
-      printf("%s %d\n", __FILE__, __LINE__);
+      // printf("%s %d\n", __FILE__, __LINE__);
       PropName = UR_PROFILING_INFO_COMMAND_END;
       break;
     }
     default:
-      printf("%s %d\n", __FILE__, __LINE__);
+      // printf("%s %d\n", __FILE__, __LINE__);
       return PI_ERROR_INVALID_PROPERTY;
   }
 
@@ -3818,7 +3601,7 @@ piEventGetProfilingInfo(pi_event Event,
                                         ParamValue,
                                         ParamValueSizeRet));
 
-  printf("%s %d\n", __FILE__, __LINE__);
+  // printf("%s %d\n", __FILE__, __LINE__);
 
   return PI_SUCCESS;
 }

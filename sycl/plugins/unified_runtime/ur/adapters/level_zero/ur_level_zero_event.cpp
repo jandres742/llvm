@@ -334,43 +334,26 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWaitWithBarrier(
 }
 
 UR_APIEXPORT ur_result_t UR_APICALL urEventGetInfo(
-    ur_event_handle_t hEvent, ///< [in] handle of the event object
-    ur_event_info_t propName, ///< [in] the name of the event property to query
-    size_t propValueSize, ///< [in] size in bytes of the event property value
-    void *pPropValue,     ///< [out][optional] value of the event property
-    size_t
-        *pPropValueSizeRet ///< [out][optional] bytes returned in event property
+    ur_event_handle_t Event, ///< [in] handle of the event object
+    ur_event_info_t PropName, ///< [in] the name of the event property to query
+    size_t PropValueSize, ///< [in] size in bytes of the event property value
+    void *PropValue,     ///< [out][optional] value of the event property
+    size_t *PropValueSizeRet ///< [out][optional] bytes returned in event property
 ) {
-#if 0
-  ReturnHelper ReturnValue(ParamValueSize, ParamValue, ParamValueSizeRet);
-#endif
+  UrReturnHelper ReturnValue(PropValueSize, PropValue, PropValueSizeRet);
 
-  _ur_event_handle_t *UrEvent = reinterpret_cast<_ur_event_handle_t *>(hEvent);
-
-  switch (propName) {
+  switch (PropName) {
   case UR_EVENT_INFO_COMMAND_QUEUE: {
-    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
-    ur_queue_handle_t hQueue = reinterpret_cast<ur_queue_handle_t>(UrEvent->UrQueue); 
-    std::memcpy(pPropValue, &hQueue, propValueSize);
-    if (pPropValueSizeRet)
-      *pPropValueSizeRet = sizeof(hQueue);
-    return UR_RESULT_SUCCESS;
+    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
+    return ReturnValue(ur_queue_handle_t{Event->UrQueue});
   }
   case UR_EVENT_INFO_CONTEXT: {
-    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
-    ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(UrEvent->Context);
-    std::memcpy(pPropValue, &hContext, propValueSize);
-    if (pPropValueSizeRet)
-      *pPropValueSizeRet = sizeof(hContext);
-    return UR_RESULT_SUCCESS;
+    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
+    return ReturnValue(ur_context_handle_t{Event->Context});
   }
   case UR_EVENT_INFO_COMMAND_TYPE: {
-    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
-    pi_command_type CommandType = UrEvent->CommandType;
-    std::memcpy(pPropValue, &CommandType, propValueSize);
-    if (pPropValueSizeRet)
-      *pPropValueSizeRet = sizeof(CommandType);
-    return UR_RESULT_SUCCESS;
+    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
+    return ReturnValue(ur_cast<uint64_t>(Event->CommandType));
   }
   case UR_EVENT_INFO_COMMAND_EXECUTION_STATUS: {
     // Check to see if the event's Queue has an open command list due to
@@ -378,11 +361,11 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetInfo(
     // possible that this is trying to query some event's status that
     // is part of the batch.  This isn't strictly required, but it seems
     // like a reasonable thing to do.
-    auto UrQueue = UrEvent->UrQueue;
+    auto UrQueue = Event->UrQueue;
     if (UrQueue) {
       // Lock automatically releases when this goes out of scope.
       std::scoped_lock<pi_shared_mutex> lock(UrQueue->Mutex);
-      const auto &OpenCommandList = UrQueue->eventOpenCommandList(reinterpret_cast<ur_event_handle_t>(hEvent));
+      const auto &OpenCommandList = UrQueue->eventOpenCommandList(Event);
       if (OpenCommandList != UrQueue->CommandListMap.end()) {
         UR_CALL(UrQueue->executeOpenCommandList(OpenCommandList->second.isCopy(UrQueue)));
       }
@@ -391,38 +374,32 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetInfo(
     // Level Zero has a much more explicit notion of command submission than
     // OpenCL. It doesn't happen unless the user submits a command list. We've
     // done it just above so the status is at least PI_EVENT_RUNNING.
-    uint32_t Result = PI_EVENT_RUNNING;
+    uint32_t Result = ur_cast<uint32_t>(UR_EVENT_STATUS_RUNNING);
 
     // Make sure that we query a host-visible event only.
     // If one wasn't yet created then don't create it here as well, and
     // just conservatively return that event is not yet completed.
-    std::shared_lock<pi_shared_mutex> EventLock(UrEvent->Mutex);
-    auto HostVisibleEvent = UrEvent->HostVisibleEvent;
-    if (UrEvent->Completed) {
-      Result = PI_EVENT_COMPLETE;
+    std::shared_lock<pi_shared_mutex> EventLock(Event->Mutex);
+    auto HostVisibleEvent = Event->HostVisibleEvent;
+    if (Event->Completed) {
+      Result = UR_EVENT_STATUS_COMPLETE;
     } else if (HostVisibleEvent) {
       ze_result_t ZeResult;
       ZeResult =
           ZE_CALL_NOCHECK(zeEventQueryStatus, (HostVisibleEvent->ZeEvent));
       if (ZeResult == ZE_RESULT_SUCCESS) {
-        Result = PI_EVENT_COMPLETE;
+        Result = UR_EVENT_STATUS_COMPLETE;
       }
     }
-    std::memcpy(pPropValue, &Result, propValueSize);
-    if (pPropValueSizeRet)
-      *pPropValueSizeRet = sizeof(Result);
+    return ReturnValue(ur_cast<uint32_t>(Result));
     return UR_RESULT_SUCCESS;
   }
   case UR_EVENT_INFO_REFERENCE_COUNT: {
-    uint32_t RefCount = UrEvent->RefCount.load();
-    std::memcpy(pPropValue, &RefCount, propValueSize);
-    if (pPropValueSizeRet)
-      *pPropValueSizeRet = sizeof(RefCount);
-    return UR_RESULT_SUCCESS;
+    return ReturnValue(ur_cast<uint32_t>(Event->RefCount.load()));
   }
   default:
     zePrint("Unsupported ParamName in urEventGetInfo: ParamName=%d(%x)\n",
-            propName, propName);
+            PropName, PropName);
     return UR_RESULT_ERROR_INVALID_VALUE;
   }
 
