@@ -146,11 +146,9 @@ ze_result_t ZeCall::doCall(ze_result_t ZeResult, const char *ZeName,
     ++(*ZeCallCount)[ZeName];
   }
 
-  if (ZeResult && TraceError) {
-    const char *ErrorString = "Unknown";
-    zeParseError(ZeResult, ErrorString);
-    urPrint("Error (%s) in %s\n", ErrorString, ZeName);
-  }
+  const char *ErrorString = "Unknown";
+  zeParseError(ZeResult, ErrorString);
+  urPrint("ZE <--- %s%s (%s)\n", ZeName, ZeArgs, ErrorString);
   return ZeResult;
 }
 
