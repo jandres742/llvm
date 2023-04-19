@@ -92,12 +92,6 @@ static const bool ReuseDiscardedEvents = [] {
   return std::stoi(ReuseDiscardedEventsFlag) > 0;
 }();
 
-// Controls support of the indirect access kernels and deferred memory release.
-static const bool IndirectAccessTrackingEnabled = [] {
-  return std::getenv("SYCL_PI_LEVEL_ZERO_TRACK_INDIRECT_ACCESS_MEMORY") !=
-         nullptr;
-}();
-
 // Due to a bug with 2D memory copy to and from non-USM pointers, this option is
 // disabled by default.
 static const bool UseMemcpy2DOperations = [] {
@@ -107,8 +101,6 @@ static const bool UseMemcpy2DOperations = [] {
     return false;
   return std::stoi(UseMemcpy2DOperationsFlag) > 0;
 }();
-
-static usm_settings::USMAllocatorConfig USMAllocatorConfigInstance;
 
 // Map from L0 to PI result.
 static inline pi_result mapError(ze_result_t Result) {
@@ -7183,11 +7175,6 @@ pi_result piextGetDeviceFunctionPointer(pi_device Device, pi_program Program,
 
   return mapError(ZeResult);
 }
-
-static bool UseUSMAllocator = [] {
-  // Enable allocator by default if it's not explicitly disabled
-  return std::getenv("SYCL_PI_LEVEL_ZERO_DISABLE_USM_ALLOCATOR") == nullptr;
-}();
 
 enum class USMAllocationForceResidencyType {
   // [Default] Do not force memory residency at allocation time.
