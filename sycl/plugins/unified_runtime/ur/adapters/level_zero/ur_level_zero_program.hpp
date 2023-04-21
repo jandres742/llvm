@@ -9,10 +9,6 @@
 
 #include "ur_level_zero_common.hpp"
 
-<<<<<<< HEAD
-struct _ur_program_handle_t : _ur_object {
-  _ur_program_handle_t() {}
-=======
 struct ur_program_handle_t_ : _ur_object {
   // ur_program_handle_t_() {}
 
@@ -134,5 +130,4 @@ struct ur_program_handle_t_ : _ur_object {
 
   // The Level Zero build log from the last call to zeModuleCreate().
   ze_module_build_log_handle_t ZeBuildLog{};
->>>>>>> [SYCL][UR][L0] First version of UR L0 adapter
 };
