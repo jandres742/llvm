@@ -266,6 +266,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
     // only the ID.
     return ReturnValue("Intel(R) Corporation");
   case UR_DEVICE_INFO_DRIVER_VERSION:
+  case UR_DEVICE_INFO_BACKEND_RUNTIME_VERSION:
     return ReturnValue(Device->Platform->ZeDriverVersion.c_str());
   case UR_DEVICE_INFO_VERSION:
     return ReturnValue(Device->Platform->ZeDriverApiVersion.c_str());
@@ -569,7 +570,6 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
   case UR_DEVICE_INFO_USM_CROSS_SHARED_SUPPORT:
   case UR_DEVICE_INFO_USM_SYSTEM_SHARED_SUPPORT: {
     auto MapCaps = [](const ze_memory_access_cap_flags_t &ZeCapabilities) {
-#ifdef UR_SUPPORTS_USM_MEM_CAPS // #280
       uint64_t Capabilities = 0;
       if (ZeCapabilities & ZE_MEMORY_ACCESS_CAP_FLAG_RW)
         Capabilities |= UR_EXT_USM_CAPS_ACCESS;
@@ -580,10 +580,6 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
       if (ZeCapabilities & ZE_MEMORY_ACCESS_CAP_FLAG_CONCURRENT_ATOMIC)
         Capabilities |= UR_EXT_USM_CAPS_CONCURRENT_ATOMIC_ACCESS;
       return Capabilities;
-#else
-      ur_bool_t Capabilities = (ZeCapabilities & ZE_MEMORY_ACCESS_CAP_FLAG_RW);
-      return Capabilities;
-#endif
     };
     auto &Props = Device->ZeDeviceMemoryAccessProperties;
     switch (ParamName) {
@@ -622,7 +618,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
     return ReturnValue(AddressBuffer);
   }
 
-  case UR_EXT_DEVICE_INFO_FREE_MEMORY: {
+  case UR_DEVICE_INFO_GLOBAL_MEM_FREE: {
     if (getenv("ZES_ENABLE_SYSMAN") == nullptr) {
       setErrorMessage("Set ZES_ENABLE_SYSMAN=1 to obtain free memory",
                       UR_RESULT_SUCCESS);
@@ -709,8 +705,6 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
   case UR_DEVICE_INFO_GPU_EU_SIMD_WIDTH:
     return ReturnValue(
         uint32_t{Device->ZeDeviceProperties->physicalEUSimdWidth});
-  case UR_EXT_DEVICE_INFO_GPU_SLICES:
-    return ReturnValue(uint32_t{Device->ZeDeviceProperties->numSlices});
   case UR_DEVICE_INFO_GPU_SUBSLICES_PER_SLICE:
     return ReturnValue(
         uint32_t{Device->ZeDeviceProperties->numSubslicesPerSlice});
@@ -718,7 +712,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
     return ReturnValue(uint32_t{Device->ZeDeviceProperties->numEUsPerSubslice});
   case UR_EXT_DEVICE_INFO_GPU_HW_THREADS_PER_EU:
     return ReturnValue(uint32_t{Device->ZeDeviceProperties->numThreadsPerEU});
-  case UR_EXT_DEVICE_INFO_MAX_MEM_BANDWIDTH:
+  case UR_DEVICE_INFO_MAX_MEMORY_BANDWIDTH:
     // currently not supported in level zero runtime
     return UR_RESULT_ERROR_INVALID_VALUE;
   case UR_DEVICE_INFO_BFLOAT16: {
