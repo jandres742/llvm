@@ -120,6 +120,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urContextGetInfo(
   }
   case UR_EXT_DEVICE_INFO_MEM_CHANNEL_SUPPORT:
     return ReturnValue(pi_bool{false});
+  case UR_DEVICE_INFO_IMAGE_SRGB:
+    return ReturnValue(pi_bool{false});
   default:
     // TODO: implement other parameters
     die("urGetContextInfo: unsuppported ParamName.");
