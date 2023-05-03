@@ -13,7 +13,8 @@
 
 #include "ur_level_zero_common.hpp"
 #include "ur_level_zero_event.hpp"
-#include <ur_bindings.hpp>
+#include "ur_level_zero.hpp"
+  
 
 void printZeEventList(const _ur_ze_event_list_t &UrZeEventList) {
   urPrint("  NumEventsInWaitList %d:", UrZeEventList.Length);
@@ -386,7 +387,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventGetProfilingInfo(
 ) {
   std::shared_lock<ur_shared_mutex> EventLock(Event->Mutex);
   if (Event->UrQueue &&
-      (Event->UrQueue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) == 0) {
+      (Event->UrQueue->Properties & UR_QUEUE_FLAG_PROFILING_ENABLE) == 0) {
     return UR_RESULT_ERROR_PROFILING_INFO_NOT_AVAILABLE;
   }
 
@@ -625,7 +626,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urExtEventCreate(
 UR_APIEXPORT ur_result_t UR_APICALL urEventCreateWithNativeHandle(
     ur_native_handle_t NativeEvent, ///< [in] the native handle of the event.
     ur_context_handle_t Context,    ///< [in] handle of the context object
-    const ur_event_native_properties_t *Properties,
+    //const ur_event_native_properties_t *Properties,
     ur_event_handle_t
         *Event ///< [out] pointer to the handle of the event object created.
 ) {
@@ -645,7 +646,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEventCreateWithNativeHandle(
   try {
     UrEvent = new ur_event_handle_t_(ZeEvent, nullptr /* ZeEventPool */,
                                      Context, UR_EXT_COMMAND_TYPE_USER,
-                                     Properties->isNativeHandleOwned);
+                                     //Properties->isNativeHandleOwned);
+                                     true);
   } catch (const std::bad_alloc &) {
     return UR_RESULT_ERROR_OUT_OF_HOST_MEMORY;
   } catch (...) {
@@ -899,7 +901,7 @@ ur_result_t EventCreate(ur_context_handle_t Context, ur_queue_handle_t Queue,
                         bool HostVisible, ur_event_handle_t *RetEvent) {
 
   bool ProfilingEnabled =
-      !Queue || (Queue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) != 0;
+      !Queue || (Queue->Properties & UR_QUEUE_FLAG_PROFILING_ENABLE) != 0;
 
   if (auto CachedEvent =
           Context->getEventFromContextCache(HostVisible, ProfilingEnabled)) {
@@ -1178,5 +1180,5 @@ ur_result_t _ur_ze_event_list_t::collectEventsForReleaseAndDestroyPiZeEventList(
 // Tells if this event is with profiling capabilities.
 bool ur_event_handle_t_::isProfilingEnabled() const {
   return !UrQueue || // tentatively assume user events are profiling enabled
-         (UrQueue->Properties & PI_QUEUE_FLAG_PROFILING_ENABLE) != 0;
+         (UrQueue->Properties & UR_QUEUE_FLAG_PROFILING_ENABLE) != 0;
 }
