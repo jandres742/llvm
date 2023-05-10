@@ -299,10 +299,10 @@ static ur_result_t getImageRegionHelper(_ur_image *Mem,
   UR_ASSERT(Mem, UR_RESULT_ERROR_INVALID_MEM_OBJECT);
   UR_ASSERT(Origin, UR_RESULT_ERROR_INVALID_VALUE);
 
+#ifndef NDEBUG
   auto UrImage = static_cast<_ur_image *>(Mem);
   ze_image_desc_t &ZeImageDesc = UrImage->ZeImageDesc;
 
-#ifndef NDEBUG
   UR_ASSERT(Mem->isImage(), UR_RESULT_ERROR_INVALID_MEM_OBJECT);
   UR_ASSERT((ZeImageDesc.type == ZE_IMAGE_TYPE_1D && Origin->y == 0 &&
              Origin->z == 0) ||
@@ -385,6 +385,7 @@ static ur_result_t enqueueMemImageCommandHelper(
     std::ignore = SlicePitch;
     UR_ASSERT(SrcMem->isImage(), UR_RESULT_ERROR_INVALID_MEM_OBJECT);
 
+#ifndef NDEBUG
     auto SrcImage = SrcMem;
     const ze_image_desc_t &ZeImageDesc = SrcImage->ZeImageDesc;
     UR_ASSERT(
@@ -397,6 +398,7 @@ static ur_result_t enqueueMemImageCommandHelper(
             (ZeImageDesc.format.layout == ZE_IMAGE_FORMAT_LAYOUT_8_8_8_8 &&
              RowPitch == 4 * ZeSrcRegion.width),
         UR_RESULT_ERROR_INVALID_IMAGE_SIZE);
+#endif
     UR_ASSERT(SlicePitch == 0 || SlicePitch == RowPitch * ZeSrcRegion.height,
               UR_RESULT_ERROR_INVALID_IMAGE_SIZE);
 
@@ -415,6 +417,7 @@ static ur_result_t enqueueMemImageCommandHelper(
     // Check that SYCL RT did not want pitch larger than default.
     UR_ASSERT(DstMem->isImage(), UR_RESULT_ERROR_INVALID_MEM_OBJECT);
 
+#ifndef NDEBUG
     auto DstImage = static_cast<_ur_image *>(DstMem);
     const ze_image_desc_t &ZeImageDesc = DstImage->ZeImageDesc;
     UR_ASSERT(
@@ -427,6 +430,7 @@ static ur_result_t enqueueMemImageCommandHelper(
             (ZeImageDesc.format.layout == ZE_IMAGE_FORMAT_LAYOUT_8_8_8_8 &&
              RowPitch == 4 * ZeDstRegion.width),
         UR_RESULT_ERROR_INVALID_IMAGE_SIZE);
+#endif
     UR_ASSERT(SlicePitch == 0 || SlicePitch == RowPitch * ZeDstRegion.height,
               UR_RESULT_ERROR_INVALID_IMAGE_SIZE);
 
