@@ -1,6 +1,14 @@
-// RUN: %clang_cc1 -fsycl -fsycl-is-device -fcxx-exceptions -triple spir64 -Wno-return-type -verify -fsyntax-only -std=c++17 %s
-// RUN: %clang_cc1 -fsycl -fsycl-is-device -fcxx-exceptions -triple spir64 -fno-sycl-allow-func-ptr -Wno-return-type -verify -fsyntax-only -std=c++17 %s
-// RUN: %clang_cc1 -fsycl -fsycl-is-device -fcxx-exceptions -triple spir64 -DALLOW_FP=1 -fsycl-allow-func-ptr -Wno-return-type -verify -fsyntax-only -std=c++17 %s
+// RUN: %clang_cc1 -fsycl-is-device -fcxx-exceptions -triple spir64 \
+// RUN:  -aux-triple x86_64-unknown-linux-gnu -Wno-return-type -verify     \
+// RUN:  -Wno-sycl-2017-compat -fsyntax-only -std=c++17 %s
+// RUN: %clang_cc1 -fsycl-is-device -fcxx-exceptions -triple spir64 \
+// RUN:  -aux-triple x86_64-unknown-linux-gnu -fno-sycl-allow-func-ptr     \
+// RUN:  -Wno-return-type -verify -Wno-sycl-2017-compat -fsyntax-only      \
+// RUN:  -std=c++17 %s
+// RUN: %clang_cc1 -fsycl-is-device -fcxx-exceptions -triple spir64 \
+// RUN:  -aux-triple x86_64-unknown-linux-gnu -DALLOW_FP=1                 \
+// RUN:  -fsycl-allow-func-ptr -Wno-return-type -verify                    \
+// RUN:  -Wno-sycl-2017-compat -fsyntax-only -std=c++17 %s
 
 namespace std {
 class type_info;
@@ -86,7 +94,7 @@ bool isa_B(A *a) {
 }
 
 template <typename N, typename L>
-__attribute__((sycl_kernel)) void kernel1(L l) {
+__attribute__((sycl_kernel)) void kernel1(const L &l) {
   l(); //#rtti_kernel  // expected-note 2{{called by 'kernel1<kernel_name, (lambda at }}
 }
 } // namespace Check_RTTI_Restriction
@@ -122,12 +130,18 @@ typedef __float128 trickyFloatType;
 typedef __int128 tricky128Type;
 typedef long double trickyLDType;
 
-//templated return type
-// expected-note@+2 2{{'bar<__float128>' defined here}}
+// templated return type
+//  expected-note@+5 4{{'bar<long double>' defined here}}
+//  expected-note@+4 2{{'bar<unsigned __int128>' defined here}}
+//  expected-note@+3 6{{'bar<__int128>' defined here}}
+//  expected-note@+2 4{{'bar<__float128>' defined here}}
 template <typename T>
-T bar() { return T(); };
+T bar() { return T(); }; //#TemplatedType
 
 //variable template
+// expected-note@+5 2{{'solutionToEverything<long double>' defined here}}
+// expected-note@+4 {{solutionToEverything<unsigned __int128>' defined here}}
+// expected-note@+3 3{{solutionToEverything<__int128>' defined here}}
 // expected-note@+2 2{{solutionToEverything<__float128>' defined here}}
 template <class T>
 constexpr T solutionToEverything = T(42);
@@ -153,7 +167,7 @@ using safealias_t = int;
 
 //struct
 struct frankenStruct {
-  // expected-error@+1 {{zero-length arrays are not permitted in C++}}
+  // expected-error@+1 {{zero-length arrays are not permitted in SYCL device code}}
   int mosterArr[0];
   // expected-error@+1 {{'__float128' is not supported on this target}}
   __float128 scaryQuad;
@@ -174,7 +188,8 @@ struct trickyStruct {
 };
 
 // function return type and argument both unsupported
-__int128 commitInfraction(__int128 a) {
+// expected-note@+1 2{{'commitInfraction' defined here}}
+[[intel::device_indirectly_callable]] __int128 commitInfraction(__int128 a) {
   return 0;
 }
 
@@ -222,21 +237,25 @@ void usage(myFuncDef functionPtr) {
   trickyFloatType malFloatTrick = 41;
   // expected-error@+1 {{'__float128' is not supported on this target}}
   floatDef malFloatDef = 44;
-  // expected-error@+2 {{'malFloat' requires 128 bit size '__float128' type support, but device 'spir64' does not support it}}
+  // expected-error@+2 {{'malFloat' requires 128 bit size '__float128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__float128' is not supported on this target}}
   auto whatFloat = malFloat;
-  // expected-error@+2 {{'bar<__float128>' requires 128 bit size '__float128' type support, but device 'spir64' does not support it}}
+  // expected-error@#TemplatedType {{'bar<__float128>' requires 128 bit size '__float128' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<__float128>' requires 128 bit size '__float128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__float128' is not supported on this target}}
   auto malAutoTemp5 = bar<__float128>();
-  // expected-error@+2 {{'bar<__float128>' requires 128 bit size '__float128' type support, but device 'spir64' does not support it}}
+  // expected-error@#TemplatedType {{'bar<__float128>' requires 128 bit size '__float128' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<__float128>' requires 128 bit size '__float128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__float128' is not supported on this target}}
   auto malAutoTemp6 = bar<trickyFloatType>();
   // expected-error@+1 {{'__float128' is not supported on this target}}
   decltype(malFloat) malDeclFloat = 42;
-  // expected-error@+2 {{'solutionToEverything<__float128>' requires 128 bit size 'const __float128' type support, but device 'spir64' does not support it}}
+  // expected-error@+2 {{'solutionToEverything<__float128>' requires 128 bit size 'const __float128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__float128' is not supported on this target}}
   auto malFloatTemplateVar = solutionToEverything<__float128>;
-  // expected-error@+2 {{'solutionToEverything<__float128>' requires 128 bit size 'const __float128' type support, but device 'spir64' does not support it}}
+  // expected-error@+2 {{'solutionToEverything<__float128>' requires 128 bit size 'const __float128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__float128' is not supported on this target}}
   auto malTrifectaFloat = solutionToEverything<trickyFloatType>;
   // expected-error@+1 {{'__float128' is not supported on this target}}
@@ -247,22 +266,32 @@ void usage(myFuncDef functionPtr) {
   safealias_t<__float128> notAFloat = 3;
 
   // ======= long double Not Allowed in Kernel ==========
+  // expected-note@+2 {{'malLD' defined here}}
   // expected-error@+1 {{'long double' is not supported on this target}}
   long double malLD = 50;
   // expected-error@+1 {{'long double' is not supported on this target}}
   trickyLDType malLDTrick = 51;
   // expected-error@+1 {{'long double' is not supported on this target}}
   longdoubleDef malLDDef = 52;
+  // expected-error@+2 {{'malLD' requires 128 bit size 'long double' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'long double' is not supported on this target}}
   auto whatLD = malLD;
+  // expected-error@#TemplatedType {{'bar<long double>' requires 128 bit size 'long double' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<long double>' requires 128 bit size 'long double' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'long double' is not supported on this target}}
   auto malAutoLD = bar<long double>();
+  // expected-error@#TemplatedType {{'bar<long double>' requires 128 bit size 'long double' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2{{'bar<long double>' requires 128 bit size 'long double' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'long double' is not supported on this target}}
   auto malAutoLD2 = bar<trickyLDType>();
   // expected-error@+1 {{'long double' is not supported on this target}}
   decltype(malLD) malDeclLD = 53;
+  // expected-error@+2 {{'solutionToEverything<long double>' requires 128 bit size 'const long double' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'long double' is not supported on this target}}
   auto malLDTemplateVar = solutionToEverything<long double>;
+  // expected-error@+2 {{'solutionToEverything<long double>' requires 128 bit size 'const long double' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'long double' is not supported on this target}}
   auto malTrifectaLD = solutionToEverything<trickyLDType>;
   // expected-error@+1 {{'long double' is not supported on this target}}
@@ -273,31 +302,41 @@ void usage(myFuncDef functionPtr) {
   safealias_t<long double> notALD = 55;
 
   // ======= Zero Length Arrays Not Allowed in Kernel ==========
-  // expected-error@+1 {{zero-length arrays are not permitted in C++}}
+  // expected-error@+1 {{zero-length arrays are not permitted in SYCL device code}}
   int MalArray[0];
-  // expected-error@+1 {{zero-length arrays are not permitted in C++}}
+  // expected-error@+1 {{zero-length arrays are not permitted in SYCL device code}}
   intDef MalArrayDef[0];
   // ---- false positive tests. These should not generate any errors.
   foo<int[0]>();
   std::size_t arrSz = sizeof(int[0]);
 
   // ======= __int128 Not Allowed in Kernel ==========
+  // expected-note@+2 {{'malIntent' defined here}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   __int128 malIntent = 2;
   // expected-error@+1 {{'__int128' is not supported on this target}}
   tricky128Type mal128Trick = 2;
   // expected-error@+1 {{'__int128' is not supported on this target}}
   int128Def malIntDef = 9;
+  // expected-error@+2 {{'malIntent' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto whatInt128 = malIntent;
+  // expected-error@#TemplatedType {{'bar<__int128>' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<__int128>' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto malAutoTemp = bar<__int128>();
+  // expected-error@#TemplatedType {{'bar<__int128>' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<__int128>' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto malAutoTemp2 = bar<tricky128Type>();
   // expected-error@+1 {{'__int128' is not supported on this target}}
   decltype(malIntent) malDeclInt = 2;
+  // expected-error@+2 {{'solutionToEverything<__int128>' requires 128 bit size 'const __int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto mal128TemplateVar = solutionToEverything<__int128>;
+  // expected-error@+2 {{'solutionToEverything<__int128>' requires 128 bit size 'const __int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto malTrifecta128 = solutionToEverything<tricky128Type>;
   // expected-error@+1 {{'__int128' is not supported on this target}}
@@ -305,22 +344,32 @@ void usage(myFuncDef functionPtr) {
 
   // expected-error@+1 {{'__int128' is not supported on this target}}
   __int128_t malInt128 = 2;
+  // expected-note@+2 {{'malUInt128' defined here}}
   // expected-error@+1 {{'unsigned __int128' is not supported on this target}}
   __uint128_t malUInt128 = 3;
   // expected-error@+1 {{'unsigned __int128' is not supported on this target}}
   megeType malTypeDefTrick = 4;
   // expected-error@+1 {{'__int128' is not supported on this target}}
   int128tDef malInt2Def = 6;
+  // expected-error@+2 {{'malUInt128' requires 128 bit size '__uint128_t' (aka 'unsigned __int128') type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'unsigned __int128' is not supported on this target}}
   auto whatUInt = malUInt128;
+  // expected-error@#TemplatedType {{'bar<__int128>' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<__int128>' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto malAutoTemp3 = bar<__int128_t>();
+  // expected-error@#TemplatedType {{'bar<unsigned __int128>' requires 128 bit size 'unsigned __int128' type support, but target 'spir64' does not support it}}
+  // expected-note@+3 {{called by 'usage'}}
+  // expected-error@+2 {{'bar<unsigned __int128>' requires 128 bit size 'unsigned __int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'unsigned __int128' is not supported on this target}}
   auto malAutoTemp4 = bar<megeType>();
   // expected-error@+1 {{'__int128' is not supported on this target}}
   decltype(malInt128) malDeclInt128 = 5;
+  // expected-error@+2 {{'solutionToEverything<__int128>' requires 128 bit size 'const __int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'__int128' is not supported on this target}}
   auto mal128TIntTemplateVar = solutionToEverything<__int128_t>;
+  // expected-error@+2 {{'solutionToEverything<unsigned __int128>' requires 128 bit size 'const unsigned __int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 {{'unsigned __int128' is not supported on this target}}
   auto malTrifectaInt128T = solutionToEverything<megeType>;
 
@@ -329,6 +378,7 @@ void usage(myFuncDef functionPtr) {
   trickyStruct incitesPanic; // expected-note 3{{used here}}
 
   // ======= Function Prototype Checked  =======
+  // expected-error@+2 2{{'commitInfraction' requires 128 bit size '__int128' type support, but target 'spir64' does not support it}}
   // expected-error@+1 2{{'__int128' is not supported on this target}}
   auto notAllowed = &commitInfraction;
 
@@ -350,7 +400,10 @@ int moar_globals = 5;
 }
 }
 
-int addInt(int n, int m) {
+template<const auto &T>
+int uses_global(){}
+
+[[intel::device_indirectly_callable]] int addInt(int n, int m) {
   return n + m;
 }
 
@@ -367,6 +420,9 @@ int use2(a_type ab, a_type *abp) {
   if (ab.fm()) // expected-note {{called by 'use2'}}
     return 0;
 
+  // No error, as this is not in an evaluated context.
+  (void)(uses_global<another_global>() + uses_global<ns::glob>());
+
   return another_global; // expected-error {{SYCL kernel cannot use a non-const global variable}}
 
   return ns::glob +               // expected-error {{SYCL kernel cannot use a non-const global variable}}
@@ -374,8 +430,8 @@ int use2(a_type ab, a_type *abp) {
 }
 
 template <typename name, typename Func>
-__attribute__((sycl_kernel)) void kernel_single_task(Func kernelFunc) {
-  kernelFunc(); //#call_kernelFunc // expected-note 3{{called by 'kernel_single_task<fake_kernel, (lambda at}}
+__attribute__((sycl_kernel)) void kernel_single_task(const Func &kernelFunc) {
+  kernelFunc(); //#call_kernelFunc // expected-note 11{{called by 'kernel_single_task<fake_kernel, (lambda at}}
 }
 
 int main() {
@@ -392,7 +448,7 @@ int main() {
   auto notACrime = &commitInfraction;
 
   kernel_single_task<class fake_kernel>([=]() {
-    usage(&addInt); //#call_usage // expected-note {{called by 'operator()'}}
+    usage(&addInt); //#call_usage // expected-note 9{{called by 'operator()'}}
     a_type *p;
     use2(ab, p); // expected-note 2{{called by 'operator()'}}
   });

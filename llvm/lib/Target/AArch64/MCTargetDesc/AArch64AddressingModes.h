@@ -13,6 +13,7 @@
 #ifndef LLVM_LIB_TARGET_AARCH64_MCTARGETDESC_AARCH64ADDRESSINGMODES_H
 #define LLVM_LIB_TARGET_AARCH64_MCTARGETDESC_AARCH64ADDRESSINGMODES_H
 
+#include "AArch64ExpandImm.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/bit.h"
@@ -236,17 +237,17 @@ static inline bool processLogicalImmediate(uint64_t Imm, unsigned RegSize,
   Imm &= Mask;
 
   if (isShiftedMask_64(Imm)) {
-    I = countTrailingZeros(Imm);
+    I = llvm::countr_zero(Imm);
     assert(I < 64 && "undefined behavior");
-    CTO = countTrailingOnes(Imm >> I);
+    CTO = llvm::countr_one(Imm >> I);
   } else {
     Imm |= ~Mask;
     if (!isShiftedMask_64(~Imm))
       return false;
 
-    unsigned CLO = countLeadingOnes(Imm);
+    unsigned CLO = llvm::countl_one(Imm);
     I = 64 - CLO;
-    CTO = CLO + countTrailingOnes(Imm) - (64 - Size);
+    CTO = CLO + llvm::countr_one(Imm) - (64 - Size);
   }
 
   // Encode in Immr the number of RORs it would take to get *from* 0^m 1^n
@@ -297,7 +298,7 @@ static inline uint64_t decodeLogicalImmediate(uint64_t val, unsigned regSize) {
   unsigned imms = val & 0x3f;
 
   assert((regSize == 64 || N == 0) && "undefined logical immediate encoding");
-  int len = 31 - countLeadingZeros((N << 6) | (~imms & 0x3f));
+  int len = 31 - llvm::countl_zero((N << 6) | (~imms & 0x3f));
   assert(len >= 0 && "undefined logical immediate encoding");
   unsigned size = (1 << len);
   unsigned R = immr & (size - 1);
@@ -326,7 +327,7 @@ static inline bool isValidDecodeLogicalImmediate(uint64_t val,
 
   if (regSize == 32 && N != 0) // undefined logical immediate encoding
     return false;
-  int len = 31 - countLeadingZeros((N << 6) | (~imms & 0x3f));
+  int len = 31 - llvm::countl_zero((N << 6) | (~imms & 0x3f));
   if (len < 0) // undefined logical immediate encoding
     return false;
   unsigned size = (1 << len);
@@ -754,28 +755,37 @@ static inline uint64_t decodeAdvSIMDModImmType12(uint8_t Imm) {
 template <typename T>
 static inline bool isSVEMaskOfIdenticalElements(int64_t Imm) {
   auto Parts = bit_cast<std::array<T, sizeof(int64_t) / sizeof(T)>>(Imm);
-  return all_of(Parts, [&](T Elem) { return Elem == Parts[0]; });
+  return llvm::all_equal(Parts);
 }
 
 /// Returns true if Imm is valid for CPY/DUP.
 template <typename T>
 static inline bool isSVECpyImm(int64_t Imm) {
-  bool IsImm8 = int8_t(Imm) == Imm;
-  bool IsImm16 = int16_t(Imm & ~0xff) == Imm;
+  // Imm is interpreted as a signed value, which means top bits must be all ones
+  // (sign bits if the immediate value is negative and passed in a larger
+  // container), or all zeroes.
+  int64_t Mask = ~int64_t(std::numeric_limits<std::make_unsigned_t<T>>::max());
+  if ((Imm & Mask) != 0 && (Imm & Mask) != Mask)
+    return false;
 
-  if (std::is_same<int8_t, std::make_signed_t<T>>::value)
-    return IsImm8 || uint8_t(Imm) == Imm;
+  // Imm is a signed 8-bit value.
+  // Top bits must be zeroes or sign bits.
+  if (Imm & 0xff)
+    return int8_t(Imm) == T(Imm);
 
-  if (std::is_same<int16_t, std::make_signed_t<T>>::value)
-    return IsImm8 || IsImm16 || uint16_t(Imm & ~0xff) == Imm;
+  // Imm is a signed 16-bit value and multiple of 256.
+  // Top bits must be zeroes or sign bits.
+  if (Imm & 0xff00)
+    return int16_t(Imm) == T(Imm);
 
-  return IsImm8 || IsImm16;
+  return Imm == 0;
 }
 
 /// Returns true if Imm is valid for ADD/SUB.
 template <typename T>
 static inline bool isSVEAddSubImm(int64_t Imm) {
-  bool IsInt8t = std::is_same<int8_t, std::make_signed_t<T>>::value;
+  bool IsInt8t = std::is_same<int8_t, std::make_signed_t<T>>::value ||
+                 std::is_same<int8_t, T>::value;
   return uint8_t(Imm) == Imm || (!IsInt8t && uint16_t(Imm & ~0xff) == Imm);
 }
 

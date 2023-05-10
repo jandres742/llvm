@@ -28,7 +28,7 @@ struct BadHashNoCopy {
   BadHashNoCopy(BadHashNoCopy const&) = delete;
 
   template <class T>
-  size_t operator()(T const&) const { return 0; }
+  std::size_t operator()(T const&) const { return 0; }
 };
 
 struct BadHashNoCall {
@@ -39,7 +39,7 @@ struct BadHashNoCall {
 struct GoodHashNoDefault {
   explicit GoodHashNoDefault(void*) {}
   template <class T>
-  size_t operator()(T const&) const { return 0; }
+  std::size_t operator()(T const&) const { return 0; }
 };
 
 int main(int, char**) {
@@ -52,7 +52,7 @@ int main(int, char**) {
   // FIXME: It would be great to suppress the below diagnostic all together.
   //        but for now it's sufficient that it appears last. However there is
   //        currently no way to test the order diagnostics are issued.
-  // expected-error@memory:* {{call to implicitly-deleted default constructor of 'std::}}
+  // expected-error@*:* {{call to implicitly-deleted default constructor of 'std::}}
   }
   {
     using Set = std::unordered_set<int, BadHashNoCopy>;

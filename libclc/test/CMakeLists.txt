@@ -13,6 +13,7 @@ set(LIBCLC_TEST_DEPS
   llvm-dis
   not
   clang
+  count
 )
 
 add_custom_target(check-libclc)
@@ -42,3 +43,11 @@ foreach( t ${LIBCLC_TARGET_TO_TEST} )
 
   endforeach( d )
 endforeach( t )
+
+if(LIBCLC_GENERATE_REMANGLED_VARIANTS)
+  #Now that check-libclc is defined make sure that all remangler targets depend
+  # on it.
+  foreach(remangler-test ${libclc-remangler-tests})
+    add_dependencies(check-libclc ${remangler-test})
+  endforeach()
+endif()

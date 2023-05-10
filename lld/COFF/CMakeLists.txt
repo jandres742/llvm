@@ -2,12 +2,10 @@ set(LLVM_TARGET_DEFINITIONS Options.td)
 tablegen(LLVM Options.inc -gen-opt-parser-defs)
 add_public_tablegen_target(COFFOptionsTableGen)
 
-if(NOT LLD_BUILT_STANDALONE)
-  set(tablegen_deps intrinsics_gen)
-endif()
-
 add_lld_library(lldCOFF
+  CallGraphSort.cpp
   Chunks.cpp
+  COFFLinkerContext.cpp
   DebugTypes.cpp
   DLL.cpp
   Driver.cpp
@@ -40,13 +38,16 @@ add_lld_library(lldCOFF
   Option
   Passes
   Support
+  TargetParser
+  WindowsDriver
   WindowsManifest
 
   LINK_LIBS
   lldCommon
   ${LLVM_PTHREAD_LIB}
+  ${LLVM_ATOMIC_LIB}
 
   DEPENDS
   COFFOptionsTableGen
-  ${tablegen_deps}
+  intrinsics_gen
   )

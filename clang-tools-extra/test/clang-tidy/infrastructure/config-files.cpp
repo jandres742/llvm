@@ -15,18 +15,42 @@
 // CHECK-COMMAND-LINE: HeaderFilterRegex: from command line
 
 // For this test we have to use names of the real checks because otherwise values are ignored.
+// Running with the old key: <Key>, value: <value> CheckOptions
 // RUN: clang-tidy -dump-config %S/Inputs/config-files/4/44/- -- | FileCheck %s -check-prefix=CHECK-CHILD4
+// Running with the new <key>: <value> syntax
+// RUN: clang-tidy -dump-config %S/Inputs/config-files/4/key-dict/- -- | FileCheck %s -check-prefix=CHECK-CHILD4
+
 // CHECK-CHILD4: Checks: {{.*}}modernize-loop-convert,modernize-use-using,llvm-qualified-auto
-// CHECK-CHILD4: - key: llvm-qualified-auto.AddConstToQualified
-// CHECK-CHILD4-NEXT: value: '1
-// CHECK-CHILD4: - key: modernize-loop-convert.MaxCopySize
-// CHECK-CHILD4-NEXT: value: '20'
-// CHECK-CHILD4: - key: modernize-loop-convert.MinConfidence
-// CHECK-CHILD4-NEXT: value: reasonable
-// CHECK-CHILD4: - key: modernize-use-using.IgnoreMacros
-// CHECK-CHILD4-NEXT: value: '0'
+// CHECK-CHILD4-DAG: llvm-qualified-auto.AddConstToQualified: 'true'
+// CHECK-CHILD4-DAG: modernize-loop-convert.MaxCopySize: '20'
+// CHECK-CHILD4-DAG: modernize-loop-convert.MinConfidence: reasonable
+// CHECK-CHILD4-DAG: modernize-use-using.IgnoreMacros: 'false'
 
 // RUN: clang-tidy --explain-config %S/Inputs/config-files/4/44/- -- | FileCheck %s -check-prefix=CHECK-EXPLAIN
 // CHECK-EXPLAIN: 'llvm-qualified-auto' is enabled in the {{.*}}{{[/\\]}}Inputs{{[/\\]}}config-files{{[/\\]}}4{{[/\\]}}44{{[/\\]}}.clang-tidy.
 // CHECK-EXPLAIN: 'modernize-loop-convert' is enabled in the {{.*}}{{[/\\]}}Inputs{{[/\\]}}config-files{{[/\\]}}4{{[/\\]}}.clang-tidy.
 // CHECK-EXPLAIN: 'modernize-use-using' is enabled in the {{.*}}{{[/\\]}}Inputs{{[/\\]}}config-files{{[/\\]}}4{{[/\\]}}.clang-tidy.
+
+// RUN: clang-tidy -dump-config \
+// RUN: --config='{InheritParentConfig: true, \
+// RUN: Checks: -llvm-qualified-auto, \
+// RUN: CheckOptions: [{key: modernize-loop-convert.MaxCopySize, value: 21}]}' \
+// RUN: %S/Inputs/config-files/4/44/- -- | FileCheck %s -check-prefix=CHECK-CHILD5
+// Also test with the {Key: Value} Syntax specified on command line
+// RUN: clang-tidy -dump-config \
+// RUN: --config='{InheritParentConfig: true, \
+// RUN: Checks: -llvm-qualified-auto, \
+// RUN: CheckOptions: {modernize-loop-convert.MaxCopySize: 21}}' \
+// RUN: %S/Inputs/config-files/4/44/- -- | FileCheck %s -check-prefix=CHECK-CHILD5
+
+// CHECK-CHILD5: Checks: {{.*}}modernize-loop-convert,modernize-use-using,llvm-qualified-auto,-llvm-qualified-auto
+// CHECK-CHILD5-DAG: modernize-loop-convert.MaxCopySize: '21'
+// CHECK-CHILD5-DAG: modernize-loop-convert.MinConfidence: reasonable
+// CHECK-CHILD5-DAG: modernize-use-using.IgnoreMacros: 'false'
+
+// RUN: clang-tidy -dump-config \
+// RUN: --config='{InheritParentConfig: false, \
+// RUN: Checks: -llvm-qualified-auto}' \
+// RUN: %S/Inputs/config-files/4/44/- -- | FileCheck %s -check-prefix=CHECK-CHILD6
+// CHECK-CHILD6: Checks: {{.*-llvm-qualified-auto'? *$}}
+// CHECK-CHILD6-NOT: modernize-use-using.IgnoreMacros

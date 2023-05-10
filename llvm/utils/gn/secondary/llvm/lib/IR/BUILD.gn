@@ -1,5 +1,3 @@
-import("//llvm/utils/TableGen/tablegen.gni")
-
 static_library("IR") {
   output_name = "LLVMCore"
   public_deps = [
@@ -12,13 +10,16 @@ static_library("IR") {
     "//llvm/lib/BinaryFormat",
     "//llvm/lib/Remarks",
     "//llvm/lib/Support",
+    "//llvm/lib/TargetParser",
   ]
   sources = [
     "AbstractCallSite.cpp",
     "AsmWriter.cpp",
+    "Assumptions.cpp",
     "Attributes.cpp",
     "AutoUpgrade.cpp",
     "BasicBlock.cpp",
+    "BuiltinGCs.cpp",
     "Comdat.cpp",
     "ConstantFold.cpp",
     "ConstantRange.cpp",
@@ -33,8 +34,10 @@ static_library("IR") {
     "DiagnosticInfo.cpp",
     "DiagnosticPrinter.cpp",
     "Dominators.cpp",
+    "EHPersonalities.cpp",
     "FPEnv.cpp",
     "Function.cpp",
+    "GCStrategy.cpp",
     "GVMaterializer.cpp",
     "Globals.cpp",
     "IRBuilder.cpp",
@@ -59,15 +62,23 @@ static_library("IR") {
     "PassManager.cpp",
     "PassRegistry.cpp",
     "PassTimingInfo.cpp",
+    "PrintPasses.cpp",
+    "ProfDataUtils.cpp",
     "ProfileSummary.cpp",
+    "PseudoProbe.cpp",
+    "ReplaceConstant.cpp",
+    "SSAContext.cpp",
     "SafepointIRVerifier.cpp",
     "Statepoint.cpp",
+    "StructuralHash.cpp",
     "Type.cpp",
     "TypeFinder.cpp",
+    "TypedPointerType.cpp",
     "Use.cpp",
     "User.cpp",
     "Value.cpp",
     "ValueSymbolTable.cpp",
+    "VectorBuilder.cpp",
     "Verifier.cpp",
   ]
 }

@@ -39,10 +39,18 @@
 #ifndef SPIRV_LLVMSPIRVOPTS_H
 #define SPIRV_LLVMSPIRVOPTS_H
 
+#include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringRef.h>
+
 #include <cassert>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <unordered_map>
+
+namespace llvm {
+class IntrinsicInst;
+} // namespace llvm
 
 namespace SPIRV {
 
@@ -53,10 +61,11 @@ enum class VersionNumber : uint32_t {
   SPIRV_1_1 = 0x00010100,
   SPIRV_1_2 = 0x00010200,
   SPIRV_1_3 = 0x00010300,
+  SPIRV_1_4 = 0x00010400,
   // TODO: populate this enum with the latest versions (up to 1.5) once
   // translator get support of corresponding features
   MinimumVersion = SPIRV_1_0,
-  MaximumVersion = SPIRV_1_3
+  MaximumVersion = SPIRV_1_4
 };
 
 enum class ExtensionID : uint32_t {
@@ -71,10 +80,20 @@ enum class BIsRepresentation : uint32_t { OpenCL12, OpenCL20, SPIRVFriendlyIR };
 
 enum class FPContractMode : uint32_t { On, Off, Fast };
 
+enum class DebugInfoEIS : uint32_t {
+  SPIRV_Debug,
+  OpenCL_DebugInfo_100,
+  NonSemantic_Shader_DebugInfo_100,
+  NonSemantic_Shader_DebugInfo_200
+};
+
 /// \brief Helper class to manage SPIR-V translation
 class TranslatorOpts {
 public:
-  using ExtensionsStatusMap = std::map<ExtensionID, bool>;
+  // Unset optional means not directly specified by user
+  using ExtensionsStatusMap = std::map<ExtensionID, std::optional<bool>>;
+
+  using ArgList = llvm::SmallVector<llvm::StringRef, 4>;
 
   TranslatorOpts() = default;
 
@@ -90,7 +109,14 @@ public:
     if (ExtStatusMap.end() == I)
       return false;
 
-    return I->second;
+    return I->second && *I->second;
+  }
+
+  void setAllowedToUseExtension(ExtensionID Extension, bool Allow = true) {
+    // Only allow using the extension if it has not already been disabled
+    auto I = ExtStatusMap.find(Extension);
+    if (I == ExtStatusMap.end() || !I->second || (*I->second) == true)
+      ExtStatusMap[Extension] = Allow;
   }
 
   VersionNumber getMaxVersion() const { return MaxVersion; }
@@ -100,6 +126,10 @@ public:
   bool isSPIRVMemToRegEnabled() const { return SPIRVMemToReg; }
 
   void setMemToRegEnabled(bool Mem2Reg) { SPIRVMemToReg = Mem2Reg; }
+
+  bool preserveAuxData() const { return PreserveAuxData; }
+
+  void setPreserveAuxData(bool ArgValue) { PreserveAuxData = ArgValue; }
 
   void setGenKernelArgNameMDEnabled(bool ArgNameMD) {
     GenKernelArgNameMD = ArgNameMD;
@@ -137,6 +167,38 @@ public:
 
   FPContractMode getFPContractMode() const { return FPCMode; }
 
+  bool isUnknownIntrinsicAllowed(llvm::IntrinsicInst *II) const noexcept;
+  bool isSPIRVAllowUnknownIntrinsicsEnabled() const noexcept;
+  void setSPIRVAllowUnknownIntrinsics(ArgList IntrinsicPrefixList) noexcept;
+
+  bool allowExtraDIExpressions() const noexcept {
+    return AllowExtraDIExpressions;
+  }
+
+  void setAllowExtraDIExpressionsEnabled(bool Allow) noexcept {
+    AllowExtraDIExpressions = Allow;
+  }
+
+  DebugInfoEIS getDebugInfoEIS() const { return DebugInfoVersion; }
+
+  void setDebugInfoEIS(DebugInfoEIS EIS) { DebugInfoVersion = EIS; }
+
+  bool shouldReplaceLLVMFmulAddWithOpenCLMad() const noexcept {
+    return ReplaceLLVMFmulAddWithOpenCLMad;
+  }
+
+  void setReplaceLLVMFmulAddWithOpenCLMad(bool Value) noexcept {
+    ReplaceLLVMFmulAddWithOpenCLMad = Value;
+  }
+
+  bool shouldPreserveOCLKernelArgTypeMetadataThroughString() const noexcept {
+    return PreserveOCLKernelArgTypeMetadataThroughString;
+  }
+
+  void setPreserveOCLKernelArgTypeMetadataThroughString(bool Value) noexcept {
+    PreserveOCLKernelArgTypeMetadataThroughString = Value;
+  }
+
 private:
   // Common translation options
   VersionNumber MaxVersion = VersionNumber::MaximumVersion;
@@ -159,6 +221,26 @@ private:
   // - FPContractMode::Fast allows *all* operations to be contracted
   //   for all entry points
   FPContractMode FPCMode = FPContractMode::On;
+
+  // Unknown LLVM intrinsics will be translated as external function calls in
+  // SPIR-V
+  std::optional<ArgList> SPIRVAllowUnknownIntrinsics{};
+
+  // Enable support for extra DIExpression opcodes not listed in the SPIR-V
+  // DebugInfo specification.
+  bool AllowExtraDIExpressions = false;
+
+  DebugInfoEIS DebugInfoVersion = DebugInfoEIS::OpenCL_DebugInfo_100;
+
+  // Controls whether llvm.fmuladd.* should be replaced with mad from OpenCL
+  // extended instruction set or with a simple fmul + fadd
+  bool ReplaceLLVMFmulAddWithOpenCLMad = true;
+
+  // Add a workaround to preserve OpenCL kernel_arg_type and
+  // kernel_arg_type_qual metadata through OpString
+  bool PreserveOCLKernelArgTypeMetadataThroughString = false;
+
+  bool PreserveAuxData = false;
 };
 
 } // namespace SPIRV

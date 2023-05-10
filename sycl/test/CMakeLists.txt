@@ -8,7 +8,7 @@ set(LLVM_BUILD_BINARY_DIRS "${LLVM_BINARY_DIR}/bin/")
 set(LLVM_BUILD_LIBRARY_DIRS "${LLVM_BINARY_DIR}/lib/")
 
 set(RT_TEST_ARGS ${RT_TEST_ARGS} "-v")
-set(DEPLOY_RT_TEST_ARGS ${DEPLOY_RT_TEST_ARGS} "-v -D SYCL_TOOLS_DIR=${CMAKE_INSTALL_PREFIX}/bin -D SYCL_LIBS_DIR=${CMAKE_INSTALL_PREFIX}/lib${LLVM_LIBDIR_SUFFIX} -D SYCL_INCLUDE=${SYCL_INCLUDE_DEPLOY_DIR}")
+set(DEPLOY_RT_TEST_ARGS ${DEPLOY_RT_TEST_ARGS} "-v -D SYCL_TOOLS_DIR=${CMAKE_INSTALL_PREFIX}/bin -D SYCL_LIBS_DIR=${CMAKE_INSTALL_PREFIX}/lib${LLVM_LIBDIR_SUFFIX} -D SYCL_INCLUDE=${CMAKE_INSTALL_PREFIX}/${SYCL_INCLUDE_DIR}")
 
 find_package(Threads REQUIRED)
 set(SYCL_THREADS_LIB ${CMAKE_THREAD_LIBS_INIT})
@@ -31,9 +31,9 @@ list(APPEND SYCL_TEST_DEPS
   sycl-toolchain
   FileCheck
   not
-  get_device_count_by_type
   llvm-config
   llvm-cxxdump
+  llvm-dis
   llvm-readobj
   )
 
@@ -42,63 +42,85 @@ list(APPEND SYCL_DEPLOY_TEST_DEPS
   deploy-sycl-toolchain
   )
 
-add_lit_testsuite(check-sycl "Running the SYCL regression tests"
-  ${CMAKE_CURRENT_BINARY_DIR}
-  ARGS ${RT_TEST_ARGS}
-  PARAMS "SYCL_BE=PI_OPENCL"
-  DEPENDS ${SYCL_TEST_DEPS}
-  )
+set(SYCL_TEST_EXCLUDE "")
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+  # Debug compiler is very slow on sycl tests, tests may timeout sporadically
+  set(SYCL_TEST_EXCLUDE EXCLUDE_FROM_CHECK_ALL)
+  message(STATUS "Note: SYCL tests are excluded in check-all for Debug compiler")
+endif()
 
 add_lit_testsuite(check-sycl-deploy "Running the SYCL regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
   ARGS ${DEPLOY_RT_TEST_ARGS}
-  PARAMS "SYCL_BE=PI_OPENCL"
+  PARAMS "SYCL_PLUGIN=opencl"
   DEPENDS ${SYCL_DEPLOY_TEST_DEPS}
   EXCLUDE_FROM_CHECK_ALL
   )
-set_target_properties(check-sycl PROPERTIES FOLDER "SYCL tests")
+set_target_properties(check-sycl-deploy PROPERTIES FOLDER "SYCL tests")
 
-add_lit_testsuites(SYCL ${CMAKE_CURRENT_SOURCE_DIR}
-  DEPENDS ${SYCL_TEST_DEPS}
-  )
-
-add_lit_testsuites(SYCL-DEPLOY ${CMAKE_CURRENT_SOURCE_DIR}
-  ARGS ${DEPLOY_RT_TEST_ARGS}
-  PARAMS "SYCL_BE=PI_OPENCL"
-  DEPENDS ${SYCL_DEPLOY_TEST_DEPS}
-  EXCLUDE_FROM_CHECK_ALL
-  )
-
-add_lit_target(check-sycl-inline-asm
-  "Running lit suite ${CMAKE_CURRENT_SOURCE_DIR}/feature-tests/inline-asm"
-  "feature-tests/inline-asm"
-  ARGS ${RT_TEST_ARGS}
-  PARAMS "SYCL_BE=PI_OPENCL"
-  DEPENDS ${SYCL_TEST_DEPS}
-  )
-
-add_lit_testsuite(check-level0 "Running the SYCL regression tests for Level Zero"
+add_lit_testsuite(check-sycl-spirv "Running device-agnostic SYCL regression tests for SPIR-V"
   ${CMAKE_CURRENT_BINARY_DIR}
   ARGS ${RT_TEST_ARGS}
-  PARAMS "SYCL_BE=PI_LEVEL0"
+  PARAMS "SYCL_TRIPLE=spir64-unknown-unknown"
   DEPENDS ${SYCL_TEST_DEPS}
+  ${SYCL_TEST_EXCLUDE}
+  )
+
+add_lit_testsuite(check-sycl-dumps "Running ABI dump tests only"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ARGS ${RT_TEST_ARGS}
+  PARAMS "SYCL_LIB_DUMPS_ONLY=True"
+  DEPENDS sycl-runtime-libraries llvm-readobj
   EXCLUDE_FROM_CHECK_ALL
   )
 
-add_dependencies(check-sycl check-level0)
+add_custom_target(check-sycl)
+add_dependencies(check-sycl check-sycl-spirv)
+set_target_properties(check-sycl PROPERTIES FOLDER "SYCL tests")
 
 if(SYCL_BUILD_PI_CUDA)
-  add_lit_testsuite(check-sycl-cuda "Running the SYCL regression tests for CUDA"
+  add_lit_testsuite(check-sycl-ptx "Running device-agnostic SYCL regression tests for NVidia PTX"
     ${CMAKE_CURRENT_BINARY_DIR}
     ARGS ${RT_TEST_ARGS}
-    PARAMS "SYCL_BE=PI_CUDA"
+    PARAMS "SYCL_TRIPLE=nvptx64-nvidia-cuda;SYCL_PLUGIN=cuda"
     DEPENDS ${SYCL_TEST_DEPS}
+    ${SYCL_TEST_EXCLUDE}
   )
 
-  set_target_properties(check-sycl-cuda PROPERTIES FOLDER "SYCL CUDA tests")
-
-  add_lit_testsuites(SYCL-CUDA ${CMAKE_CURRENT_SOURCE_DIR}
-    PARAMS "SYCL_BE=PI_CUDA"
-    DEPENDS ${SYCL_TEST_DEPS}
-  )
+  add_custom_target(check-sycl-cuda)
+  add_dependencies(check-sycl-cuda check-sycl-ptx)
+  add_dependencies(check-sycl check-sycl-cuda)
 endif()
+
+if(SYCL_BUILD_PI_HIP)
+  add_custom_target(check-sycl-hip)
+  if("${SYCL_BUILD_PI_HIP_PLATFORM}" STREQUAL "NVIDIA")
+    add_lit_testsuite(check-sycl-hip-ptx "Running device-agnostic SYCL regression tests for HIP NVidia PTX"
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ARGS ${RT_TEST_ARGS}
+      PARAMS "SYCL_TRIPLE=nvptx64-nvidia-cuda;SYCL_PLUGIN=hip"
+      DEPENDS ${SYCL_TEST_DEPS}
+      ${SYCL_TEST_EXCLUDE}
+    )
+
+    add_dependencies(check-sycl-hip check-sycl-hip-ptx)
+  elseif("${SYCL_BUILD_PI_HIP_PLATFORM}" STREQUAL "AMD")
+    add_lit_testsuite(check-sycl-hip-gcn "Running device-agnostic SYCL regression tests for HIP AMDGCN"
+      ${CMAKE_CURRENT_BINARY_DIR}
+      ARGS ${RT_TEST_ARGS}
+      PARAMS "SYCL_TRIPLE=amdgcn-amd-amdhsa;SYCL_PLUGIN=hip"
+      DEPENDS ${SYCL_TEST_DEPS}
+      ${SYCL_TEST_EXCLUDE}
+    )
+
+    add_dependencies(check-sycl-hip check-sycl-hip-gcn)
+  else()
+    message(FATAL_ERROR "SYCL_BUILD_PI_HIP_PLATFORM must be set to either 'AMD' or 'NVIDIA' (set to: '${SYCL_BUILD_PI_HIP_PLATFORM}')")
+  endif()
+
+  add_dependencies(check-sycl check-sycl-hip)
+endif()
+
+if(SYCL_ENABLE_KERNEL_FUSION)
+  add_dependencies(check-sycl check-sycl-fusion)
+endif(SYCL_ENABLE_KERNEL_FUSION)

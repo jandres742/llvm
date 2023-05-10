@@ -64,11 +64,63 @@ private:
 
 template <typename T>
 static void CheckTeamType(SemanticsContext &context, const T &x) {
-  if (const auto *expr{GetExpr(x)}) {
+  if (const auto *expr{GetExpr(context, x)}) {
     if (!IsTeamType(evaluate::GetDerivedTypeSpec(expr->GetType()))) {
       context.Say(parser::FindSourceLocation(x), // C1114
           "Team value must be of type TEAM_TYPE from module ISO_FORTRAN_ENV"_err_en_US);
     }
+  }
+}
+
+static void CheckTeamStat(
+    SemanticsContext &context, const parser::ImageSelectorSpec::Stat &stat) {
+  const parser::Variable &var{stat.v.thing.thing.value()};
+  if (parser::GetCoindexedNamedObject(var)) {
+    context.Say(parser::FindSourceLocation(var), // C931
+        "Image selector STAT variable must not be a coindexed "
+        "object"_err_en_US);
+  }
+}
+
+static void CheckCoindexedStatOrErrmsg(SemanticsContext &context,
+    const parser::StatOrErrmsg &statOrErrmsg, const std::string &listName) {
+  auto CoindexedCheck{[&](const auto &statOrErrmsg) {
+    if (const auto *expr{GetExpr(context, statOrErrmsg)}) {
+      if (ExtractCoarrayRef(expr)) {
+        context.Say(parser::FindSourceLocation(statOrErrmsg), // C1173
+            "The stat-variable or errmsg-variable in a %s may not be a coindexed object"_err_en_US,
+            listName);
+      }
+    }
+  }};
+  std::visit(CoindexedCheck, statOrErrmsg.u);
+}
+
+static void CheckSyncStatList(
+    SemanticsContext &context, const std::list<parser::StatOrErrmsg> &list) {
+  bool gotStat{false}, gotMsg{false};
+
+  for (const parser::StatOrErrmsg &statOrErrmsg : list) {
+    common::visit(
+        common::visitors{
+            [&](const parser::StatVariable &stat) {
+              if (gotStat) {
+                context.Say( // C1172
+                    "The stat-variable in a sync-stat-list may not be repeated"_err_en_US);
+              }
+              gotStat = true;
+            },
+            [&](const parser::MsgVariable &errmsg) {
+              if (gotMsg) {
+                context.Say( // C1172
+                    "The errmsg-variable in a sync-stat-list may not be repeated"_err_en_US);
+              }
+              gotMsg = true;
+            },
+        },
+        statOrErrmsg.u);
+
+    CheckCoindexedStatOrErrmsg(context, statOrErrmsg, "sync-stat-list");
   }
 }
 
@@ -77,13 +129,69 @@ void CoarrayChecker::Leave(const parser::ChangeTeamStmt &x) {
   CheckTeamType(context_, std::get<parser::TeamValue>(x.t));
 }
 
-void CoarrayChecker::Leave(const parser::SyncTeamStmt &x) {
-  CheckTeamType(context_, std::get<parser::TeamValue>(x.t));
+void CoarrayChecker::Leave(const parser::SyncAllStmt &x) {
+  CheckSyncStatList(context_, x.v);
 }
 
-void CoarrayChecker::Leave(const parser::ImageSelectorSpec &x) {
-  if (const auto *team{std::get_if<parser::TeamValue>(&x.u)}) {
-    CheckTeamType(context_, *team);
+void CoarrayChecker::Leave(const parser::SyncImagesStmt &x) {
+  CheckSyncStatList(context_, std::get<std::list<parser::StatOrErrmsg>>(x.t));
+
+  const auto &imageSet{std::get<parser::SyncImagesStmt::ImageSet>(x.t)};
+  if (const auto *intExpr{std::get_if<parser::IntExpr>(&imageSet.u)}) {
+    if (const auto *expr{GetExpr(context_, *intExpr)}) {
+      if (expr->Rank() > 1) {
+        context_.Say(parser::FindSourceLocation(imageSet), // C1174
+            "An image-set that is an int-expr must be a scalar or a rank-one array"_err_en_US);
+      }
+    }
+  }
+}
+
+void CoarrayChecker::Leave(const parser::SyncMemoryStmt &x) {
+  CheckSyncStatList(context_, x.v);
+}
+
+void CoarrayChecker::Leave(const parser::SyncTeamStmt &x) {
+  CheckTeamType(context_, std::get<parser::TeamValue>(x.t));
+  CheckSyncStatList(context_, std::get<std::list<parser::StatOrErrmsg>>(x.t));
+}
+
+void CoarrayChecker::Leave(const parser::ImageSelector &imageSelector) {
+  haveStat_ = false;
+  haveTeam_ = false;
+  haveTeamNumber_ = false;
+  for (const auto &imageSelectorSpec :
+      std::get<std::list<parser::ImageSelectorSpec>>(imageSelector.t)) {
+    if (const auto *team{
+            std::get_if<parser::TeamValue>(&imageSelectorSpec.u)}) {
+      if (haveTeam_) {
+        context_.Say(parser::FindSourceLocation(imageSelectorSpec), // C929
+            "TEAM value can only be specified once"_err_en_US);
+      }
+      CheckTeamType(context_, *team);
+      haveTeam_ = true;
+    }
+    if (const auto *stat{std::get_if<parser::ImageSelectorSpec::Stat>(
+            &imageSelectorSpec.u)}) {
+      if (haveStat_) {
+        context_.Say(parser::FindSourceLocation(imageSelectorSpec), // C929
+            "STAT variable can only be specified once"_err_en_US);
+      }
+      CheckTeamStat(context_, *stat);
+      haveStat_ = true;
+    }
+    if (std::get_if<parser::ImageSelectorSpec::Team_Number>(
+            &imageSelectorSpec.u)) {
+      if (haveTeamNumber_) {
+        context_.Say(parser::FindSourceLocation(imageSelectorSpec), // C929
+            "TEAM_NUMBER value can only be specified once"_err_en_US);
+      }
+      haveTeamNumber_ = true;
+    }
+  }
+  if (haveTeam_ && haveTeamNumber_) {
+    context_.Say(parser::FindSourceLocation(imageSelector), // C930
+        "Cannot specify both TEAM and TEAM_NUMBER"_err_en_US);
   }
 }
 

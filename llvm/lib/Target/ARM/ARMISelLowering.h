@@ -20,6 +20,7 @@
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/ValueTypes.h"
@@ -29,7 +30,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/Support/CodeGen.h"
-#include "llvm/Support/MachineValueType.h"
+#include <optional>
 #include <utility>
 
 namespace llvm {
@@ -51,268 +52,330 @@ class VectorType;
 
   namespace ARMISD {
 
-    // ARM Specific DAG Nodes
-    enum NodeType : unsigned {
-      // Start the numbering where the builtin ops and target ops leave off.
-      FIRST_NUMBER = ISD::BUILTIN_OP_END,
+  // ARM Specific DAG Nodes
+  enum NodeType : unsigned {
+    // Start the numbering where the builtin ops and target ops leave off.
+    FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
-      Wrapper,      // Wrapper - A wrapper node for TargetConstantPool,
-                    // TargetExternalSymbol, and TargetGlobalAddress.
-      WrapperPIC,   // WrapperPIC - A wrapper node for TargetGlobalAddress in
-                    // PIC mode.
-      WrapperJT,    // WrapperJT - A wrapper node for TargetJumpTable
+    Wrapper,    // Wrapper - A wrapper node for TargetConstantPool,
+                // TargetExternalSymbol, and TargetGlobalAddress.
+    WrapperPIC, // WrapperPIC - A wrapper node for TargetGlobalAddress in
+                // PIC mode.
+    WrapperJT,  // WrapperJT - A wrapper node for TargetJumpTable
 
-      // Add pseudo op to model memcpy for struct byval.
-      COPY_STRUCT_BYVAL,
+    // Add pseudo op to model memcpy for struct byval.
+    COPY_STRUCT_BYVAL,
 
-      CALL,         // Function call.
-      CALL_PRED,    // Function call that's predicable.
-      CALL_NOLINK,  // Function call with branch not branch-and-link.
-      tSECALL,      // CMSE non-secure function call.
-      BRCOND,       // Conditional branch.
-      BR_JT,        // Jumptable branch.
-      BR2_JT,       // Jumptable branch (2 level - jumptable entry is a jump).
-      RET_FLAG,     // Return with a flag operand.
-      SERET_FLAG,   // CMSE Entry function return with a flag operand.
-      INTRET_FLAG,  // Interrupt return with an LR-offset and a flag operand.
+    CALL,        // Function call.
+    CALL_PRED,   // Function call that's predicable.
+    CALL_NOLINK, // Function call with branch not branch-and-link.
+    tSECALL,     // CMSE non-secure function call.
+    t2CALL_BTI,  // Thumb function call followed by BTI instruction.
+    BRCOND,      // Conditional branch.
+    BR_JT,       // Jumptable branch.
+    BR2_JT,      // Jumptable branch (2 level - jumptable entry is a jump).
+    RET_GLUE,    // Return with a flag operand.
+    SERET_GLUE,  // CMSE Entry function return with a flag operand.
+    INTRET_GLUE, // Interrupt return with an LR-offset and a flag operand.
 
-      PIC_ADD,      // Add with a PC operand and a PIC label.
+    PIC_ADD, // Add with a PC operand and a PIC label.
 
-      ASRL,         // MVE long arithmetic shift right.
-      LSRL,         // MVE long shift right.
-      LSLL,         // MVE long shift left.
+    ASRL, // MVE long arithmetic shift right.
+    LSRL, // MVE long shift right.
+    LSLL, // MVE long shift left.
 
-      CMP,          // ARM compare instructions.
-      CMN,          // ARM CMN instructions.
-      CMPZ,         // ARM compare that sets only Z flag.
-      CMPFP,        // ARM VFP compare instruction, sets FPSCR.
-      CMPFPE,       // ARM VFP signalling compare instruction, sets FPSCR.
-      CMPFPw0,      // ARM VFP compare against zero instruction, sets FPSCR.
-      CMPFPEw0,     // ARM VFP signalling compare against zero instruction, sets FPSCR.
-      FMSTAT,       // ARM fmstat instruction.
+    CMP,      // ARM compare instructions.
+    CMN,      // ARM CMN instructions.
+    CMPZ,     // ARM compare that sets only Z flag.
+    CMPFP,    // ARM VFP compare instruction, sets FPSCR.
+    CMPFPE,   // ARM VFP signalling compare instruction, sets FPSCR.
+    CMPFPw0,  // ARM VFP compare against zero instruction, sets FPSCR.
+    CMPFPEw0, // ARM VFP signalling compare against zero instruction, sets
+              // FPSCR.
+    FMSTAT,   // ARM fmstat instruction.
 
-      CMOV,         // ARM conditional move instructions.
-      SUBS,         // Flag-setting subtraction.
+    CMOV, // ARM conditional move instructions.
+    SUBS, // Flag-setting subtraction.
 
-      SSAT,         // Signed saturation
-      USAT,         // Unsigned saturation
+    SSAT, // Signed saturation
+    USAT, // Unsigned saturation
 
-      BCC_i64,
+    BCC_i64,
 
-      SRL_FLAG,     // V,Flag = srl_flag X -> srl X, 1 + save carry out.
-      SRA_FLAG,     // V,Flag = sra_flag X -> sra X, 1 + save carry out.
-      RRX,          // V = RRX X, Flag     -> srl X, 1 + shift in carry flag.
+    SRL_GLUE, // V,Flag = srl_flag X -> srl X, 1 + save carry out.
+    SRA_GLUE, // V,Flag = sra_flag X -> sra X, 1 + save carry out.
+    RRX,      // V = RRX X, Flag     -> srl X, 1 + shift in carry flag.
 
-      ADDC,         // Add with carry
-      ADDE,         // Add using carry
-      SUBC,         // Sub with carry
-      SUBE,         // Sub using carry
-      LSLS,         // Shift left producing carry
+    ADDC, // Add with carry
+    ADDE, // Add using carry
+    SUBC, // Sub with carry
+    SUBE, // Sub using carry
+    LSLS, // Shift left producing carry
 
-      VMOVRRD,      // double to two gprs.
-      VMOVDRR,      // Two gprs to double.
-      VMOVSR,       // move gpr to single, used for f32 literal constructed in a gpr
+    VMOVRRD, // double to two gprs.
+    VMOVDRR, // Two gprs to double.
+    VMOVSR,  // move gpr to single, used for f32 literal constructed in a gpr
 
-      EH_SJLJ_SETJMP,         // SjLj exception handling setjmp.
-      EH_SJLJ_LONGJMP,        // SjLj exception handling longjmp.
-      EH_SJLJ_SETUP_DISPATCH, // SjLj exception handling setup_dispatch.
+    EH_SJLJ_SETJMP,         // SjLj exception handling setjmp.
+    EH_SJLJ_LONGJMP,        // SjLj exception handling longjmp.
+    EH_SJLJ_SETUP_DISPATCH, // SjLj exception handling setup_dispatch.
 
-      TC_RETURN,    // Tail call return pseudo.
+    TC_RETURN, // Tail call return pseudo.
 
-      THREAD_POINTER,
+    THREAD_POINTER,
 
-      DYN_ALLOC,    // Dynamic allocation on the stack.
+    DYN_ALLOC, // Dynamic allocation on the stack.
 
-      MEMBARRIER_MCR, // Memory barrier (MCR)
+    MEMBARRIER_MCR, // Memory barrier (MCR)
 
-      PRELOAD,      // Preload
+    PRELOAD, // Preload
 
-      WIN__CHKSTK,  // Windows' __chkstk call to do stack probing.
-      WIN__DBZCHK,  // Windows' divide by zero check
+    WIN__CHKSTK, // Windows' __chkstk call to do stack probing.
+    WIN__DBZCHK, // Windows' divide by zero check
 
-      WLS,          // Low-overhead loops, While Loop Start
-      LOOP_DEC,     // Really a part of LE, performs the sub
-      LE,           // Low-overhead loops, Loop End
+    WLS, // Low-overhead loops, While Loop Start branch. See t2WhileLoopStart
+    WLSSETUP, // Setup for the iteration count of a WLS. See t2WhileLoopSetup.
+    LOOP_DEC, // Really a part of LE, performs the sub
+    LE,       // Low-overhead loops, Loop End
 
-      PREDICATE_CAST, // Predicate cast for MVE i1 types
-      VECTOR_REG_CAST, // Reinterpret the current contents of a vector register
+    PREDICATE_CAST,  // Predicate cast for MVE i1 types
+    VECTOR_REG_CAST, // Reinterpret the current contents of a vector register
 
-      VCMP,         // Vector compare.
-      VCMPZ,        // Vector compare to zero.
-      VTST,         // Vector test bits.
+    MVESEXT,  // Legalization aids for extending a vector into two/four vectors.
+    MVEZEXT,  //  or truncating two/four vectors into one. Eventually becomes
+    MVETRUNC, //  stack store/load sequence, if not optimized to anything else.
 
-      // Vector shift by vector
-      VSHLs,        // ...left/right by signed
-      VSHLu,        // ...left/right by unsigned
+    VCMP,  // Vector compare.
+    VCMPZ, // Vector compare to zero.
+    VTST,  // Vector test bits.
 
-      // Vector shift by immediate:
-      VSHLIMM,      // ...left
-      VSHRsIMM,     // ...right (signed)
-      VSHRuIMM,     // ...right (unsigned)
+    // Vector shift by vector
+    VSHLs, // ...left/right by signed
+    VSHLu, // ...left/right by unsigned
 
-      // Vector rounding shift by immediate:
-      VRSHRsIMM,    // ...right (signed)
-      VRSHRuIMM,    // ...right (unsigned)
-      VRSHRNIMM,    // ...right narrow
+    // Vector shift by immediate:
+    VSHLIMM,  // ...left
+    VSHRsIMM, // ...right (signed)
+    VSHRuIMM, // ...right (unsigned)
 
-      // Vector saturating shift by immediate:
-      VQSHLsIMM,    // ...left (signed)
-      VQSHLuIMM,    // ...left (unsigned)
-      VQSHLsuIMM,   // ...left (signed to unsigned)
-      VQSHRNsIMM,   // ...right narrow (signed)
-      VQSHRNuIMM,   // ...right narrow (unsigned)
-      VQSHRNsuIMM,  // ...right narrow (signed to unsigned)
+    // Vector rounding shift by immediate:
+    VRSHRsIMM, // ...right (signed)
+    VRSHRuIMM, // ...right (unsigned)
+    VRSHRNIMM, // ...right narrow
 
-      // Vector saturating rounding shift by immediate:
-      VQRSHRNsIMM,  // ...right narrow (signed)
-      VQRSHRNuIMM,  // ...right narrow (unsigned)
-      VQRSHRNsuIMM, // ...right narrow (signed to unsigned)
+    // Vector saturating shift by immediate:
+    VQSHLsIMM,   // ...left (signed)
+    VQSHLuIMM,   // ...left (unsigned)
+    VQSHLsuIMM,  // ...left (signed to unsigned)
+    VQSHRNsIMM,  // ...right narrow (signed)
+    VQSHRNuIMM,  // ...right narrow (unsigned)
+    VQSHRNsuIMM, // ...right narrow (signed to unsigned)
 
-      // Vector shift and insert:
-      VSLIIMM,      // ...left
-      VSRIIMM,      // ...right
+    // Vector saturating rounding shift by immediate:
+    VQRSHRNsIMM,  // ...right narrow (signed)
+    VQRSHRNuIMM,  // ...right narrow (unsigned)
+    VQRSHRNsuIMM, // ...right narrow (signed to unsigned)
 
-      // Vector get lane (VMOV scalar to ARM core register)
-      // (These are used for 8- and 16-bit element types only.)
-      VGETLANEu,    // zero-extend vector extract element
-      VGETLANEs,    // sign-extend vector extract element
+    // Vector shift and insert:
+    VSLIIMM, // ...left
+    VSRIIMM, // ...right
 
-      // Vector move immediate and move negated immediate:
-      VMOVIMM,
-      VMVNIMM,
+    // Vector get lane (VMOV scalar to ARM core register)
+    // (These are used for 8- and 16-bit element types only.)
+    VGETLANEu, // zero-extend vector extract element
+    VGETLANEs, // sign-extend vector extract element
 
-      // Vector move f32 immediate:
-      VMOVFPIMM,
+    // Vector move immediate and move negated immediate:
+    VMOVIMM,
+    VMVNIMM,
 
-      // Move H <-> R, clearing top 16 bits
-      VMOVrh,
-      VMOVhr,
+    // Vector move f32 immediate:
+    VMOVFPIMM,
 
-      // Vector duplicate:
-      VDUP,
-      VDUPLANE,
+    // Move H <-> R, clearing top 16 bits
+    VMOVrh,
+    VMOVhr,
 
-      // Vector shuffles:
-      VEXT,         // extract
-      VREV64,       // reverse elements within 64-bit doublewords
-      VREV32,       // reverse elements within 32-bit words
-      VREV16,       // reverse elements within 16-bit halfwords
-      VZIP,         // zip (interleave)
-      VUZP,         // unzip (deinterleave)
-      VTRN,         // transpose
-      VTBL1,        // 1-register shuffle with mask
-      VTBL2,        // 2-register shuffle with mask
-      VMOVN,        // MVE vmovn
+    // Vector duplicate:
+    VDUP,
+    VDUPLANE,
 
-      // MVE Saturating truncates
-      VQMOVNs,      // Vector (V) Saturating (Q) Move and Narrow (N), signed (s)
-      VQMOVNu,      // Vector (V) Saturating (Q) Move and Narrow (N), unsigned (u)
+    // Vector shuffles:
+    VEXT,   // extract
+    VREV64, // reverse elements within 64-bit doublewords
+    VREV32, // reverse elements within 32-bit words
+    VREV16, // reverse elements within 16-bit halfwords
+    VZIP,   // zip (interleave)
+    VUZP,   // unzip (deinterleave)
+    VTRN,   // transpose
+    VTBL1,  // 1-register shuffle with mask
+    VTBL2,  // 2-register shuffle with mask
+    VMOVN,  // MVE vmovn
 
-      // Vector multiply long:
-      VMULLs,       // ...signed
-      VMULLu,       // ...unsigned
+    // MVE Saturating truncates
+    VQMOVNs, // Vector (V) Saturating (Q) Move and Narrow (N), signed (s)
+    VQMOVNu, // Vector (V) Saturating (Q) Move and Narrow (N), unsigned (u)
 
-      // MVE reductions
-      VADDVs,       // sign- or zero-extend the elements of a vector to i32,
-      VADDVu,       //   add them all together, and return an i32 of their sum
-      VADDLVs,      // sign- or zero-extend elements to i64 and sum, returning
-      VADDLVu,      //   the low and high 32-bit halves of the sum
-      VADDLVAs,     // same as VADDLV[su] but also add an input accumulator
-      VADDLVAu,     //   provided as low and high halves
-      VADDLVps,     // same as VADDLVs but with a v4i1 predicate mask
-      VADDLVpu,     // same as VADDLVu but with a v4i1 predicate mask
-      VADDLVAps,    // same as VADDLVps but with a v4i1 predicate mask
-      VADDLVApu,    // same as VADDLVpu but with a v4i1 predicate mask
-      VMLAVs,
-      VMLAVu,
-      VMLALVs,
-      VMLALVu,
-      VMLALVAs,
-      VMLALVAu,
+    // MVE float <> half converts
+    VCVTN, // MVE vcvt f32 -> f16, truncating into either the bottom or top
+           // lanes
+    VCVTL, // MVE vcvt f16 -> f32, extending from either the bottom or top lanes
 
-      SMULWB,       // Signed multiply word by half word, bottom
-      SMULWT,       // Signed multiply word by half word, top
-      UMLAL,        // 64bit Unsigned Accumulate Multiply
-      SMLAL,        // 64bit Signed Accumulate Multiply
-      UMAAL,        // 64-bit Unsigned Accumulate Accumulate Multiply
-      SMLALBB,      // 64-bit signed accumulate multiply bottom, bottom 16
-      SMLALBT,      // 64-bit signed accumulate multiply bottom, top 16
-      SMLALTB,      // 64-bit signed accumulate multiply top, bottom 16
-      SMLALTT,      // 64-bit signed accumulate multiply top, top 16
-      SMLALD,       // Signed multiply accumulate long dual
-      SMLALDX,      // Signed multiply accumulate long dual exchange
-      SMLSLD,       // Signed multiply subtract long dual
-      SMLSLDX,      // Signed multiply subtract long dual exchange
-      SMMLAR,       // Signed multiply long, round and add
-      SMMLSR,       // Signed multiply long, subtract and round
+    // MVE VIDUP instruction, taking a start value and increment.
+    VIDUP,
 
-      // Single Lane QADD8 and QADD16. Only the bottom lane. That's what the b stands for.
-      QADD8b,
-      QSUB8b,
-      QADD16b,
-      QSUB16b,
+    // Vector multiply long:
+    VMULLs, // ...signed
+    VMULLu, // ...unsigned
 
-      // Operands of the standard BUILD_VECTOR node are not legalized, which
-      // is fine if BUILD_VECTORs are always lowered to shuffles or other
-      // operations, but for ARM some BUILD_VECTORs are legal as-is and their
-      // operands need to be legalized.  Define an ARM-specific version of
-      // BUILD_VECTOR for this purpose.
-      BUILD_VECTOR,
+    VQDMULH, // MVE vqdmulh instruction
 
-      // Bit-field insert
-      BFI,
+    // MVE reductions
+    VADDVs,  // sign- or zero-extend the elements of a vector to i32,
+    VADDVu,  //   add them all together, and return an i32 of their sum
+    VADDVps, // Same as VADDV[su] but with a v4i1 predicate mask
+    VADDVpu,
+    VADDLVs,  // sign- or zero-extend elements to i64 and sum, returning
+    VADDLVu,  //   the low and high 32-bit halves of the sum
+    VADDLVAs, // Same as VADDLV[su] but also add an input accumulator
+    VADDLVAu, //   provided as low and high halves
+    VADDLVps, // Same as VADDLV[su] but with a v4i1 predicate mask
+    VADDLVpu,
+    VADDLVAps, // Same as VADDLVp[su] but with a v4i1 predicate mask
+    VADDLVApu,
+    VMLAVs, // sign- or zero-extend the elements of two vectors to i32, multiply
+    VMLAVu, //   them and add the results together, returning an i32 of their sum
+    VMLAVps, // Same as VMLAV[su] with a v4i1 predicate mask
+    VMLAVpu,
+    VMLALVs,  // Same as VMLAV but with i64, returning the low and
+    VMLALVu,  //   high 32-bit halves of the sum
+    VMLALVps, // Same as VMLALV[su] with a v4i1 predicate mask
+    VMLALVpu,
+    VMLALVAs,  // Same as VMLALV but also add an input accumulator
+    VMLALVAu,  //   provided as low and high halves
+    VMLALVAps, // Same as VMLALVA[su] with a v4i1 predicate mask
+    VMLALVApu,
+    VMINVu, // Find minimum unsigned value of a vector and register
+    VMINVs, // Find minimum signed value of a vector and register
+    VMAXVu, // Find maximum unsigned value of a vector and register
+    VMAXVs, // Find maximum signed value of a vector and register
 
-      // Vector OR with immediate
-      VORRIMM,
-      // Vector AND with NOT of immediate
-      VBICIMM,
+    SMULWB,  // Signed multiply word by half word, bottom
+    SMULWT,  // Signed multiply word by half word, top
+    UMLAL,   // 64bit Unsigned Accumulate Multiply
+    SMLAL,   // 64bit Signed Accumulate Multiply
+    UMAAL,   // 64-bit Unsigned Accumulate Accumulate Multiply
+    SMLALBB, // 64-bit signed accumulate multiply bottom, bottom 16
+    SMLALBT, // 64-bit signed accumulate multiply bottom, top 16
+    SMLALTB, // 64-bit signed accumulate multiply top, bottom 16
+    SMLALTT, // 64-bit signed accumulate multiply top, top 16
+    SMLALD,  // Signed multiply accumulate long dual
+    SMLALDX, // Signed multiply accumulate long dual exchange
+    SMLSLD,  // Signed multiply subtract long dual
+    SMLSLDX, // Signed multiply subtract long dual exchange
+    SMMLAR,  // Signed multiply long, round and add
+    SMMLSR,  // Signed multiply long, subtract and round
 
-      // Vector bitwise select
-      VBSL,
+    // Single Lane QADD8 and QADD16. Only the bottom lane. That's what the b
+    // stands for.
+    QADD8b,
+    QSUB8b,
+    QADD16b,
+    QSUB16b,
+    UQADD8b,
+    UQSUB8b,
+    UQADD16b,
+    UQSUB16b,
 
-      // Pseudo-instruction representing a memory copy using ldm/stm
-      // instructions.
-      MEMCPY,
+    // Operands of the standard BUILD_VECTOR node are not legalized, which
+    // is fine if BUILD_VECTORs are always lowered to shuffles or other
+    // operations, but for ARM some BUILD_VECTORs are legal as-is and their
+    // operands need to be legalized.  Define an ARM-specific version of
+    // BUILD_VECTOR for this purpose.
+    BUILD_VECTOR,
 
-      // V8.1MMainline condition select
-      CSINV, // Conditional select invert.
-      CSNEG, // Conditional select negate.
-      CSINC, // Conditional select increment.
+    // Bit-field insert
+    BFI,
 
-      // Vector load N-element structure to all lanes:
-      VLD1DUP = ISD::FIRST_TARGET_MEMORY_OPCODE,
-      VLD2DUP,
-      VLD3DUP,
-      VLD4DUP,
+    // Vector OR with immediate
+    VORRIMM,
+    // Vector AND with NOT of immediate
+    VBICIMM,
 
-      // NEON loads with post-increment base updates:
-      VLD1_UPD,
-      VLD2_UPD,
-      VLD3_UPD,
-      VLD4_UPD,
-      VLD2LN_UPD,
-      VLD3LN_UPD,
-      VLD4LN_UPD,
-      VLD1DUP_UPD,
-      VLD2DUP_UPD,
-      VLD3DUP_UPD,
-      VLD4DUP_UPD,
+    // Pseudo vector bitwise select
+    VBSP,
 
-      // NEON stores with post-increment base updates:
-      VST1_UPD,
-      VST2_UPD,
-      VST3_UPD,
-      VST4_UPD,
-      VST2LN_UPD,
-      VST3LN_UPD,
-      VST4LN_UPD,
+    // Pseudo-instruction representing a memory copy using ldm/stm
+    // instructions.
+    MEMCPY,
 
-      // Load/Store of dual registers
-      LDRD,
-      STRD
-    };
+    // Pseudo-instruction representing a memory copy using a tail predicated
+    // loop
+    MEMCPYLOOP,
+    // Pseudo-instruction representing a memset using a tail predicated
+    // loop
+    MEMSETLOOP,
+
+    // V8.1MMainline condition select
+    CSINV, // Conditional select invert.
+    CSNEG, // Conditional select negate.
+    CSINC, // Conditional select increment.
+
+    // Vector load N-element structure to all lanes:
+    VLD1DUP = ISD::FIRST_TARGET_MEMORY_OPCODE,
+    VLD2DUP,
+    VLD3DUP,
+    VLD4DUP,
+
+    // NEON loads with post-increment base updates:
+    VLD1_UPD,
+    VLD2_UPD,
+    VLD3_UPD,
+    VLD4_UPD,
+    VLD2LN_UPD,
+    VLD3LN_UPD,
+    VLD4LN_UPD,
+    VLD1DUP_UPD,
+    VLD2DUP_UPD,
+    VLD3DUP_UPD,
+    VLD4DUP_UPD,
+    VLD1x2_UPD,
+    VLD1x3_UPD,
+    VLD1x4_UPD,
+
+    // NEON stores with post-increment base updates:
+    VST1_UPD,
+    VST2_UPD,
+    VST3_UPD,
+    VST4_UPD,
+    VST2LN_UPD,
+    VST3LN_UPD,
+    VST4LN_UPD,
+    VST1x2_UPD,
+    VST1x3_UPD,
+    VST1x4_UPD,
+
+    // Load/Store of dual registers
+    LDRD,
+    STRD
+  };
 
   } // end namespace ARMISD
+
+  namespace ARM {
+  /// Possible values of current rounding mode, which is specified in bits
+  /// 23:22 of FPSCR.
+  enum Rounding {
+    RN = 0,    // Round to Nearest
+    RP = 1,    // Round towards Plus infinity
+    RM = 2,    // Round towards Minus infinity
+    RZ = 3,    // Round towards Zero
+    rmMask = 3 // Bit mask selecting rounding mode
+  };
+
+  // Bit position of rounding mode bits in FPSCR.
+  const unsigned RoundingBitsPos = 22;
+  } // namespace ARM
 
   /// Define some predicates that are used for node matching.
   namespace ARM {
@@ -363,6 +426,8 @@ class VectorType;
     SDValue PerformBRCONDCombine(SDNode *N, SelectionDAG &DAG) const;
     SDValue PerformCMOVToBFICombine(SDNode *N, SelectionDAG &DAG) const;
     SDValue PerformIntrinsicCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+    SDValue PerformMVEExtCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+    SDValue PerformMVETruncCombine(SDNode *N, DAGCombinerInfo &DCI) const;
     SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
 
     bool SimplifyDemandedBitsForTargetNode(SDValue Op,
@@ -378,9 +443,9 @@ class VectorType;
     /// unaligned memory accesses of the specified type. Returns whether it
     /// is "fast" by reference in the second argument.
     bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AddrSpace,
-                                        unsigned Align,
+                                        Align Alignment,
                                         MachineMemOperand::Flags Flags,
-                                        bool *Fast) const override;
+                                        unsigned *Fast) const override;
 
     EVT getOptimalMemOpType(const MemOp &Op,
                             const AttributeList &FuncAttributes) const override;
@@ -404,13 +469,6 @@ class VectorType;
     bool isLegalAddressingMode(const DataLayout &DL, const AddrMode &AM,
                                Type *Ty, unsigned AS,
                                Instruction *I = nullptr) const override;
-
-    /// getScalingFactorCost - Return the cost of the scaling used in
-    /// addressing mode represented by AM.
-    /// If the AM is supported, the return value must be >= 0.
-    /// If the AM is not supported, the return value must be negative.
-    int getScalingFactorCost(const DataLayout &DL, const AddrMode &AM, Type *Ty,
-                             unsigned AS) const override;
 
     bool isLegalT2ScaledAddressingMode(const AddrMode &AM, EVT VT) const;
 
@@ -449,9 +507,9 @@ class VectorType;
                                        const SelectionDAG &DAG,
                                        unsigned Depth) const override;
 
-    bool targetShrinkDemandedConstant(SDValue Op, const APInt &Demanded,
+    bool targetShrinkDemandedConstant(SDValue Op, const APInt &DemandedBits,
+                                      const APInt &DemandedElts,
                                       TargetLoweringOpt &TLO) const override;
-
 
     bool ExpandInlineAsm(CallInst *CI) const override;
 
@@ -480,8 +538,6 @@ class VectorType;
     getInlineAsmMemConstraint(StringRef ConstraintCode) const override {
       if (ConstraintCode == "Q")
         return InlineAsm::Constraint_Q;
-      else if (ConstraintCode == "o")
-        return InlineAsm::Constraint_o;
       else if (ConstraintCode.size() == 2) {
         if (ConstraintCode[0] == 'U') {
           switch(ConstraintCode[1]) {
@@ -516,14 +572,8 @@ class VectorType;
     const TargetRegisterClass *
     getRegClassFor(MVT VT, bool isDivergent = false) const override;
 
-    /// Returns true if a cast between SrcAS and DestAS is a noop.
-    bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
-      // Addrspacecasts are always noops.
-      return true;
-    }
-
     bool shouldAlignPointerArgs(CallInst *CI, unsigned &MinSize,
-                                unsigned &PrefAlign) const override;
+                                Align &PrefAlign) const override;
 
     /// createFastISel - This method returns a target specific FastISel object,
     /// or null if the target does not support "fast" ISel.
@@ -531,6 +581,10 @@ class VectorType;
                              const TargetLibraryInfo *libInfo) const override;
 
     Sched::Preference getSchedulingPreference(SDNode *N) const override;
+
+    bool preferZeroCompareBranch() const override { return true; }
+
+    bool isMaskAndCmp0FoldingBeneficial(const Instruction &AndI) const override;
 
     bool
     isShuffleMaskLegal(ArrayRef<int> M, EVT VT) const override;
@@ -563,10 +617,15 @@ class VectorType;
       return TargetLowering::shouldFormOverflowOp(Opcode, VT, true);
     }
 
+    bool shouldReassociateReduction(unsigned Opc, EVT VT) const override {
+      return Opc != ISD::VECREDUCE_ADD;
+    }
+
     /// Returns true if an argument of type Ty needs to be passed in a
     /// contiguous block of registers in calling convention CallConv.
     bool functionArgumentNeedsConsecutiveRegisters(
-        Type *Ty, CallingConv::ID CallConv, bool isVarArg) const override;
+        Type *Ty, CallingConv::ID CallConv, bool isVarArg,
+        const DataLayout &DL) const override;
 
     /// If a physical register, this returns the register that receives the
     /// exception address on entry to an EH pad.
@@ -578,17 +637,18 @@ class VectorType;
     Register
     getExceptionSelectorRegister(const Constant *PersonalityFn) const override;
 
-    Instruction *makeDMB(IRBuilder<> &Builder, ARM_MB::MemBOpt Domain) const;
-    Value *emitLoadLinked(IRBuilder<> &Builder, Value *Addr,
+    Instruction *makeDMB(IRBuilderBase &Builder, ARM_MB::MemBOpt Domain) const;
+    Value *emitLoadLinked(IRBuilderBase &Builder, Type *ValueTy, Value *Addr,
                           AtomicOrdering Ord) const override;
-    Value *emitStoreConditional(IRBuilder<> &Builder, Value *Val,
-                                Value *Addr, AtomicOrdering Ord) const override;
+    Value *emitStoreConditional(IRBuilderBase &Builder, Value *Val, Value *Addr,
+                                AtomicOrdering Ord) const override;
 
-    void emitAtomicCmpXchgNoStoreLLBalance(IRBuilder<> &Builder) const override;
+    void
+    emitAtomicCmpXchgNoStoreLLBalance(IRBuilderBase &Builder) const override;
 
-    Instruction *emitLeadingFence(IRBuilder<> &Builder, Instruction *Inst,
+    Instruction *emitLeadingFence(IRBuilderBase &Builder, Instruction *Inst,
                                   AtomicOrdering Ord) const override;
-    Instruction *emitTrailingFence(IRBuilder<> &Builder, Instruction *Inst,
+    Instruction *emitTrailingFence(IRBuilderBase &Builder, Instruction *Inst,
                                    AtomicOrdering Ord) const override;
 
     unsigned getMaxSupportedInterleaveFactor() const override;
@@ -603,7 +663,8 @@ class VectorType;
     bool shouldInsertFencesForAtomic(const Instruction *I) const override;
     TargetLoweringBase::AtomicExpansionKind
     shouldExpandAtomicLoadInIR(LoadInst *LI) const override;
-    bool shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
+    TargetLoweringBase::AtomicExpansionKind
+    shouldExpandAtomicStoreInIR(StoreInst *SI) const override;
     TargetLoweringBase::AtomicExpansionKind
     shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const override;
     TargetLoweringBase::AtomicExpansionKind
@@ -619,13 +680,13 @@ class VectorType;
                                    unsigned &Cost) const override;
 
     bool canMergeStoresTo(unsigned AddressSpace, EVT MemVT,
-                          const SelectionDAG &DAG) const override {
+                          const MachineFunction &MF) const override {
       // Do not merge to larger than i32.
       return (MemVT.getSizeInBits() <= 32);
     }
 
-    bool isCheapToSpeculateCttz() const override;
-    bool isCheapToSpeculateCtlz() const override;
+    bool isCheapToSpeculateCttz(Type *Ty) const override;
+    bool isCheapToSpeculateCtlz(Type *Ty) const override;
 
     bool convertSetCCLogicToBitwiseLogic(EVT VT) const override {
       return VT.isScalarInteger();
@@ -639,7 +700,9 @@ class VectorType;
       return HasStandaloneRem;
     }
 
-    bool shouldExpandShift(SelectionDAG &DAG, SDNode *N) const override;
+    ShiftLegalizationStrategy
+    preferredShiftLegalizationStrategy(SelectionDAG &DAG, SDNode *N,
+                                       unsigned ExpansionFactor) const override;
 
     CCAssignFn *CCAssignFnForCall(CallingConv::ID CC, bool isVarArg) const;
     CCAssignFn *CCAssignFnForReturn(CallingConv::ID CC, bool isVarArg) const;
@@ -648,7 +711,11 @@ class VectorType;
     /// function checks the vector element type and the overall width of the
     /// vector.
     bool isLegalInterleavedAccessType(unsigned Factor, FixedVectorType *VecTy,
+                                      Align Alignment,
                                       const DataLayout &DL) const;
+
+    bool isMulAddWithConstProfitable(SDValue AddNode,
+                                     SDValue ConstNode) const override;
 
     bool alignLoopsWithOptSize() const override;
 
@@ -661,15 +728,31 @@ class VectorType;
 
     /// Return the correct alignment for the current calling convention.
     Align getABIAlignmentForCallingConv(Type *ArgTy,
-                                        DataLayout DL) const override;
+                                        const DataLayout &DL) const override;
 
     bool isDesirableToCommuteWithShift(const SDNode *N,
                                        CombineLevel Level) const override;
 
+    bool isDesirableToCommuteXorWithShift(const SDNode *N) const override;
+
     bool shouldFoldConstantShiftPairToMask(const SDNode *N,
                                            CombineLevel Level) const override;
 
+    bool shouldFoldSelectWithIdentityConstant(unsigned BinOpcode,
+                                              EVT VT) const override;
+
     bool preferIncOfAddToSubOfNot(EVT VT) const override;
+
+    bool shouldConvertFpToSat(unsigned Op, EVT FPVT, EVT VT) const override;
+
+    bool isComplexDeinterleavingSupported() const override;
+    bool isComplexDeinterleavingOperationSupported(
+        ComplexDeinterleavingOperation Operation, Type *Ty) const override;
+
+    Value *createComplexDeinterleavingIR(
+        Instruction *I, ComplexDeinterleavingOperation OperationType,
+        ComplexDeinterleavingRotation Rotation, Value *InputA, Value *InputB,
+        Value *Accumulator = nullptr) const override;
 
   protected:
     std::pair<const TargetRegisterClass *, uint8_t>
@@ -694,7 +777,7 @@ class VectorType;
 
     bool HasStandaloneRem = true;
 
-    void addTypeForNEON(MVT VT, MVT PromotedLdStVT, MVT PromotedBitwiseVT);
+    void addTypeForNEON(MVT VT, MVT PromotedLdStVT);
     void addDRTypeForNEON(MVT VT);
     void addQRTypeForNEON(MVT VT);
     std::pair<SDValue, SDValue> getARMXALUOOp(SDValue Op, SelectionDAG &DAG, SDValue &ARMcc) const;
@@ -706,7 +789,8 @@ class VectorType;
                           CCValAssign &VA, CCValAssign &NextVA,
                           SDValue &StackPtr,
                           SmallVectorImpl<SDValue> &MemOpChains,
-                          ISD::ArgFlagsTy Flags) const;
+                          bool IsTailCall,
+                          int SPDiff) const;
     SDValue GetF64FormalArgument(CCValAssign &VA, CCValAssign &NextVA,
                                  SDValue &Root, SelectionDAG &DAG,
                                  const SDLoc &dl) const;
@@ -715,10 +799,10 @@ class VectorType;
                                             bool isVarArg) const;
     CCAssignFn *CCAssignFnForNode(CallingConv::ID CC, bool Return,
                                   bool isVarArg) const;
-    SDValue LowerMemOpCallTo(SDValue Chain, SDValue StackPtr, SDValue Arg,
-                             const SDLoc &dl, SelectionDAG &DAG,
-                             const CCValAssign &VA,
-                             ISD::ArgFlagsTy Flags) const;
+    std::pair<SDValue, MachinePointerInfo>
+    computeAddrForCallArg(const SDLoc &dl, SelectionDAG &DAG,
+                          const CCValAssign &VA, SDValue StackPtr,
+                          bool IsTailCall, int SPDiff) const;
     SDValue LowerEH_SJLJ_SETJMP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEH_SJLJ_LONGJMP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerEH_SJLJ_SETUP_DISPATCH(SDValue Op, SelectionDAG &DAG) const;
@@ -753,7 +837,8 @@ class VectorType;
     SDValue LowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerShiftRightParts(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerShiftLeftParts(SDValue Op, SelectionDAG &DAG) const;
-    SDValue LowerFLT_ROUNDS_(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerGET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
+    SDValue LowerSET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerConstantFP(SDValue Op, SelectionDAG &DAG,
                             const ARMSubtarget *ST) const;
     SDValue LowerBUILD_VECTOR(SDValue Op, SelectionDAG &DAG,
@@ -764,6 +849,8 @@ class VectorType;
     SDValue LowerDIV_Windows(SDValue Op, SelectionDAG &DAG, bool Signed) const;
     void ExpandDIV_Windows(SDValue Op, SelectionDAG &DAG, bool Signed,
                            SmallVectorImpl<SDValue> &Results) const;
+    SDValue ExpandBITCAST(SDNode *N, SelectionDAG &DAG,
+                          const ARMSubtarget *Subtarget) const;
     SDValue LowerWindowsDIVLibCall(SDValue Op, SelectionDAG &DAG, bool Signed,
                                    SDValue &Chain) const;
     SDValue LowerREM(SDNode *N, SelectionDAG &DAG) const;
@@ -773,8 +860,7 @@ class VectorType;
     SDValue LowerFP_TO_INT(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerINT_TO_FP(SDValue Op, SelectionDAG &DAG) const;
     SDValue LowerFSETCC(SDValue Op, SelectionDAG &DAG) const;
-    void lowerABS(SDNode *N, SmallVectorImpl<SDValue> &Results,
-                  SelectionDAG &DAG) const;
+    SDValue LowerSPONENTRY(SDValue Op, SelectionDAG &DAG) const;
     void LowerLOAD(SDNode *N, SmallVectorImpl<SDValue> &Results,
                    SelectionDAG &DAG) const;
 
@@ -787,9 +873,14 @@ class VectorType;
     bool isFMAFasterThanFMulAndFAdd(const MachineFunction &MF,
                                     EVT VT) const override;
 
+    SDValue MoveToHPR(const SDLoc &dl, SelectionDAG &DAG, MVT LocVT, MVT ValVT,
+                      SDValue Val) const;
+    SDValue MoveFromHPR(const SDLoc &dl, SelectionDAG &DAG, MVT LocVT,
+                        MVT ValVT, SDValue Val) const;
+
     SDValue ReconstructShuffle(SDValue Op, SelectionDAG &DAG) const;
 
-    SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
+    SDValue LowerCallResult(SDValue Chain, SDValue InGlue,
                             CallingConv::ID CallConv, bool isVarArg,
                             const SmallVectorImpl<ISD::InputArg> &Ins,
                             const SDLoc &dl, SelectionDAG &DAG,
@@ -805,6 +896,16 @@ class VectorType;
     void insertCopiesSplitCSR(
       MachineBasicBlock *Entry,
       const SmallVectorImpl<MachineBasicBlock *> &Exits) const override;
+
+    bool splitValueIntoRegisterParts(
+        SelectionDAG & DAG, const SDLoc &DL, SDValue Val, SDValue *Parts,
+        unsigned NumParts, MVT PartVT, std::optional<CallingConv::ID> CC)
+        const override;
+
+    SDValue joinRegisterPartsIntoValue(
+        SelectionDAG & DAG, const SDLoc &DL, const SDValue *Parts,
+        unsigned NumParts, MVT PartVT, EVT ValueVT,
+        std::optional<CallingConv::ID> CC) const override;
 
     SDValue
     LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
@@ -826,7 +927,7 @@ class VectorType;
                       SmallVectorImpl<SDValue> &InVals) const override;
 
     /// HandleByVal - Target-specific cleanup for ByVal support.
-    void HandleByVal(CCState *, unsigned &, unsigned) const override;
+    void HandleByVal(CCState *, unsigned &, Align) const override;
 
     /// IsEligibleForTailCallOptimization - Check whether the call is eligible
     /// for tail call optimization. Targets which want to do tail call

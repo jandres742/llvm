@@ -182,7 +182,7 @@ public:
       return false;
     };
 
-    if (std::any_of(RD->field_begin(), RD->field_end(), IsTrickyField))
+    if (llvm::any_of(RD->fields(), IsTrickyField))
       return true;
     return false;
   }
@@ -193,6 +193,11 @@ public:
     CharUnits PaddingSum;
     CharUnits Offset = ASTContext.toCharUnitsFromBits(RL.getFieldOffset(0));
     for (const FieldDecl *FD : RD->fields()) {
+      // Skip field that is a subobject of zero size, marked with
+      // [[no_unique_address]] or an empty bitfield, because its address can be
+      // set the same as the other fields addresses.
+      if (FD->isZeroSize(ASTContext))
+        continue;
       // This checker only cares about the padded size of the
       // field, and not the data size. If the field is a record
       // with tail padding, then we won't put that number in our
@@ -248,8 +253,9 @@ public:
       FieldInfo RetVal;
       RetVal.Field = FD;
       auto &Ctx = FD->getASTContext();
-      std::tie(RetVal.Size, RetVal.Align) =
-          Ctx.getTypeInfoInChars(FD->getType());
+      auto Info = Ctx.getTypeInfoInChars(FD->getType());
+      RetVal.Size = FD->isZeroSize(Ctx) ? CharUnits::Zero() : Info.Width;
+      RetVal.Align = Info.Align;
       assert(llvm::isPowerOf2_64(RetVal.Align.getQuantity()));
       if (auto Max = FD->getMaxAlignment())
         RetVal.Align = std::max(Ctx.toCharUnitsFromBits(Max), RetVal.Align);
@@ -267,7 +273,7 @@ public:
     SmallVector<const FieldDecl *, 20> OptimalFieldsOrder;
     while (!Fields.empty()) {
       unsigned TrailingZeros =
-          llvm::countTrailingZeros((unsigned long long)NewOffset.getQuantity());
+          llvm::countr_zero((unsigned long long)NewOffset.getQuantity());
       // If NewOffset is zero, then countTrailingZeros will be 64. Shifting
       // 64 will overflow our unsigned long long. Shifting 63 will turn
       // our long long (and CharUnits internal type) negative. So shift 62.
@@ -326,10 +332,10 @@ public:
     }
 
     Os << " (" << BaselinePad.getQuantity() << " padding bytes, where "
-       << OptimalPad.getQuantity() << " is optimal). \n"
-       << "Optimal fields order: \n";
+       << OptimalPad.getQuantity() << " is optimal). "
+       << "Optimal fields order: ";
     for (const auto *FD : OptimalFieldsOrder)
-      Os << FD->getName() << ", \n";
+      Os << FD->getName() << ", ";
     Os << "consider reordering the fields or adding explicit padding "
           "members.";
 

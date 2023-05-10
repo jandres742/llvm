@@ -30,7 +30,7 @@ def do_check(args):
         args.test_suite,
         "-j", str(cpu_count)]
 
-    print(cmake_cmd)
+    print("[Cmake Command]: {}".format(" ".join(cmake_cmd)))
 
     env_tmp=os.environ
     env_tmp["LIT_ARGS"]="\"{}\"".format("-v")
@@ -49,7 +49,7 @@ def main():
     parser.add_argument("-d", "--base-branch", metavar="BASE_BRANCH", help="pull request base branch")
     parser.add_argument("-r", "--pr-number", metavar="PR_NUM", help="pull request number")
     parser.add_argument("-w", "--builder-dir", metavar="BUILDER_DIR",
-                        help="builder directory, which is the directory contains source and build directories")
+                        help="builder directory, which is the directory containing source and build directories")
     parser.add_argument("-s", "--src-dir", metavar="SRC_DIR", help="source directory")
     parser.add_argument("-o", "--obj-dir", metavar="OBJ_DIR", help="build directory")
     parser.add_argument("-t", "--test-suite", metavar="TEST_SUITE", default="check-all", help="check-xxx target")

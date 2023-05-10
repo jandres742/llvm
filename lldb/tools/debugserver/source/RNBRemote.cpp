@@ -14,13 +14,14 @@
 
 #include <bsm/audit.h>
 #include <bsm/audit_session.h>
-#include <errno.h>
+#include <cerrno>
+#include <csignal>
 #include <libproc.h>
 #include <mach-o/loader.h>
 #include <mach/exception_types.h>
+#include <mach/mach_vm.h>
 #include <mach/task_info.h>
 #include <pwd.h>
-#include <signal.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -34,8 +35,6 @@
 #include "DNBDataRef.h"
 #include "DNBLog.h"
 #include "DNBThreadResumeActions.h"
-#include "DarwinLogCollector.h"
-#include "DarwinLogEvent.h"
 #include "JSON.h"
 #include "JSONGenerator.h"
 #include "JSONGenerator.h"
@@ -49,6 +48,7 @@
 #include <compression.h>
 
 #include <TargetConditionals.h>
+#include <algorithm>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -61,8 +61,6 @@
 
 static const std::string OS_LOG_EVENTS_KEY_NAME("events");
 static const std::string JSON_ASYNC_TYPE_KEY_NAME("type");
-static const DarwinLogEventVector::size_type DARWIN_LOG_MAX_EVENTS_PER_PACKET =
-    10;
 
 // std::iostream formatting macros
 #define RAW_HEXBASE std::setfill('0') << std::hex << std::right
@@ -148,8 +146,6 @@ uint64_t decode_uint64(const char *p, int base, char **end = nullptr,
 extern void ASLLogCallback(void *baton, uint32_t flags, const char *format,
                            va_list args);
 
-#if defined(__APPLE__) &&                                                      \
-    (__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ >= 101000)
 // from System.framework/Versions/B/PrivateHeaders/sys/codesign.h
 extern "C" {
 #define CS_OPS_STATUS 0       /* return status */
@@ -164,7 +160,6 @@ typedef uint32_t csr_config_t;
 #define CSR_ALLOW_TASK_FOR_PID (1 << 2)
 int csr_check(csr_config_t mask);
 }
-#endif
 
 RNBRemote::RNBRemote()
     : m_ctx(), m_comm(), m_arch(), m_continue_thread(-1), m_thread(-1),
@@ -399,9 +394,12 @@ void RNBRemote::CreatePacketTable() {
                      "'G', 'p', and 'P') support having the thread ID appended "
                      "to the end of the command"));
   t.push_back(Packet(set_logging_mode, &RNBRemote::HandlePacket_QSetLogging,
-                     NULL, "QSetLogging:", "Check if register packets ('g', "
-                                           "'G', 'p', and 'P' support having "
-                                           "the thread ID prefix"));
+                     NULL, "QSetLogging:", "Turn on log channels in debugserver"));
+  t.push_back(Packet(set_ignored_exceptions, &RNBRemote::HandlePacket_QSetIgnoredExceptions,
+                     NULL, "QSetIgnoredExceptions:", "Set the exception types "
+                                           "debugserver won't wait for, allowing "
+                                           "them to be turned into the equivalent "
+                                           "BSD signals by the normal means."));
   t.push_back(Packet(
       set_max_packet_size, &RNBRemote::HandlePacket_QSetMaxPacketSize, NULL,
       "QSetMaxPacketSize:",
@@ -501,15 +499,10 @@ void RNBRemote::CreatePacketTable() {
       "Test the maximum speed at which packet can be sent/received."));
   t.push_back(Packet(query_transfer, &RNBRemote::HandlePacket_qXfer, NULL,
                      "qXfer:", "Support the qXfer packet."));
-  t.push_back(
-      Packet(query_supported_async_json_packets,
-             &RNBRemote::HandlePacket_qStructuredDataPlugins, NULL,
-             "qStructuredDataPlugins",
-             "Query for the structured data plugins supported by the remote."));
-  t.push_back(
-      Packet(configure_darwin_log, &RNBRemote::HandlePacket_QConfigureDarwinLog,
-             NULL, "QConfigureDarwinLog:",
-             "Configure the DarwinLog structured data plugin support."));
+  t.push_back(Packet(json_query_dyld_process_state,
+                     &RNBRemote::HandlePacket_jGetDyldProcessState, NULL,
+                     "jGetDyldProcessState",
+                     "Query the process state from dyld."));
 }
 
 void RNBRemote::FlushSTDIO() {
@@ -545,77 +538,6 @@ void RNBRemote::SendAsyncProfileData() {
       }
     } while (count > 0);
   }
-}
-
-void RNBRemote::SendAsyncDarwinLogData() {
-  DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): enter", __FUNCTION__);
-
-  if (!m_ctx.HasValidProcessID()) {
-    DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): ignoring due to"
-                                     "invalid process id",
-                     __FUNCTION__);
-    return;
-  }
-
-  nub_process_t pid = m_ctx.ProcessID();
-  DarwinLogEventVector::size_type entry_count = 0;
-
-  // NOTE: the current looping structure here does nothing
-  // to guarantee that we can send off async packets faster
-  // than we generate them.  It will keep sending as long
-  // as there's data to send.
-  do {
-    DarwinLogEventVector events = DNBProcessGetAvailableDarwinLogEvents(pid);
-    entry_count = events.size();
-
-    DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): outer loop enter",
-                     __FUNCTION__);
-
-    for (DarwinLogEventVector::size_type base_entry = 0;
-         base_entry < entry_count;
-         base_entry += DARWIN_LOG_MAX_EVENTS_PER_PACKET) {
-      DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): inner loop enter",
-                       __FUNCTION__);
-
-      // We limit the total number of entries we pack
-      // into a single JSON async packet just so it
-      // doesn't get too large.
-      JSONGenerator::Dictionary async_dictionary;
-
-      // Specify the type of the JSON async data we're sending.
-      async_dictionary.AddStringItem(JSON_ASYNC_TYPE_KEY_NAME, "DarwinLog");
-
-      // Create an array entry in the dictionary to hold all
-      // the events going in this packet.
-      JSONGenerator::ArraySP events_array(new JSONGenerator::Array());
-      async_dictionary.AddItem(OS_LOG_EVENTS_KEY_NAME, events_array);
-
-      // We bundle up to DARWIN_LOG_MAX_EVENTS_PER_PACKET events in
-      // a single packet.
-      const auto inner_loop_bound =
-          std::min(base_entry + DARWIN_LOG_MAX_EVENTS_PER_PACKET, entry_count);
-      for (DarwinLogEventVector::size_type i = base_entry; i < inner_loop_bound;
-           ++i) {
-        DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): adding "
-                                         "entry index %lu to the JSON packet",
-                         __FUNCTION__, i);
-        events_array->AddItem(events[i]);
-      }
-
-      // Send off the packet.
-      DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): sending JSON "
-                                       "packet, %lu entries remain",
-                       __FUNCTION__, entry_count - inner_loop_bound);
-      SendAsyncJSONPacket(async_dictionary);
-    }
-
-    DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): outer loop exit",
-                     __FUNCTION__);
-
-  } while (entry_count > 0);
-
-  DNBLogThreadedIf(LOG_DARWIN_LOG, "RNBRemote::%s(): exit",
-                   __PRETTY_FUNCTION__);
 }
 
 rnb_err_t RNBRemote::SendHexEncodedBytePacket(const char *header,
@@ -667,9 +589,8 @@ RNBRemote::SendAsyncJSONPacket(const JSONGenerator::Dictionary &dictionary) {
   // of these coming out at the wrong time (i.e. when the remote side
   // is not waiting for a process control completion response).
   stream << "JSON-async:";
-  dictionary.Dump(stream);
-  const std::string payload = binary_encode_string(stream.str());
-  return SendPacket(payload);
+  dictionary.DumpBinaryEscaped(stream);
+  return SendPacket(stream.str());
 }
 
 // Given a std::string packet contents to send, possibly encode/compress it.
@@ -1216,6 +1137,7 @@ void RNBRemote::StopReadRemoteDataThread() {
   PThreadEvent &events = m_ctx.Events();
   if ((events.GetEventBits() & RNBContext::event_read_thread_running) ==
       RNBContext::event_read_thread_running) {
+    DNBLog("debugserver about to shut down packet communications to lldb.");
     m_comm.Disconnect(true);
     struct timespec timeout_abstime;
     DNBTimer::OffsetTimeOfDay(&timeout_abstime, 2, 0);
@@ -2295,6 +2217,37 @@ rnb_err_t set_logging(const char *p) {
   return rnb_success;
 }
 
+rnb_err_t RNBRemote::HandlePacket_QSetIgnoredExceptions(const char *p) {
+  // We can't set the ignored exceptions if we have a running process:
+  if (m_ctx.HasValidProcessID())
+    return SendPacket("E35");
+
+  p += sizeof("QSetIgnoredExceptions:") - 1;
+  bool success = true;
+  while(1) {
+    const char *bar  = strchr(p, '|');
+    if (bar == nullptr) {
+      success = m_ctx.AddIgnoredException(p);
+      break;
+    } else {
+      std::string exc_str(p, bar - p);
+      if (exc_str.empty()) {
+        success = false;
+        break;
+      }
+
+      success = m_ctx.AddIgnoredException(exc_str.c_str());
+      if (!success)
+        break;
+      p = bar + 1;
+    }
+  }
+  if (success)
+    return SendPacket("OK");
+  else
+    return SendPacket("E36");
+}
+
 rnb_err_t RNBRemote::HandlePacket_QThreadSuffixSupported(const char *p) {
   m_thread_suffix_supported = true;
   return SendPacket("OK");
@@ -2434,89 +2387,6 @@ rnb_err_t RNBRemote::HandlePacket_QSetDetachOnError(const char *p) {
   }
 
   m_ctx.SetDetachOnError(should_detach);
-  return SendPacket("OK");
-}
-
-rnb_err_t RNBRemote::HandlePacket_qStructuredDataPlugins(const char *p) {
-  // We'll return a JSON array of supported packet types.
-  // The type is significant.  For each of the supported
-  // packet types that have been enabled, there will be a
-  // 'J' async packet sent to the client with payload data.
-  // This payload data will be a JSON dictionary, and the
-  // top level dictionary will contain a string field with
-  // its value set to the relevant packet type from this list.
-  JSONGenerator::Array supported_json_packets;
-
-  // Check for DarwinLog (libtrace os_log/activity support).
-  if (DarwinLogCollector::IsSupported())
-    supported_json_packets.AddItem(
-        JSONGenerator::StringSP(new JSONGenerator::String("DarwinLog")));
-
-  // Send back the array.
-  std::ostringstream stream;
-  supported_json_packets.Dump(stream);
-  return SendPacket(stream.str());
-}
-
-rnb_err_t RNBRemote::HandlePacket_QConfigureDarwinLog(const char *p) {
-  if (!DarwinLogCollector::IsSupported()) {
-    // We should never have been given this request.
-    return SendPacket("E89");
-  }
-
-  // Ensure we have a process.  We expect a separate configure request for
-  // each process launched/attached.
-  const nub_process_t pid = m_ctx.ProcessID();
-  if (pid == INVALID_NUB_PROCESS)
-    return SendPacket("E94");
-
-  // Get the configuration dictionary.
-  p += strlen("QConfigureDarwinLog:");
-
-  // The configuration dictionary is binary encoded.
-  std::vector<uint8_t> unescaped_config_data = decode_binary_data(p, -1);
-  std::string unescaped_config_string((const char *)&unescaped_config_data[0],
-                                      unescaped_config_data.size());
-  DNBLogThreadedIf(LOG_DARWIN_LOG, "DarwinLog: received config data: \"%s\"",
-                   unescaped_config_string.c_str());
-  auto configuration_sp =
-      JSONParser(unescaped_config_string.c_str()).ParseJSONValue();
-  if (!configuration_sp) {
-    // Malformed request - we require configuration data
-    // indicating whether we're enabling or disabling.
-    return SendPacket("E90");
-  }
-
-  if (!JSONObject::classof(configuration_sp.get())) {
-    // Configuration data is not of the right type.
-    return SendPacket("E91");
-  }
-  JSONObject &config_dict = *static_cast<JSONObject *>(configuration_sp.get());
-
-  // Check if we're enabling or disabling.
-  auto enabled_sp = config_dict.GetObject("enabled");
-  if (!enabled_sp) {
-    // Missing required "enabled" field.
-    return SendPacket("E92");
-  }
-  if (!JSONTrue::classof(enabled_sp.get()) &&
-      !JSONFalse::classof(enabled_sp.get())) {
-    // Should be a boolean type, but wasn't.
-    return SendPacket("E93");
-  }
-  const bool enabling = JSONTrue::classof(enabled_sp.get());
-
-  // TODO - handle other configuration parameters here.
-
-  // Shut down any active activity stream for the process.
-  DarwinLogCollector::CancelStreamForProcess(pid);
-
-  if (enabling) {
-    // Look up the procecess.
-    if (!DarwinLogCollector::StartCollectingForProcess(pid, config_dict))
-      return SendPacket("E95");
-  }
-
   return SendPacket("OK");
 }
 
@@ -2960,6 +2830,7 @@ rnb_err_t RNBRemote::SendStopReplyPacketForThread(nub_thread_t tid) {
           ostrm << std::hex << "jstopinfo:";
           std::ostringstream json_strm;
           threads_info_sp->Dump(json_strm);
+          threads_info_sp->Clear();
           append_hexified_string(ostrm, json_strm.str());
           ostrm << ';';
         }
@@ -2970,11 +2841,21 @@ rnb_err_t RNBRemote::SendStopReplyPacketForThread(nub_thread_t tid) {
       InitializeRegisters();
 
     if (g_reg_entries != NULL) {
+      auto interesting_regset = [](int regset) -> bool {
+#if defined(__arm64__) || defined(__aarch64__)
+        // GPRs and exception registers, helpful for debugging
+        // from packet logs.
+        return regset == 1 || regset == 3;
+#else
+        return regset == 1;
+#endif
+      };
+
       DNBRegisterValue reg_value;
       for (uint32_t reg = 0; reg < g_num_reg_entries; reg++) {
         // Expedite all registers in the first register set that aren't
         // contained in other registers
-        if (g_reg_entries[reg].nub_info.set == 1 &&
+        if (interesting_regset(g_reg_entries[reg].nub_info.set) &&
             g_reg_entries[reg].nub_info.value_regs == NULL) {
           if (!DNBThreadGetRegisterValueByID(
                   pid, tid, g_reg_entries[reg].nub_info.set,
@@ -2989,6 +2870,51 @@ rnb_err_t RNBRemote::SendStopReplyPacketForThread(nub_thread_t tid) {
 
     if (did_exec) {
       ostrm << "reason:exec;";
+    } else if (tid_stop_info.reason == eStopTypeWatchpoint) {
+      ostrm << "reason:watchpoint;";
+      ostrm << "description:";
+      std::ostringstream wp_desc;
+      wp_desc << tid_stop_info.details.watchpoint.addr << " ";
+      wp_desc << tid_stop_info.details.watchpoint.hw_idx << " ";
+      wp_desc << tid_stop_info.details.watchpoint.mach_exception_addr;
+      append_hexified_string(ostrm, wp_desc.str());
+      ostrm << ";";
+
+      // Temporarily, print all of the fields we've parsed out of the ESR
+      // on a watchpoint exception.  Normally this is something we would
+      // log for LOG_WATCHPOINTS only, but this was implemented from the
+      // ARM ARM spec and hasn't been exercised on real hardware that can
+      // set most of these fields yet.  It may need to be debugged in the
+      // future, so include all of these purely for debugging by reading
+      // the packet logs; lldb isn't using these fields.
+      ostrm << "watch_addr:" << std::hex
+            << tid_stop_info.details.watchpoint.addr << ";";
+      ostrm << "me_watch_addr:" << std::hex
+            << tid_stop_info.details.watchpoint.mach_exception_addr << ";";
+      ostrm << "wp_hw_idx:" << std::hex
+            << tid_stop_info.details.watchpoint.hw_idx << ";";
+      if (tid_stop_info.details.watchpoint.esr_fields_set) {
+        ostrm << "wp_esr_iss:" << std::hex
+              << tid_stop_info.details.watchpoint.esr_fields.iss << ";";
+        ostrm << "wp_esr_wpt:" << std::hex
+              << tid_stop_info.details.watchpoint.esr_fields.wpt << ";";
+        ostrm << "wp_esr_wptv:"
+              << tid_stop_info.details.watchpoint.esr_fields.wptv << ";";
+        ostrm << "wp_esr_wpf:"
+              << tid_stop_info.details.watchpoint.esr_fields.wpf << ";";
+        ostrm << "wp_esr_fnp:"
+              << tid_stop_info.details.watchpoint.esr_fields.fnp << ";";
+        ostrm << "wp_esr_vncr:"
+              << tid_stop_info.details.watchpoint.esr_fields.vncr << ";";
+        ostrm << "wp_esr_fnv:"
+              << tid_stop_info.details.watchpoint.esr_fields.fnv << ";";
+        ostrm << "wp_esr_cm:" << tid_stop_info.details.watchpoint.esr_fields.cm
+              << ";";
+        ostrm << "wp_esr_wnr:"
+              << tid_stop_info.details.watchpoint.esr_fields.wnr << ";";
+        ostrm << "wp_esr_dfsc:" << std::hex
+              << tid_stop_info.details.watchpoint.esr_fields.dfsc << ";";
+      }
     } else if (tid_stop_info.details.exception.type) {
       ostrm << "metype:" << std::hex << tid_stop_info.details.exception.type
             << ';';
@@ -3066,7 +2992,7 @@ rnb_err_t RNBRemote::HandlePacket_last_signal(const char *unused) {
                  WEXITSTATUS(pid_status));
       else if (WIFSIGNALED(pid_status))
         snprintf(pid_exited_packet, sizeof(pid_exited_packet), "X%02x",
-                 WEXITSTATUS(pid_status));
+                 WTERMSIG(pid_status));
       else if (WIFSTOPPED(pid_status))
         snprintf(pid_exited_packet, sizeof(pid_exited_packet), "S%02x",
                  WSTOPSIG(pid_status));
@@ -3630,7 +3556,8 @@ rnb_err_t RNBRemote::HandlePacket_qSupported(const char *p) {
   uint32_t max_packet_size = 128 * 1024; // 128KBytes is a reasonable max packet
                                          // size--debugger can always use less
   char buf[256];
-  snprintf(buf, sizeof(buf), "qXfer:features:read+;PacketSize=%x;qEcho+",
+  snprintf(buf, sizeof(buf),
+           "qXfer:features:read+;PacketSize=%x;qEcho+;native-signals+",
            max_packet_size);
 
   bool enable_compression = false;
@@ -3925,10 +3852,12 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
         return HandlePacket_ILLFORMED(
             __FILE__, __LINE__, p, "non-hex char in arg on 'vAttachWait' pkt");
       }
+      DNBLog("[LaunchAttach] START %d vAttachWait for process name '%s'",
+             getpid(), attach_name.c_str());
       const bool ignore_existing = true;
       attach_pid = DNBProcessAttachWait(
-          attach_name.c_str(), m_ctx.LaunchFlavor(), ignore_existing, NULL,
-          1000, err_str, sizeof(err_str), RNBRemoteShouldCancelCallback);
+          &m_ctx, attach_name.c_str(), ignore_existing, NULL, 1000, err_str,
+          sizeof(err_str), RNBRemoteShouldCancelCallback);
 
     } else if (strstr(p, "vAttachOrWait;") == p) {
       p += strlen("vAttachOrWait;");
@@ -3938,9 +3867,12 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
             "non-hex char in arg on 'vAttachOrWait' pkt");
       }
       const bool ignore_existing = false;
+      DNBLog("[LaunchAttach] START %d vAttachWaitOrWait for process name "
+             "'%s'",
+             getpid(), attach_name.c_str());
       attach_pid = DNBProcessAttachWait(
-          attach_name.c_str(), m_ctx.LaunchFlavor(), ignore_existing, NULL,
-          1000, err_str, sizeof(err_str), RNBRemoteShouldCancelCallback);
+          &m_ctx, attach_name.c_str(), ignore_existing, NULL, 1000, err_str,
+          sizeof(err_str), RNBRemoteShouldCancelCallback);
     } else if (strstr(p, "vAttachName;") == p) {
       p += strlen("vAttachName;");
       if (!GetProcessNameFrom_vAttach(p, attach_name)) {
@@ -3948,8 +3880,12 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
             __FILE__, __LINE__, p, "non-hex char in arg on 'vAttachName' pkt");
       }
 
-      attach_pid = DNBProcessAttachByName(attach_name.c_str(), NULL, err_str,
-                                          sizeof(err_str));
+      DNBLog("[LaunchAttach] START %d vAttachName attach to process name "
+             "'%s'",
+             getpid(), attach_name.c_str());
+      attach_pid = DNBProcessAttachByName(attach_name.c_str(), NULL,
+                                          Context().GetIgnoredExceptions(), 
+                                          err_str, sizeof(err_str));
 
     } else if (strstr(p, "vAttach;") == p) {
       p += strlen("vAttach;");
@@ -3960,20 +3896,36 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
         // Wait at most 30 second for attach
         struct timespec attach_timeout_abstime;
         DNBTimer::OffsetTimeOfDay(&attach_timeout_abstime, 30, 0);
+        DNBLog("[LaunchAttach] START %d vAttach to pid %d", getpid(),
+               pid_attaching_to);
         attach_pid = DNBProcessAttach(pid_attaching_to, &attach_timeout_abstime,
+                                      m_ctx.GetIgnoredExceptions(), 
                                       err_str, sizeof(err_str));
       }
     } else {
       return HandlePacket_UNIMPLEMENTED(p);
     }
 
+    if (attach_pid == INVALID_NUB_PROCESS_ARCH) {
+      DNBLogError("debugserver is x86_64 binary running in translation, attach "
+                  "failed.");
+      std::string return_message = "E96;";
+      return_message +=
+          cstring_to_asciihex_string("debugserver is x86_64 binary running in "
+                                     "translation, attach failed.");
+      SendPacket(return_message.c_str());
+      return rnb_err;
+    }
+
     if (attach_pid != INVALID_NUB_PROCESS) {
       if (m_ctx.ProcessID() != attach_pid)
         m_ctx.SetProcessID(attach_pid);
+      DNBLog("Successfully attached to pid %d", attach_pid);
       // Send a stop reply packet to indicate we successfully attached!
       NotifyThatProcessStopped();
       return rnb_success;
     } else {
+      DNBLogError("Attach failed");
       m_ctx.LaunchStatus().SetError(-1, DNBError::Generic);
       if (err_str[0])
         m_ctx.LaunchStatus().SetErrorString(err_str);
@@ -3995,14 +3947,14 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
           DNBLogError("Tried to attach to pid that doesn't exist");
           std::string return_message = "E96;";
           return_message += cstring_to_asciihex_string("no such process.");
-          return SendPacket(return_message.c_str());
+          return SendPacket(return_message);
         }
         if (process_is_already_being_debugged (pid_attaching_to)) {
           DNBLogError("Tried to attach to process already being debugged");
           std::string return_message = "E96;";
           return_message += cstring_to_asciihex_string("tried to attach to "
                                            "process already being debugged");
-          return SendPacket(return_message.c_str());
+          return SendPacket(return_message);
         }
         uid_t my_uid, process_uid;
         if (attach_failed_due_to_uid_mismatch (pid_attaching_to, 
@@ -4023,7 +3975,7 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
                             + my_username + "' and process is running "
                             "as user '" + process_username + "'";
           return_message += cstring_to_asciihex_string(msg.c_str());
-          return SendPacket(return_message.c_str());
+          return SendPacket(return_message);
         }
         if (!login_session_has_gui_access() && !developer_mode_enabled()) {
           DNBLogError("Developer mode is not enabled and this is a "
@@ -4033,7 +3985,7 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
                                            "not enabled on this machine "
                                            "and this is a non-interactive "
                                            "debug session.");
-          return SendPacket(return_message.c_str());
+          return SendPacket(return_message);
         }
         if (!login_session_has_gui_access()) {
           DNBLogError("This is a non-interactive session");
@@ -4042,7 +3994,7 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
                                            "non-interactive debug session, "
                                            "cannot get permission to debug "
                                            "processes.");
-          return SendPacket(return_message.c_str());
+          return SendPacket(return_message);
         }
       }
 
@@ -4052,8 +4004,8 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
         if (strcmp (err_str, "unable to start the exception thread") == 0) {
           snprintf (err_str, sizeof (err_str) - 1,
                     "Not allowed to attach to process.  Look in the console "
-                    "messages (Console.app), near the debugserver entries "
-                    "when the attached failed.  The subsystem that denied "
+                    "messages (Console.app), near the debugserver entries, "
+                    "when the attach failed.  The subsystem that denied "
                     "the attach permission will likely have logged an "
                     "informative message about why it was denied.");
           err_str[sizeof (err_str) - 1] = '\0';
@@ -4065,7 +4017,7 @@ rnb_err_t RNBRemote::HandlePacket_v(const char *p) {
       std::string default_return_msg = "E96;";
       default_return_msg += cstring_to_asciihex_string 
                               (error_explainer.c_str());
-      SendPacket (default_return_msg.c_str());
+      SendPacket (default_return_msg);
       DNBLogError("Attach failed: \"%s\".", err_str);
       return rnb_err;
     }
@@ -4422,7 +4374,7 @@ rnb_err_t RNBRemote::HandlePacket_MemoryRegionInfo(const char *p) {
         __FILE__, __LINE__, p, "Invalid address in qMemoryRegionInfo packet");
   }
 
-  DNBRegionInfo region_info = {0, 0, 0};
+  DNBRegionInfo region_info;
   DNBProcessMemoryRegionInfo(m_ctx.ProcessID(), address, &region_info);
   std::ostringstream ostrm;
 
@@ -4442,6 +4394,27 @@ rnb_err_t RNBRemote::HandlePacket_MemoryRegionInfo(const char *p) {
     if (region_info.permissions & eMemoryPermissionsExecutable)
       ostrm << 'x';
     ostrm << ';';
+
+    ostrm << "dirty-pages:";
+    if (region_info.dirty_pages.size() > 0) {
+      bool first = true;
+      for (nub_addr_t addr : region_info.dirty_pages) {
+        if (!first)
+          ostrm << ",";
+        first = false;
+        ostrm << std::hex << addr;
+      }
+    }
+    ostrm << ";";
+    if (!region_info.vm_types.empty()) {
+      ostrm << "type:";
+      for (size_t i = 0; i < region_info.vm_types.size(); i++) {
+        if (i)
+          ostrm << ",";
+        ostrm << region_info.vm_types[i];
+      }
+      ostrm << ";";
+    }
   }
   return SendPacket(ostrm.str());
 }
@@ -4468,7 +4441,7 @@ rnb_err_t RNBRemote::HandlePacket_GetProfileData(const char *p) {
 
   std::string data = DNBProcessGetProfileData(pid, scan_type);
   if (!data.empty()) {
-    return SendPacket(data.c_str());
+    return SendPacket(data);
   } else {
     return SendPacket("OK");
   }
@@ -4564,7 +4537,8 @@ rnb_err_t RNBRemote::HandlePacket_qSpeedTest(const char *p) {
         __FILE__, __LINE__, p,
         "Didn't find response_size value at right offset");
   else if (*end == ';') {
-    static char g_data[4 * 1024 * 1024 + 16] = "data:";
+    static char g_data[4 * 1024 * 1024 + 16];
+    strcpy(g_data, "data:");
     memset(g_data + 5, 'a', response_size);
     g_data[response_size + 5] = '\0';
     return SendPacket(g_data);
@@ -4644,10 +4618,14 @@ rnb_err_t RNBRemote::HandlePacket_C(const char *p) {
 // Detach from gdb.
 rnb_err_t RNBRemote::HandlePacket_D(const char *p) {
   if (m_ctx.HasValidProcessID()) {
+    DNBLog("detaching from pid %u due to D packet", m_ctx.ProcessID());
     if (DNBProcessDetach(m_ctx.ProcessID()))
       SendPacket("OK");
-    else
+    else {
+      DNBLog("error while detaching from pid %u due to D packet",
+             m_ctx.ProcessID());
       SendPacket("E");
+    }
   } else {
     SendPacket("E");
   }
@@ -4862,24 +4840,6 @@ static bool GetHostCPUType(uint32_t &cputype, uint32_t &cpusubtype,
   return g_host_cputype != 0;
 }
 
-static bool GetAddressingBits(uint32_t &addressing_bits) {
-  static uint32_t g_addressing_bits = 0;
-  static bool g_tried_addressing_bits_syscall = false;
-  if (g_tried_addressing_bits_syscall == false) {
-    size_t len = sizeof (uint32_t);
-    if (::sysctlbyname("machdep.virtual_address_size",
-          &g_addressing_bits, &len, NULL, 0) != 0) {
-      g_addressing_bits = 0;
-    }
-  }
-  g_tried_addressing_bits_syscall = true;
-  addressing_bits = g_addressing_bits;
-  if (addressing_bits > 0)
-    return true;
-  else
-    return false;
-}
-
 rnb_err_t RNBRemote::HandlePacket_qHostInfo(const char *p) {
   std::ostringstream strm;
 
@@ -4893,7 +4853,7 @@ rnb_err_t RNBRemote::HandlePacket_qHostInfo(const char *p) {
   }
 
   uint32_t addressing_bits = 0;
-  if (GetAddressingBits(addressing_bits)) {
+  if (DNBGetAddressingBits(addressing_bits)) {
     strm << "addressing_bits:" << std::dec << addressing_bits << ';';
   }
 
@@ -4908,6 +4868,8 @@ rnb_err_t RNBRemote::HandlePacket_qHostInfo(const char *p) {
     strm << "ostype:watchos;";
 #elif defined(TARGET_OS_BRIDGE) && TARGET_OS_BRIDGE == 1
     strm << "ostype:bridgeos;";
+#elif defined(TARGET_OS_OSX) && TARGET_OS_OSX == 1
+    strm << "ostype:macosx;";
 #else
     strm << "ostype:ios;";
 #endif
@@ -4960,6 +4922,8 @@ rnb_err_t RNBRemote::HandlePacket_qHostInfo(const char *p) {
 #if defined(TARGET_OS_WATCH) && TARGET_OS_WATCH == 1
   strm << "default_packet_timeout:10;";
 #endif
+
+  strm << "vm-page-size:" << std::dec << vm_page_size << ";";
 
   return SendPacket(strm.str());
 }
@@ -5034,7 +4998,6 @@ void GenerateTargetXMLRegister(std::ostringstream &s, const uint32_t reg_num,
   const char *gdb_type = default_gdb_type;
   const char *default_lldb_format = "hex";
   const char *lldb_format = default_lldb_format;
-  const char *lldb_set = NULL;
 
   switch (reg.nub_info.type) {
   case Uint:
@@ -5102,8 +5065,6 @@ void GenerateTargetXMLRegister(std::ostringstream &s, const uint32_t reg_num,
     lldb_format = "vector-uint128";
     break;
   };
-  if (reg_set_info && reg.nub_info.set < num_reg_sets)
-    lldb_set = reg_set_info[reg.nub_info.set].name;
 
   uint32_t indent = 2;
 
@@ -5354,6 +5315,22 @@ rnb_err_t RNBRemote::HandlePacket_qGDBServerVersion(const char *p) {
   return SendPacket(strm.str());
 }
 
+rnb_err_t RNBRemote::HandlePacket_jGetDyldProcessState(const char *p) {
+  const nub_process_t pid = m_ctx.ProcessID();
+  if (pid == INVALID_NUB_PROCESS)
+    return SendPacket("E87");
+
+  JSONGenerator::ObjectSP dyld_state_sp = DNBGetDyldProcessState(pid);
+  if (dyld_state_sp) {
+    std::ostringstream strm;
+    dyld_state_sp->DumpBinaryEscaped(strm);
+    dyld_state_sp->Clear();
+    if (strm.str().size() > 0)
+      return SendPacket(strm.str());
+  }
+  return SendPacket("E88");
+}
+
 // A helper function that retrieves a single integer value from
 // a one-level-deep JSON dictionary of key-value pairs.  e.g.
 // jThreadExtendedInfo:{"plo_pthread_tsd_base_address_offset":0,"plo_pthread_tsd_base_offset":224,"plo_pthread_tsd_entry_size":8,"thread":144305}]
@@ -5553,6 +5530,20 @@ RNBRemote::GetJSONThreadsInfo(bool threads_with_valid_stop_info_only) {
           }
           break;
 
+        case eStopTypeWatchpoint: {
+          reason_value = "watchpoint";
+          thread_dict_sp->AddIntegerItem("watchpoint",
+                                         tid_stop_info.details.watchpoint.addr);
+          thread_dict_sp->AddIntegerItem(
+              "me_watch_addr",
+              tid_stop_info.details.watchpoint.mach_exception_addr);
+          std::ostringstream wp_desc;
+          wp_desc << tid_stop_info.details.watchpoint.addr << " ";
+          wp_desc << tid_stop_info.details.watchpoint.hw_idx << " ";
+          wp_desc << tid_stop_info.details.watchpoint.mach_exception_addr;
+          thread_dict_sp->AddStringItem("description", wp_desc.str());
+        } break;
+
         case eStopTypeExec:
           reason_value = "exec";
           break;
@@ -5671,10 +5662,10 @@ rnb_err_t RNBRemote::HandlePacket_jThreadsInfo(const char *p) {
 
     if (threads_info_sp) {
       std::ostringstream strm;
-      threads_info_sp->Dump(strm);
-      std::string binary_packet = binary_encode_string(strm.str());
-      if (!binary_packet.empty())
-        return SendPacket(binary_packet.c_str());
+      threads_info_sp->DumpBinaryEscaped(strm);
+      threads_info_sp->Clear();
+      if (strm.str().size() > 0)
+        return SendPacket(strm.str());
     }
   }
   return SendPacket("E85");
@@ -5995,10 +5986,10 @@ RNBRemote::HandlePacket_jGetLoadedDynamicLibrariesInfos(const char *p) {
 
     if (json_sp.get()) {
       std::ostringstream json_str;
-      json_sp->Dump(json_str);
+      json_sp->DumpBinaryEscaped(json_str);
+      json_sp->Clear();
       if (json_str.str().size() > 0) {
-        std::string json_str_quoted = binary_encode_string(json_str.str());
-        return SendPacket(json_str_quoted.c_str());
+        return SendPacket(json_str.str());
       } else {
         SendPacket("E84");
       }
@@ -6028,10 +6019,10 @@ rnb_err_t RNBRemote::HandlePacket_jGetSharedCacheInfo(const char *p) {
 
     if (json_sp.get()) {
       std::ostringstream json_str;
-      json_sp->Dump(json_str);
+      json_sp->DumpBinaryEscaped(json_str);
+      json_sp->Clear();
       if (json_str.str().size() > 0) {
-        std::string json_str_quoted = binary_encode_string(json_str.str());
-        return SendPacket(json_str_quoted.c_str());
+        return SendPacket(json_str.str());
       } else {
         SendPacket("E86");
       }
@@ -6231,7 +6222,7 @@ rnb_err_t RNBRemote::HandlePacket_qSymbol(const char *command) {
     reply << "qSymbol:";
     for (size_t i = 0; i < symbol_name.size(); ++i)
       reply << RAWHEX8(symbol_name[i]);
-    return SendPacket(reply.str().c_str());
+    return SendPacket(reply.str());
   }
 }
 
@@ -6336,7 +6327,7 @@ rnb_err_t RNBRemote::HandlePacket_qProcessInfo(const char *p) {
   if (addr_size > 0) {
     rep << "ptrsize:" << std::dec << addr_size << ';';
 
-#if (defined(__x86_64__) || defined(__i386__))
+#if defined(TARGET_OS_OSX) && TARGET_OS_OSX == 1
     // Try and get the OS type by looking at the load commands in the main
     // executable and looking for a LC_VERSION_MIN load command. This is the
     // most reliable way to determine the "ostype" value when on desktop.
@@ -6354,19 +6345,20 @@ rnb_err_t RNBRemote::HandlePacket_qProcessInfo(const char *p) {
             DNBProcessMemoryRead(pid, load_command_addr, sizeof(lc), &lc);
         (void)bytes_read;
 
+        bool is_executable = true;
         uint32_t major_version, minor_version, patch_version;
-        auto *platform = DNBGetDeploymentInfo(pid, lc, load_command_addr,
-                                              major_version, minor_version,
-                                              patch_version);
+        std::optional<std::string> platform =
+            DNBGetDeploymentInfo(pid, is_executable, lc, load_command_addr,
+                                 major_version, minor_version, patch_version);
         if (platform) {
           os_handled = true;
-          rep << "ostype:" << platform << ";";
+          rep << "ostype:" << *platform << ";";
           break;
         }
         load_command_addr = load_command_addr + lc.cmdsize;
       }
     }
-#endif // when compiling this on x86 targets
+#endif // TARGET_OS_OSX
   }
 
   // If we weren't able to find the OS in a LC_VERSION_MIN load command, try
@@ -6383,6 +6375,8 @@ rnb_err_t RNBRemote::HandlePacket_qProcessInfo(const char *p) {
       rep << "ostype:watchos;";
 #elif defined(TARGET_OS_BRIDGE) && TARGET_OS_BRIDGE == 1
       rep << "ostype:bridgeos;";
+#elif defined(TARGET_OS_OSX) && TARGET_OS_OSX == 1
+      rep << "ostype:macosx;";
 #else
       rep << "ostype:ios;";
 #endif

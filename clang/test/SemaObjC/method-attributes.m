@@ -37,7 +37,6 @@
 
 
 // rdar://10529259
-#define IBAction void)__attribute__((ibaction)
 
 @interface Foo 
 - (void)doSomething1:(id)sender;
@@ -98,4 +97,19 @@ __attribute__((cdecl))  // expected-warning {{'cdecl' attribute only applies to 
 - (id) IMethod :(int) count, ...  __attribute__((section("__TEXT,foo")));
 
 + (void) CMethod : (id) Obj __attribute__((section("__TEXT,fee")));
+@end
+
+// Section type conflicts between methods/properties and global variables
+const int global1 __attribute__((section("seg1,sec1"))) = 10; // expected-note {{declared here}} expected-note {{declared here}} expected-note {{declared here}}
+int global2 __attribute__((section("seg2,sec2"))) = 10;       // expected-note {{declared here}} expected-note {{declared here}} expected-note {{declared here}}
+
+@interface section_conflicts : NSObject
+@property int p1 __attribute__((section("seg1,sec1"))); // expected-error {{'p1' causes a section type conflict with 'global1'}}
+@property int p2 __attribute__((section("seg2,sec2"))); // expected-error {{'p2' causes a section type conflict with 'global2'}}
+
+- (void)imethod1 __attribute__((section("seg1,sec1"))); // expected-error {{'imethod1' causes a section type conflict with 'global1'}}
+- (void)imethod2 __attribute__((section("seg2,sec2"))); // expected-error {{'imethod2' causes a section type conflict with 'global2'}}
+
++ (void)cmethod1:(id)Obj __attribute__((section("seg1,sec1"))); // expected-error {{'cmethod1:' causes a section type conflict with 'global1'}}
++ (void)cmethod2:(id)Obj __attribute__((section("seg2,sec2"))); // expected-error {{'cmethod2:' causes a section type conflict with 'global2'}}
 @end

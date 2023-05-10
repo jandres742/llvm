@@ -33,7 +33,8 @@ void ento::printCheckerHelp(raw_ostream &out, CompilerInstance &CI) {
       *CI.getAnalyzerOpts(), CI.getLangOpts(), CI.getDiagnostics(),
       CI.getFrontendOpts().Plugins);
 
-  CheckerMgr->getCheckerRegistry().printCheckerWithDescList(out);
+  CheckerMgr->getCheckerRegistryData().printCheckerWithDescList(
+      *CI.getAnalyzerOpts(), out);
 }
 
 void ento::printEnabledCheckerList(raw_ostream &out, CompilerInstance &CI) {
@@ -43,7 +44,7 @@ void ento::printEnabledCheckerList(raw_ostream &out, CompilerInstance &CI) {
       *CI.getAnalyzerOpts(), CI.getLangOpts(), CI.getDiagnostics(),
       CI.getFrontendOpts().Plugins);
 
-  CheckerMgr->getCheckerRegistry().printEnabledCheckerList(out);
+  CheckerMgr->getCheckerRegistryData().printEnabledCheckerList(out);
 }
 
 void ento::printCheckerConfigList(raw_ostream &out, CompilerInstance &CI) {
@@ -52,7 +53,8 @@ void ento::printCheckerConfigList(raw_ostream &out, CompilerInstance &CI) {
       *CI.getAnalyzerOpts(), CI.getLangOpts(), CI.getDiagnostics(),
       CI.getFrontendOpts().Plugins);
 
-  CheckerMgr->getCheckerRegistry().printCheckerOptionList(out);
+  CheckerMgr->getCheckerRegistryData().printCheckerOptionList(
+      *CI.getAnalyzerOpts(), out);
 }
 
 void ento::printAnalyzerConfigList(raw_ostream &out) {
@@ -99,10 +101,7 @@ OPTIONS:
 #undef ANALYZER_OPTION_DEPENDS_ON_USER_MODE
   };
 
-  llvm::sort(PrintableOptions, [](const OptionAndDescriptionTy &LHS,
-                                  const OptionAndDescriptionTy &RHS) {
-    return LHS.first < RHS.first;
-  });
+  llvm::sort(PrintableOptions, llvm::less_first());
 
   for (const auto &Pair : PrintableOptions) {
     AnalyzerOptions::printFormattedEntry(out, Pair, /*InitialPad*/ 2,

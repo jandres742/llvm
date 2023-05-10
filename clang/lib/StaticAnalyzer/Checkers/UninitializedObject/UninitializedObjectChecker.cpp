@@ -57,19 +57,17 @@ class RegularField final : public FieldNode {
 public:
   RegularField(const FieldRegion *FR) : FieldNode(FR) {}
 
-  virtual void printNoteMsg(llvm::raw_ostream &Out) const override {
+  void printNoteMsg(llvm::raw_ostream &Out) const override {
     Out << "uninitialized field ";
   }
 
-  virtual void printPrefix(llvm::raw_ostream &Out) const override {}
+  void printPrefix(llvm::raw_ostream &Out) const override {}
 
-  virtual void printNode(llvm::raw_ostream &Out) const override {
+  void printNode(llvm::raw_ostream &Out) const override {
     Out << getVariableName(getDecl());
   }
 
-  virtual void printSeparator(llvm::raw_ostream &Out) const override {
-    Out << '.';
-  }
+  void printSeparator(llvm::raw_ostream &Out) const override { Out << '.'; }
 };
 
 /// Represents that the FieldNode that comes after this is declared in a base
@@ -85,20 +83,20 @@ public:
     assert(T->getAsCXXRecordDecl());
   }
 
-  virtual void printNoteMsg(llvm::raw_ostream &Out) const override {
+  void printNoteMsg(llvm::raw_ostream &Out) const override {
     llvm_unreachable("This node can never be the final node in the "
                      "fieldchain!");
   }
 
-  virtual void printPrefix(llvm::raw_ostream &Out) const override {}
+  void printPrefix(llvm::raw_ostream &Out) const override {}
 
-  virtual void printNode(llvm::raw_ostream &Out) const override {
+  void printNode(llvm::raw_ostream &Out) const override {
     Out << BaseClassT->getAsCXXRecordDecl()->getName() << "::";
   }
 
-  virtual void printSeparator(llvm::raw_ostream &Out) const override {}
+  void printSeparator(llvm::raw_ostream &Out) const override {}
 
-  virtual bool isBase() const override { return true; }
+  bool isBase() const override { return true; }
 };
 
 } // end of anonymous namespace
@@ -330,7 +328,7 @@ bool FindUninitializedFields::isNonUnionUninit(const TypedValueRegion *R,
 
     SVal V = State->getSVal(FieldVal);
 
-    if (isDereferencableType(T) || V.getAs<nonloc::LocAsInteger>()) {
+    if (isDereferencableType(T) || isa<nonloc::LocAsInteger>(V)) {
       if (isDereferencableUninit(FR, LocalChain))
         ContainsUninitField = true;
       continue;
@@ -541,14 +539,11 @@ static bool hasUnguardedAccess(const FieldDecl *FD, ProgramStateRef State) {
   auto FieldAccessM = memberExpr(hasDeclaration(equalsNode(FD))).bind("access");
 
   auto AssertLikeM = callExpr(callee(functionDecl(
-      anyOf(hasName("exit"), hasName("panic"), hasName("error"),
-            hasName("Assert"), hasName("assert"), hasName("ziperr"),
-            hasName("assfail"), hasName("db_error"), hasName("__assert"),
-            hasName("__assert2"), hasName("_wassert"), hasName("__assert_rtn"),
-            hasName("__assert_fail"), hasName("dtrace_assfail"),
-            hasName("yy_fatal_error"), hasName("_XCAssertionFailureHandler"),
-            hasName("_DTAssertionFailureHandler"),
-            hasName("_TSAssertionFailureHandler")))));
+      hasAnyName("exit", "panic", "error", "Assert", "assert", "ziperr",
+                 "assfail", "db_error", "__assert", "__assert2", "_wassert",
+                 "__assert_rtn", "__assert_fail", "dtrace_assfail",
+                 "yy_fatal_error", "_XCAssertionFailureHandler",
+                 "_DTAssertionFailureHandler", "_TSAssertionFailureHandler"))));
 
   auto NoReturnFuncM = callExpr(callee(functionDecl(isNoReturn())));
 

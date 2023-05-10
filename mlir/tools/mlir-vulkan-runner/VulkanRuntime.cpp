@@ -15,7 +15,7 @@
 
 #include <chrono>
 #include <cstring>
-// TODO(antiagainst): It's generally bad to access stdout/stderr in a library.
+// TODO: It's generally bad to access stdout/stderr in a library.
 // Figure out a better way for error reporting.
 #include <iomanip>
 #include <iostream>
@@ -104,7 +104,7 @@ LogicalResult VulkanRuntime::countDeviceMemorySize() {
 }
 
 LogicalResult VulkanRuntime::initRuntime() {
-  if (!resourceData.size()) {
+  if (resourceData.empty()) {
     std::cerr << "Vulkan runtime needs at least one resource";
     return failure();
   }
@@ -148,7 +148,9 @@ LogicalResult VulkanRuntime::destroy() {
     // For each descriptor binding.
     for (auto &memoryBuffer : deviceMemoryBuffers) {
       vkFreeMemory(device, memoryBuffer.deviceMemory, nullptr);
-      vkDestroyBuffer(device, memoryBuffer.buffer, nullptr);
+      vkFreeMemory(device, memoryBuffer.hostMemory, nullptr);
+      vkDestroyBuffer(device, memoryBuffer.hostBuffer, nullptr);
+      vkDestroyBuffer(device, memoryBuffer.deviceBuffer, nullptr);
     }
   }
 
@@ -180,6 +182,9 @@ LogicalResult VulkanRuntime::run() {
 
   // Get working queue.
   vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+
+  if (failed(copyResource(/*deviceToHost=*/false)))
+    return failure();
 
   auto submitStart = std::chrono::high_resolution_clock::now();
   // Submit command buffer into the queue.
@@ -229,22 +234,34 @@ LogicalResult VulkanRuntime::createInstance() {
   VkInstanceCreateInfo instanceCreateInfo = {};
   instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   instanceCreateInfo.pNext = nullptr;
-  instanceCreateInfo.flags = 0;
   instanceCreateInfo.pApplicationInfo = &applicationInfo;
   instanceCreateInfo.enabledLayerCount = 0;
-  instanceCreateInfo.ppEnabledLayerNames = 0;
-  instanceCreateInfo.enabledExtensionCount = 0;
-  instanceCreateInfo.ppEnabledExtensionNames = 0;
+  instanceCreateInfo.ppEnabledLayerNames = nullptr;
 
-  RETURN_ON_VULKAN_ERROR(vkCreateInstance(&instanceCreateInfo, 0, &instance),
-                         "vkCreateInstance");
+  std::vector<const char *> extNames;
+#if defined(__APPLE__)
+  // enumerate MoltenVK for Vulkan 1.0
+  instanceCreateInfo.flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+  // add KHR portability instance extensions
+  extNames.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+  extNames.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#else
+  instanceCreateInfo.flags = 0;
+#endif // __APPLE__
+  instanceCreateInfo.enabledExtensionCount =
+      static_cast<uint32_t>(extNames.size());
+  instanceCreateInfo.ppEnabledExtensionNames = extNames.data();
+
+  RETURN_ON_VULKAN_ERROR(
+      vkCreateInstance(&instanceCreateInfo, nullptr, &instance),
+      "vkCreateInstance");
   return success();
 }
 
 LogicalResult VulkanRuntime::createDevice() {
   uint32_t physicalDeviceCount = 0;
   RETURN_ON_VULKAN_ERROR(
-      vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, 0),
+      vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr),
       "vkEnumeratePhysicalDevices");
 
   std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
@@ -256,7 +273,7 @@ LogicalResult VulkanRuntime::createDevice() {
   RETURN_ON_VULKAN_ERROR(physicalDeviceCount ? VK_SUCCESS : VK_INCOMPLETE,
                          "physicalDeviceCount");
 
-  // TODO(denis0x0D): find the best device.
+  // TODO: find the best device.
   physicalDevice = physicalDevices.front();
   if (failed(getBestComputeQueue()))
     return failure();
@@ -284,7 +301,7 @@ LogicalResult VulkanRuntime::createDevice() {
   deviceCreateInfo.pEnabledFeatures = nullptr;
 
   RETURN_ON_VULKAN_ERROR(
-      vkCreateDevice(physicalDevice, &deviceCreateInfo, 0, &device),
+      vkCreateDevice(physicalDevice, &deviceCreateInfo, nullptr, &device),
       "vkCreateDevice");
 
   VkPhysicalDeviceMemoryProperties properties = {};
@@ -304,21 +321,36 @@ LogicalResult VulkanRuntime::createDevice() {
          properties.memoryTypes[i].propertyFlags) &&
         (memorySize <=
          properties.memoryHeaps[properties.memoryTypes[i].heapIndex].size)) {
-      memoryTypeIndex = i;
+      hostMemoryTypeIndex = i;
       break;
     }
   }
 
-  RETURN_ON_VULKAN_ERROR(memoryTypeIndex == VK_MAX_MEMORY_TYPES ? VK_INCOMPLETE
-                                                                : VK_SUCCESS,
+  // Find memory type memory type with VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT to be
+  // used on the device. This will allow better performance access for GPU with
+  // on device memory.
+  for (uint32_t i = 0, e = properties.memoryTypeCount; i < e; ++i) {
+    if ((VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT &
+         properties.memoryTypes[i].propertyFlags) &&
+        (memorySize <=
+         properties.memoryHeaps[properties.memoryTypes[i].heapIndex].size)) {
+      deviceMemoryTypeIndex = i;
+      break;
+    }
+  }
+
+  RETURN_ON_VULKAN_ERROR((hostMemoryTypeIndex == VK_MAX_MEMORY_TYPES ||
+                          deviceMemoryTypeIndex == VK_MAX_MEMORY_TYPES)
+                             ? VK_INCOMPLETE
+                             : VK_SUCCESS,
                          "invalid memoryTypeIndex");
   return success();
 }
 
 LogicalResult VulkanRuntime::getBestComputeQueue() {
   uint32_t queueFamilyPropertiesCount = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice,
-                                           &queueFamilyPropertiesCount, 0);
+  vkGetPhysicalDeviceQueueFamilyProperties(
+      physicalDevice, &queueFamilyPropertiesCount, nullptr);
 
   std::vector<VkQueueFamilyProperties> familyProperties(
       queueFamilyPropertiesCount);
@@ -401,48 +433,62 @@ LogicalResult VulkanRuntime::createMemoryBuffers() {
       // Set descriptor type for the specific device memory buffer.
       memoryBuffer.descriptorType = descriptorType;
       const auto bufferSize = resourceDataBindingPair.second.size;
-
+      memoryBuffer.bufferSize = bufferSize;
       // Specify memory allocation info.
       VkMemoryAllocateInfo memoryAllocateInfo = {};
       memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
       memoryAllocateInfo.pNext = nullptr;
       memoryAllocateInfo.allocationSize = bufferSize;
-      memoryAllocateInfo.memoryTypeIndex = memoryTypeIndex;
+      memoryAllocateInfo.memoryTypeIndex = hostMemoryTypeIndex;
 
       // Allocate device memory.
-      RETURN_ON_VULKAN_ERROR(vkAllocateMemory(device, &memoryAllocateInfo, 0,
+      RETURN_ON_VULKAN_ERROR(vkAllocateMemory(device, &memoryAllocateInfo,
+                                              nullptr,
+                                              &memoryBuffer.hostMemory),
+                             "vkAllocateMemory");
+      memoryAllocateInfo.memoryTypeIndex = deviceMemoryTypeIndex;
+      RETURN_ON_VULKAN_ERROR(vkAllocateMemory(device, &memoryAllocateInfo,
+                                              nullptr,
                                               &memoryBuffer.deviceMemory),
                              "vkAllocateMemory");
       void *payload;
-      RETURN_ON_VULKAN_ERROR(vkMapMemory(device, memoryBuffer.deviceMemory, 0,
+      RETURN_ON_VULKAN_ERROR(vkMapMemory(device, memoryBuffer.hostMemory, 0,
                                          bufferSize, 0,
                                          reinterpret_cast<void **>(&payload)),
                              "vkMapMemory");
 
       // Copy host memory into the mapped area.
       std::memcpy(payload, resourceDataBindingPair.second.ptr, bufferSize);
-      vkUnmapMemory(device, memoryBuffer.deviceMemory);
+      vkUnmapMemory(device, memoryBuffer.hostMemory);
 
       VkBufferCreateInfo bufferCreateInfo = {};
       bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
       bufferCreateInfo.pNext = nullptr;
       bufferCreateInfo.flags = 0;
       bufferCreateInfo.size = bufferSize;
-      bufferCreateInfo.usage = bufferUsage;
+      bufferCreateInfo.usage = bufferUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
       bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       bufferCreateInfo.queueFamilyIndexCount = 1;
       bufferCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
-      RETURN_ON_VULKAN_ERROR(
-          vkCreateBuffer(device, &bufferCreateInfo, 0, &memoryBuffer.buffer),
-          "vkCreateBuffer");
+      RETURN_ON_VULKAN_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr,
+                                            &memoryBuffer.hostBuffer),
+                             "vkCreateBuffer");
+      RETURN_ON_VULKAN_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr,
+                                            &memoryBuffer.deviceBuffer),
+                             "vkCreateBuffer");
 
       // Bind buffer and device memory.
-      RETURN_ON_VULKAN_ERROR(vkBindBufferMemory(device, memoryBuffer.buffer,
+      RETURN_ON_VULKAN_ERROR(vkBindBufferMemory(device, memoryBuffer.hostBuffer,
+                                                memoryBuffer.hostMemory, 0),
+                             "vkBindBufferMemory");
+      RETURN_ON_VULKAN_ERROR(vkBindBufferMemory(device,
+                                                memoryBuffer.deviceBuffer,
                                                 memoryBuffer.deviceMemory, 0),
                              "vkBindBufferMemory");
 
       // Update buffer info.
-      memoryBuffer.bufferInfo.buffer = memoryBuffer.buffer;
+      memoryBuffer.bufferInfo.buffer = memoryBuffer.deviceBuffer;
       memoryBuffer.bufferInfo.offset = 0;
       memoryBuffer.bufferInfo.range = VK_WHOLE_SIZE;
       deviceMemoryBuffers.push_back(memoryBuffer);
@@ -451,6 +497,66 @@ LogicalResult VulkanRuntime::createMemoryBuffers() {
     // Associate device memory buffers with a descriptor set.
     deviceMemoryBufferMap[descriptorSetIndex] = deviceMemoryBuffers;
   }
+  return success();
+}
+
+LogicalResult VulkanRuntime::copyResource(bool deviceToHost) {
+  VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      nullptr,
+      commandPool,
+      VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      1,
+  };
+  VkCommandBuffer commandBuffer;
+  RETURN_ON_VULKAN_ERROR(vkAllocateCommandBuffers(device,
+                                                  &commandBufferAllocateInfo,
+                                                  &commandBuffer),
+                         "vkAllocateCommandBuffers");
+
+  VkCommandBufferBeginInfo commandBufferBeginInfo = {
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      nullptr,
+      0,
+      nullptr,
+  };
+  RETURN_ON_VULKAN_ERROR(
+      vkBeginCommandBuffer(commandBuffer, &commandBufferBeginInfo),
+      "vkBeginCommandBuffer");
+
+  for (const auto &deviceMemoryBufferMapPair : deviceMemoryBufferMap) {
+    std::vector<VkDescriptorSetLayoutBinding> descriptorSetLayoutBindings;
+    const auto &deviceMemoryBuffers = deviceMemoryBufferMapPair.second;
+    for (const auto &memBuffer : deviceMemoryBuffers) {
+      VkBufferCopy copy = {0, 0, memBuffer.bufferSize};
+      if (deviceToHost)
+        vkCmdCopyBuffer(commandBuffer, memBuffer.deviceBuffer,
+                        memBuffer.hostBuffer, 1, &copy);
+      else
+        vkCmdCopyBuffer(commandBuffer, memBuffer.hostBuffer,
+                        memBuffer.deviceBuffer, 1, &copy);
+    }
+  }
+
+  RETURN_ON_VULKAN_ERROR(vkEndCommandBuffer(commandBuffer),
+                         "vkEndCommandBuffer");
+  VkSubmitInfo submitInfo = {
+      VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      nullptr,
+      0,
+      nullptr,
+      nullptr,
+      1,
+      &commandBuffer,
+      0,
+      nullptr,
+  };
+  submitInfo.pCommandBuffers = &commandBuffer;
+  RETURN_ON_VULKAN_ERROR(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE),
+                         "vkQueueSubmit");
+  RETURN_ON_VULKAN_ERROR(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
+
+  vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
   return success();
 }
 
@@ -463,9 +569,9 @@ LogicalResult VulkanRuntime::createShaderModule() {
   shaderModuleCreateInfo.codeSize = binarySize;
   // Set pointer to the binary shader.
   shaderModuleCreateInfo.pCode = reinterpret_cast<uint32_t *>(binary);
-  RETURN_ON_VULKAN_ERROR(
-      vkCreateShaderModule(device, &shaderModuleCreateInfo, 0, &shaderModule),
-      "vkCreateShaderModule");
+  RETURN_ON_VULKAN_ERROR(vkCreateShaderModule(device, &shaderModuleCreateInfo,
+                                              nullptr, &shaderModule),
+                         "vkCreateShaderModule");
   return success();
 }
 
@@ -482,7 +588,7 @@ void VulkanRuntime::initDescriptorSetLayoutBindingMap() {
       descriptorSetLayoutBinding.descriptorType = memBuffer.descriptorType;
       descriptorSetLayoutBinding.descriptorCount = 1;
       descriptorSetLayoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-      descriptorSetLayoutBinding.pImmutableSamplers = 0;
+      descriptorSetLayoutBinding.pImmutableSamplers = nullptr;
       descriptorSetLayoutBindings.push_back(descriptorSetLayoutBinding);
     }
     descriptorSetLayoutBindingMap[descriptorSetIndex] =
@@ -523,8 +629,8 @@ LogicalResult VulkanRuntime::createDescriptorSetLayout() {
     descriptorSetLayoutCreateInfo.pBindings =
         descriptorSetLayoutBindings.data();
     RETURN_ON_VULKAN_ERROR(
-        vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, 0,
-                                    &descriptorSetLayout),
+        vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo,
+                                    nullptr, &descriptorSetLayout),
         "vkCreateDescriptorSetLayout");
 
     descriptorSetLayouts.push_back(descriptorSetLayout);
@@ -544,10 +650,10 @@ LogicalResult VulkanRuntime::createPipelineLayout() {
   pipelineLayoutCreateInfo.setLayoutCount = descriptorSetLayouts.size();
   pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
   pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-  pipelineLayoutCreateInfo.pPushConstantRanges = 0;
+  pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
   RETURN_ON_VULKAN_ERROR(vkCreatePipelineLayout(device,
-                                                &pipelineLayoutCreateInfo, 0,
-                                                &pipelineLayout),
+                                                &pipelineLayoutCreateInfo,
+                                                nullptr, &pipelineLayout),
                          "vkCreatePipelineLayout");
   return success();
 }
@@ -561,7 +667,7 @@ LogicalResult VulkanRuntime::createComputePipeline() {
   stageInfo.module = shaderModule;
   // Set entry point.
   stageInfo.pName = entryPoint;
-  stageInfo.pSpecializationInfo = 0;
+  stageInfo.pSpecializationInfo = nullptr;
 
   VkComputePipelineCreateInfo computePipelineCreateInfo = {};
   computePipelineCreateInfo.sType =
@@ -570,11 +676,11 @@ LogicalResult VulkanRuntime::createComputePipeline() {
   computePipelineCreateInfo.flags = 0;
   computePipelineCreateInfo.stage = stageInfo;
   computePipelineCreateInfo.layout = pipelineLayout;
-  computePipelineCreateInfo.basePipelineHandle = 0;
+  computePipelineCreateInfo.basePipelineHandle = nullptr;
   computePipelineCreateInfo.basePipelineIndex = 0;
-  RETURN_ON_VULKAN_ERROR(vkCreateComputePipelines(device, 0, 1,
-                                                  &computePipelineCreateInfo, 0,
-                                                  &pipeline),
+  RETURN_ON_VULKAN_ERROR(vkCreateComputePipelines(device, nullptr, 1,
+                                                  &computePipelineCreateInfo,
+                                                  nullptr, &pipeline),
                          "vkCreateComputePipelines");
   return success();
 }
@@ -598,8 +704,8 @@ LogicalResult VulkanRuntime::createDescriptorPool() {
   descriptorPoolCreateInfo.poolSizeCount = descriptorPoolSizes.size();
   descriptorPoolCreateInfo.pPoolSizes = descriptorPoolSizes.data();
   RETURN_ON_VULKAN_ERROR(vkCreateDescriptorPool(device,
-                                                &descriptorPoolCreateInfo, 0,
-                                                &descriptorPool),
+                                                &descriptorPoolCreateInfo,
+                                                nullptr, &descriptorPool),
                          "vkCreateDescriptorPool");
   return success();
 }
@@ -725,7 +831,7 @@ LogicalResult VulkanRuntime::createComputeCommandBuffer() {
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                           pipelineLayout, 0, descriptorSets.size(),
-                          descriptorSets.data(), 0, 0);
+                          descriptorSets.data(), 0, nullptr);
   // Get a timestamp before invoking the compute shader.
   if (queryPool != VK_NULL_HANDLE)
     vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -750,18 +856,21 @@ LogicalResult VulkanRuntime::submitCommandBuffersToQueue() {
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submitInfo.pNext = nullptr;
   submitInfo.waitSemaphoreCount = 0;
-  submitInfo.pWaitSemaphores = 0;
-  submitInfo.pWaitDstStageMask = 0;
+  submitInfo.pWaitSemaphores = nullptr;
+  submitInfo.pWaitDstStageMask = nullptr;
   submitInfo.commandBufferCount = commandBuffers.size();
   submitInfo.pCommandBuffers = commandBuffers.data();
   submitInfo.signalSemaphoreCount = 0;
   submitInfo.pSignalSemaphores = nullptr;
-  RETURN_ON_VULKAN_ERROR(vkQueueSubmit(queue, 1, &submitInfo, 0),
+  RETURN_ON_VULKAN_ERROR(vkQueueSubmit(queue, 1, &submitInfo, nullptr),
                          "vkQueueSubmit");
   return success();
 }
 
 LogicalResult VulkanRuntime::updateHostMemoryBuffers() {
+  // First copy back the data to the staging buffer.
+  (void)copyResource(/*deviceToHost=*/true);
+
   // For each descriptor set.
   for (auto &resourceDataMapPair : resourceData) {
     auto &resourceDataMap = resourceDataMapPair.second;
@@ -774,12 +883,12 @@ LogicalResult VulkanRuntime::updateHostMemoryBuffers() {
         auto &hostMemoryBuffer =
             resourceDataMap[deviceMemoryBuffer.bindingIndex];
         RETURN_ON_VULKAN_ERROR(vkMapMemory(device,
-                                           deviceMemoryBuffer.deviceMemory, 0,
+                                           deviceMemoryBuffer.hostMemory, 0,
                                            hostMemoryBuffer.size, 0,
                                            reinterpret_cast<void **>(&payload)),
                                "vkMapMemory");
         std::memcpy(hostMemoryBuffer.ptr, payload, hostMemoryBuffer.size);
-        vkUnmapMemory(device, deviceMemoryBuffer.deviceMemory);
+        vkUnmapMemory(device, deviceMemoryBuffer.hostMemory);
       }
     }
   }

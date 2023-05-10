@@ -30,7 +30,7 @@ public:
   StringRef getBaseEffectName() const;
 
   // Return the name of the Interface that the effect belongs to.
-  StringRef getInterfaceTrait() const;
+  std::string getInterfaceTrait() const;
 
   // Return the name of the resource class.
   StringRef getResource() const;
@@ -41,7 +41,7 @@ public:
 // This class represents an instance of a side effect interface applied to an
 // operation. This is a wrapper around an OpInterfaceTrait that also includes
 // the effects that are applied.
-class SideEffectTrait : public InterfaceOpTrait {
+class SideEffectTrait : public InterfaceTrait {
 public:
   // Return the effects that are attached to the side effect interface.
   Operator::var_decorator_range getEffects() const;
@@ -49,10 +49,10 @@ public:
   // Return the name of the base C++ effect.
   StringRef getBaseEffectName() const;
 
-  static bool classof(const OpTrait *t);
+  static bool classof(const Trait *t);
 };
 
-} // end namespace tblgen
-} // end namespace mlir
+} // namespace tblgen
+} // namespace mlir
 
 #endif // MLIR_TABLEGEN_SIDEEFFECTS_H_

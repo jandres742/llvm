@@ -4,11 +4,11 @@
 
 # RUN: ld.lld -e absolute %t.o -o %t
 # RUN: llvm-objdump -d --no-show-raw-insn %t | FileCheck --check-prefixes=CHECK,PC %s
-# RUN: llvm-readelf -x .data %t | FileCheck --check-prefixes=HEX %s
+# RUN: llvm-readelf -x .data %t | FileCheck --check-prefixes=HEX,HEX-WITHOUT-PLT %s
 
 # RUN: ld.lld -e absolute %t.o -o %t --export-dynamic
 # RUN: llvm-objdump -d --no-show-raw-insn %t | FileCheck --check-prefixes=CHECK,PLT %s
-# RUN: llvm-readelf -x .data %t | FileCheck --check-prefixes=HEX %s
+# RUN: llvm-readelf -x .data %t | FileCheck --check-prefixes=HEX,HEX-WITH-PLT %s
 
 .weak target
 .global absolute, relative, branch
@@ -46,30 +46,51 @@ relative:
 ## Branch relocations
 ## If .dynsym does not exist, an undefined weak symbol is non-preemptible.
 ## Treat them as PC relative relocations.
-# RELOC:      0x18 R_RISCV_CALL target 0x0
+# RELOC:      0x18 R_RISCV_CALL_PLT target 0x0
 # RELOC-NEXT: 0x20 R_RISCV_JAL target 0x0
+# RELOC-NEXT: 0x24 R_RISCV_BRANCH target 0x0
 
 # PC-LABEL:    <branch>:
-# PC-NEXT:     auipc ra, 1048559
-# PC-NEXT:     jalr -368(ra)
-## FIXME: llvm-objdump -d should print the address, instead of the offset.
-# PC-NEXT:     j -70008
+# PC-NEXT:     auipc ra, 0
+# PC-NEXT:     jalr ra
+# PC-NEXT:     [[#%x,ADDR:]]:
+# PC-SAME:                    j 0x[[#ADDR]]
+# PC-NEXT:     [[#%x,ADDR:]]:
+# PC-SAME:                    beqz zero, 0x[[#ADDR]]
 
 ## If .dynsym exists, an undefined weak symbol is preemptible.
 ## We create a PLT entry and redirect the reference to it.
 # PLT-LABEL:   <branch>:
 # PLT-NEXT:    auipc ra, 0
 # PLT-NEXT:    jalr 56(ra)
-# PLT-NEXT:    j -70448
+# PLT-NEXT:    [[#%x,ADDR:]]:
+# PLT-SAME:                   j 0x[[#ADDR]]
+# PLT-NEXT:    [[#%x,ADDR:]]:
+# PLT-SAME:                   beqz zero, 0x[[#ADDR]]
 branch:
   call target
   jal x0, target
+  beq x0, x0, target
 
 ## Absolute relocations are resolved to 0.
 # RELOC:      0x0 R_RISCV_64 target 0x3
 # RELOC-NEXT: 0x8 R_RISCV_32 target 0x4
+# RELOC-NEXT: 0xC R_RISCV_PLT32 target 0x0
+
 # HEX:      section '.data':
 # HEX-NEXT: 03000000 00000000 04000000
+# HEX-WITHOUT-PLT-SAME: 00000000
+
+## A plt entry is created for target, so this is the offset between the
+## plt entry and this address.
+##
+##   S = 0x11360 (the address of the plt entry for target)
+##   A = 0
+##   P = 0x1343c (the address of `.`)
+##
+##   S - A + P = -0x0x20dc = 0xffffdf24
+# HEX-WITH-PLT-SAME: 24dfffff
+
 .data
 .p2align 3
 .quad target+3
@@ -77,3 +98,5 @@ branch:
 
 # PC-NOT:      .plt:
 # PLT:         .plt:
+
+.word target@plt - .

@@ -9,11 +9,12 @@
 #include "BinaryHolder.h"
 #include "DebugMap.h"
 #include "MachOUtils.h"
-#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 #include <vector>
 
 namespace {
@@ -58,7 +59,14 @@ private:
   std::vector<std::string> CommonSymbols;
 
   /// Map of the currently processed object file symbol addresses.
-  StringMap<Optional<uint64_t>> CurrentObjectAddresses;
+  StringMap<std::optional<uint64_t>> CurrentObjectAddresses;
+
+  /// Lazily computed map of symbols aliased to the processed object file.
+  StringMap<std::optional<uint64_t>> CurrentObjectAliasMap;
+
+  /// If CurrentObjectAliasMap has been computed for a given address.
+  SmallSet<uint64_t, 4> SeenAliasValues;
+
   /// Element of the debug map corresponding to the current object file.
   DebugMapObject *CurrentDebugMapObject;
 
@@ -105,6 +113,8 @@ private:
                          StringRef BinaryPath);
 
   void Warning(const Twine &Msg, StringRef File = StringRef()) {
+    assert(Result &&
+           "The debug map must be initialized before calling this function");
     WithColor::warning() << "("
                          << MachOUtils::getArchName(
                                 Result->getTriple().getArchName())
@@ -127,6 +137,8 @@ private:
 void MachODebugMapParser::resetParserState() {
   CommonSymbols.clear();
   CurrentObjectAddresses.clear();
+  CurrentObjectAliasMap.clear();
+  SeenAliasValues.clear();
   CurrentDebugMapObject = nullptr;
 }
 
@@ -141,7 +153,8 @@ void MachODebugMapParser::addCommonSymbols() {
       // The main binary doesn't have an address for the given symbol.
       continue;
     }
-    if (!CurrentDebugMapObject->addSymbol(CommonSymbol, None /*ObjectAddress*/,
+    if (!CurrentDebugMapObject->addSymbol(CommonSymbol,
+                                          std::nullopt /*ObjectAddress*/,
                                           CommonAddr, 0 /*size*/)) {
       // The symbol is already present.
       continue;
@@ -189,10 +202,9 @@ static std::string getArchName(const object::MachOObjectFile &Obj) {
 std::unique_ptr<DebugMap>
 MachODebugMapParser::parseOneBinary(const MachOObjectFile &MainBinary,
                                     StringRef BinaryPath) {
+  Result = std::make_unique<DebugMap>(MainBinary.getArchTriple(), BinaryPath,
+                                      MainBinary.getUuid());
   loadMainBinarySymbols(MainBinary);
-  ArrayRef<uint8_t> UUID = MainBinary.getUuid();
-  Result =
-      std::make_unique<DebugMap>(MainBinary.getArchTriple(), BinaryPath, UUID);
   MainBinaryStrings = MainBinary.getStringTableData();
   for (const SymbolRef &Symbol : MainBinary.symbols()) {
     const DataRefImpl &DRI = Symbol.getRawDataRefImpl();
@@ -215,7 +227,7 @@ struct DarwinStabName {
   const char *Name;
 };
 
-static const struct DarwinStabName DarwinStabNames[] = {
+const struct DarwinStabName DarwinStabNames[] = {
     {MachO::N_GSYM, "N_GSYM"},    {MachO::N_FNAME, "N_FNAME"},
     {MachO::N_FUN, "N_FUN"},      {MachO::N_STSYM, "N_STSYM"},
     {MachO::N_LCSYM, "N_LCSYM"},  {MachO::N_BNSYM, "N_BNSYM"},
@@ -455,10 +467,35 @@ void MachODebugMapParser::handleStabSymbolTableEntry(uint32_t StringIndex,
   // If the name of a (non-static) symbol is not in the current object, we
   // check all its aliases from the main binary.
   if (ObjectSymIt == CurrentObjectAddresses.end() && Type != MachO::N_STSYM) {
-    for (const auto &Alias : getMainBinarySymbolNames(Value)) {
-      ObjectSymIt = CurrentObjectAddresses.find(Alias);
-      if (ObjectSymIt != CurrentObjectAddresses.end())
+    if (SeenAliasValues.count(Value) == 0) {
+      auto Aliases = getMainBinarySymbolNames(Value);
+      for (const auto &Alias : Aliases) {
+        auto It = CurrentObjectAddresses.find(Alias);
+        if (It != CurrentObjectAddresses.end()) {
+          auto AliasValue = It->getValue();
+          for (const auto &Alias : Aliases)
+            CurrentObjectAliasMap[Alias] = AliasValue;
+          break;
+        }
+      }
+      SeenAliasValues.insert(Value);
+    }
+
+    auto AliasIt = CurrentObjectAliasMap.find(Name);
+    if (AliasIt != CurrentObjectAliasMap.end())
+      ObjectSymIt = AliasIt;
+  }
+
+  // ThinLTO adds a unique suffix to exported private symbols.
+  if (ObjectSymIt == CurrentObjectAddresses.end()) {
+    for (auto Iter = CurrentObjectAddresses.begin();
+         Iter != CurrentObjectAddresses.end(); ++Iter) {
+      llvm::StringRef SymbolName = Iter->getKey();
+      auto Pos = SymbolName.rfind(".llvm.");
+      if (Pos != llvm::StringRef::npos && SymbolName.substr(0, Pos) == Name) {
+        ObjectSymIt = Iter;
         break;
+      }
     }
   }
 
@@ -483,8 +520,9 @@ void MachODebugMapParser::loadCurrentObjectFileSymbols(
     uint64_t Addr = cantFail(Sym.getValue());
     Expected<StringRef> Name = Sym.getName();
     if (!Name) {
-      // TODO: Actually report errors helpfully.
-      consumeError(Name.takeError());
+      auto Err = Name.takeError();
+      Warning("failed to get symbol name: " + toString(std::move(Err)),
+              Obj.getFileName());
       continue;
     }
     // The value of some categories of symbols isn't meaningful. For
@@ -497,9 +535,9 @@ void MachODebugMapParser::loadCurrentObjectFileSymbols(
     // in the DebugMap, leave it unassigned for these symbols.
     uint32_t Flags = cantFail(Sym.getFlags());
     if (Flags & SymbolRef::SF_Absolute) {
-      CurrentObjectAddresses[*Name] = None;
+      CurrentObjectAddresses[*Name] = std::nullopt;
     } else if (Flags & SymbolRef::SF_Common) {
-      CurrentObjectAddresses[*Name] = None;
+      CurrentObjectAddresses[*Name] = std::nullopt;
       CommonSymbols.push_back(std::string(*Name));
     } else {
       CurrentObjectAddresses[*Name] = Addr;
@@ -537,8 +575,9 @@ void MachODebugMapParser::loadMainBinarySymbols(
   for (const auto &Sym : MainBinary.symbols()) {
     Expected<SymbolRef::Type> TypeOrErr = Sym.getType();
     if (!TypeOrErr) {
-      // TODO: Actually report errors helpfully.
-      consumeError(TypeOrErr.takeError());
+      auto Err = TypeOrErr.takeError();
+      Warning("failed to get symbol type: " + toString(std::move(Err)),
+              MainBinary.getFileName());
       continue;
     }
     SymbolRef::Type Type = *TypeOrErr;
@@ -557,18 +596,20 @@ void MachODebugMapParser::loadMainBinarySymbols(
     bool Extern = SymType & (MachO::N_EXT | MachO::N_PEXT);
     Expected<section_iterator> SectionOrErr = Sym.getSection();
     if (!SectionOrErr) {
-      // TODO: Actually report errors helpfully.
-      consumeError(SectionOrErr.takeError());
+      auto Err = TypeOrErr.takeError();
+      Warning("failed to get symbol section: " + toString(std::move(Err)),
+              MainBinary.getFileName());
       continue;
     }
     Section = *SectionOrErr;
-    if (Section == MainBinary.section_end() || Section->isText())
+    if ((Section == MainBinary.section_end() || Section->isText()) && !Extern)
       continue;
     uint64_t Addr = cantFail(Sym.getValue());
     Expected<StringRef> NameOrErr = Sym.getName();
     if (!NameOrErr) {
-      // TODO: Actually report errors helpfully.
-      consumeError(NameOrErr.takeError());
+      auto Err = NameOrErr.takeError();
+      Warning("failed to get symbol name: " + toString(std::move(Err)),
+              MainBinary.getFileName());
       continue;
     }
     StringRef Name = *NameOrErr;

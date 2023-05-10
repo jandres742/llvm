@@ -178,7 +178,7 @@ bool HexagonGenExtract::convert(Instruction *In) {
   // CM is the shifted-left mask. Shift it back right to remove the zero
   // bits on least-significant positions.
   APInt M = CM->getValue().lshr(SL);
-  uint32_t T = M.countTrailingOnes();
+  uint32_t T = M.countr_one();
 
   // During the shifts some of the bits will be lost. Calculate how many
   // of the original value will remain after shift right and then left.
@@ -221,15 +221,16 @@ bool HexagonGenExtract::convert(Instruction *In) {
 }
 
 bool HexagonGenExtract::visitBlock(BasicBlock *B) {
+  bool Changed = false;
+
   // Depth-first, bottom-up traversal.
   for (auto *DTN : children<DomTreeNode*>(DT->getNode(B)))
-    visitBlock(DTN->getBlock());
+    Changed |= visitBlock(DTN->getBlock());
 
   // Allow limiting the number of generated extracts for debugging purposes.
   bool HasCutoff = ExtractCutoff.getPosition();
   unsigned Cutoff = ExtractCutoff;
 
-  bool Changed = false;
   BasicBlock::iterator I = std::prev(B->end()), NextI, Begin = B->begin();
   while (true) {
     if (HasCutoff && (ExtractCount >= Cutoff))

@@ -10,19 +10,15 @@ from lldbsuite.test.decorators import *
 
 class EnumTypesTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     def setUp(self):
         # Call super's setUp().
         TestBase.setUp(self)
         # Find the line number to break inside main().
         self.line = line_number('main.c', '// Set break point at this line.')
 
-    def test(self):
-        """Test 'image lookup -t days' and check for correct display and enum value printing."""
+    def test_command_line(self):
+        """Test 'image lookup -t enum_test_days' and check for correct display and enum value printing."""
         self.build()
-        exe = self.getBuildArtifact("a.out")
-        self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         lldbutil.run_to_source_breakpoint(
             self, '// Breakpoint for bitfield', lldb.SBFileSpec("main.c"))
@@ -46,7 +42,7 @@ class EnumTypesTestCase(TestBase):
         # Test the behavior in case have a variable of a type considered
         # 'bitfield' by the heuristic, but the value isn't actually fully
         # covered by the enumerators.
-        self.expect("p (enum bitfield)nonsense", DATA_TYPES_DISPLAYED_CORRECTLY,
+        self.expect("expression (enum bitfield)nonsense", DATA_TYPES_DISPLAYED_CORRECTLY,
                     patterns=[' = B | C | 0x10$'])
 
         # Break inside the main.
@@ -60,13 +56,12 @@ class EnumTypesTestCase(TestBase):
                              'stop reason = breakpoint'])
 
         # The breakpoint should have a hit count of 1.
-        self.expect("breakpoint list -f", BREAKPOINT_HIT_ONCE,
-                    substrs=[' resolved, hit count = 1'])
+        lldbutil.check_breakpoint(self, bpno = 1, expected_hit_count = 1)
 
-        # Look up information about the 'days' enum type.
+        # Look up information about the 'enum_test_days' enum type.
         # Check for correct display.
-        self.expect("image lookup -t days", DATA_TYPES_DISPLAYED_CORRECTLY,
-                    substrs=['enum days {',
+        self.expect("image lookup -t enum_test_days", DATA_TYPES_DISPLAYED_CORRECTLY,
+                    substrs=['enum enum_test_days {',
                              'Monday',
                              'Tuesday',
                              'Wednesday',
@@ -124,3 +119,41 @@ class EnumTypesTestCase(TestBase):
                 'check for valid enumeration value',
                 substrs=[enum_value])
             lldbutil.continue_to_breakpoint(self.process(), bkpt)
+
+    def check_enum_members(self, members):
+        name_matches = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "kNumDays"]
+        value_matches = [-3, -2, -1, 0, 1, 2, 3, 4]
+        
+        # First test that the list of members from the type works
+        num_matches = len(name_matches)
+        self.assertEqual(len(members), num_matches, "enum_members returns the right number of elements")
+        for idx in range(0, num_matches):
+            member = members[idx]
+            self.assertTrue(member.IsValid(), "Got a valid member for idx: %d"%(idx))
+            self.assertEqual(member.name, name_matches[idx], "Name matches for %d"%(idx))
+            self.assertEqual(member.signed, value_matches[idx], "Value matches for %d"%(idx))
+        
+    def test_api(self):
+        """Test that the SBTypeEnumMember API's work correctly for enum_test_days"""
+        self.build()
+        target = lldbutil.run_to_breakpoint_make_target(self)
+
+        types = target.FindTypes("enum_test_days")
+        self.assertEqual(len(types), 1, "Found more than one enum_test_days type...")
+        type = types.GetTypeAtIndex(0)
+
+        # First check using the Python list returned by the type:
+        self.check_enum_members(type.enum_members)
+
+        # Now use the SBTypeEnumMemberList.
+        member_list = type.GetEnumMembers()
+        self.check_enum_members(member_list)
+
+        # Now check that the by name accessor works:
+        for member in member_list:
+            name = member.name
+            check_member = member_list[name]
+            self.assertTrue(check_member.IsValid(), "Got a valid member for %s."%(name))
+            self.assertEqual(name, check_member.name, "Got back the right name")
+            self.assertEqual(member.unsigned, check_member.unsigned)
+

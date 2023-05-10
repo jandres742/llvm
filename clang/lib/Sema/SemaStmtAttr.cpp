@@ -10,14 +10,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/AST/EvaluatedExprVisitor.h"
-#include "clang/Sema/SemaInternal.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Sema/DelayedDiagnostic.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/ScopeInfo.h"
+#include "clang/Sema/SemaInternal.h"
 #include "llvm/ADT/StringExtras.h"
+#include <optional>
 
 using namespace clang;
 using namespace sema;
@@ -25,14 +27,12 @@ using namespace sema;
 static Attr *handleFallThroughAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                                    SourceRange Range) {
   FallThroughAttr Attr(S.Context, A);
-  if (!isa<NullStmt>(St)) {
+  if (isa<SwitchCase>(St)) {
     S.Diag(A.getRange().getBegin(), diag::err_fallthrough_attr_wrong_target)
-        << Attr.getSpelling() << St->getBeginLoc();
-    if (isa<SwitchCase>(St)) {
-      SourceLocation L = S.getLocForEndOfToken(Range.getEnd());
-      S.Diag(L, diag::note_fallthrough_insert_semi_fixit)
-          << FixItHint::CreateInsertion(L, ";");
-    }
+        << A << St->getBeginLoc();
+    SourceLocation L = S.getLocForEndOfToken(Range.getEnd());
+    S.Diag(L, diag::note_fallthrough_insert_semi_fixit)
+        << FixItHint::CreateInsertion(L, ";");
     return nullptr;
   }
   auto *FnScope = S.getCurFunction();
@@ -53,11 +53,6 @@ static Attr *handleFallThroughAttr(Sema &S, Stmt *St, const ParsedAttr &A,
 
 static Attr *handleSuppressAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                                 SourceRange Range) {
-  if (A.getNumArgs() < 1) {
-    S.Diag(A.getLoc(), diag::err_attribute_too_few_arguments) << A << 1;
-    return nullptr;
-  }
-
   std::vector<StringRef> DiagnosticIdentifiers;
   for (unsigned I = 0, E = A.getNumArgs(); I != E; ++I) {
     StringRef RuleName;
@@ -74,52 +69,164 @@ static Attr *handleSuppressAttr(Sema &S, Stmt *St, const ParsedAttr &A,
       S.Context, A, DiagnosticIdentifiers.data(), DiagnosticIdentifiers.size());
 }
 
-template <typename FPGALoopAttrT>
-static Attr *handleIntelFPGALoopAttr(Sema &S, const ParsedAttr &A) {
-  if(S.LangOpts.SYCLIsHost)
-    return nullptr;
+SYCLIntelMaxConcurrencyAttr *
+Sema::BuildSYCLIntelMaxConcurrencyAttr(const AttributeCommonInfo &CI,
+                                       Expr *E) {
+  if (!E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
 
-  unsigned NumArgs = A.getNumArgs();
-  if (NumArgs > 1) {
-    S.Diag(A.getLoc(), diag::warn_attribute_too_many_arguments) << A << 1;
-    return nullptr;
-  }
-
-  if (NumArgs == 0) {
-    if (A.getKind() == ParsedAttr::AT_SYCLIntelFPGAII ||
-        A.getKind() == ParsedAttr::AT_SYCLIntelFPGAMaxConcurrency ||
-        A.getKind() == ParsedAttr::AT_SYCLIntelFPGAMaxInterleaving ||
-        A.getKind() == ParsedAttr::AT_SYCLIntelFPGASpeculatedIterations) {
-      S.Diag(A.getLoc(), diag::warn_attribute_too_few_arguments) << A << 1;
+    // This attribute requires a non-negative value.
+    if (ArgVal < 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*non-negative*/ 1;
       return nullptr;
     }
   }
 
-  return S.BuildSYCLIntelFPGALoopAttr<FPGALoopAttrT>(
-      A, A.getNumArgs() ? A.getArgAsExpr(0) : nullptr);
+  return new (Context) SYCLIntelMaxConcurrencyAttr(Context, CI, E);
 }
 
-template <>
-Attr *handleIntelFPGALoopAttr<SYCLIntelFPGADisableLoopPipeliningAttr>(
-    Sema &S, const ParsedAttr &A) {
-  if (S.LangOpts.SYCLIsHost)
-    return nullptr;
+static Attr *handleSYCLIntelMaxConcurrencyAttr(Sema &S, Stmt *St,
+                                               const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
 
-  unsigned NumArgs = A.getNumArgs();
-  if (NumArgs > 0) {
-    S.Diag(A.getLoc(), diag::warn_attribute_too_many_arguments) << A << 0;
-    return nullptr;
+  Expr *E = A.getArgAsExpr(0);
+  return S.BuildSYCLIntelMaxConcurrencyAttr(A, E);
+}
+
+SYCLIntelInitiationIntervalAttr *
+Sema::BuildSYCLIntelInitiationIntervalAttr(const AttributeCommonInfo &CI,
+                                           Expr *E) {
+  if (!E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
+
+    // This attribute requires a strictly positive value.
+    if (ArgVal <= 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*positive*/ 0;
+      return nullptr;
+    }
   }
 
-  return new (S.Context) SYCLIntelFPGADisableLoopPipeliningAttr(S.Context, A);
+  return new (Context) SYCLIntelInitiationIntervalAttr(Context, CI, E);
 }
 
-static bool checkSYCLIntelFPGAIVDepSafeLen(Sema &S, llvm::APSInt &Value,
+static Attr *handleSYCLIntelInitiationIntervalAttr(Sema &S, Stmt *St,
+                                                   const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  Expr *E = A.getArgAsExpr(0);
+  return S.BuildSYCLIntelInitiationIntervalAttr(A, E);
+}
+
+SYCLIntelMaxInterleavingAttr *
+Sema::BuildSYCLIntelMaxInterleavingAttr(const AttributeCommonInfo &CI,
+                       		        Expr *E) {
+  if (!E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
+
+    // This attribute requires a non-negative value.
+    if (ArgVal < 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*non-negative*/ 1;
+      return nullptr;
+    }
+  }
+
+  return new (Context) SYCLIntelMaxInterleavingAttr(Context, CI, E);
+}
+
+static Attr *handleSYCLIntelMaxInterleavingAttr(Sema &S, Stmt *St,
+                                                const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  Expr *E = A.getArgAsExpr(0);
+  return S.BuildSYCLIntelMaxInterleavingAttr(A, E);
+}
+
+SYCLIntelLoopCoalesceAttr *
+Sema::BuildSYCLIntelLoopCoalesceAttr(const AttributeCommonInfo &CI,
+                                     Expr *E) {
+  if (E && !E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
+
+    // This attribute requires a strictly positive value.
+    if (ArgVal <= 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*positive*/ 0;
+      return nullptr;
+    }
+  }
+
+  return new (Context) SYCLIntelLoopCoalesceAttr(Context, CI, E);
+}
+
+static Attr *handleSYCLIntelLoopCoalesceAttr(Sema &S, Stmt *St,
+                                             const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  Expr *E = A.isArgExpr(0) ? A.getArgAsExpr(0) : nullptr;
+  return S.BuildSYCLIntelLoopCoalesceAttr(A, E);
+}
+
+SYCLIntelSpeculatedIterationsAttr *
+Sema::BuildSYCLIntelSpeculatedIterationsAttr(const AttributeCommonInfo &CI,
+                                             Expr *E) {
+  if (!E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
+
+    // This attribute requires a non-negative value.
+    if (ArgVal < 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*non-negative*/ 1;
+      return nullptr;
+    }
+  }
+
+  return new (Context) SYCLIntelSpeculatedIterationsAttr(Context, CI, E);
+}
+
+static Attr *handleSYCLIntelSpeculatedIterationsAttr(Sema &S, Stmt *St,
+                                                     const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  Expr *E = A.getArgAsExpr(0);
+  return S.BuildSYCLIntelSpeculatedIterationsAttr(A, E);
+}
+
+static Attr *handleSYCLIntelDisableLoopPipeliningAttr(Sema &S, Stmt *,
+                                                      const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+  return new (S.Context) SYCLIntelDisableLoopPipeliningAttr(S.Context, A);
+}
+
+static bool checkSYCLIntelIVDepSafeLen(Sema &S, llvm::APSInt &Value,
                                            Expr *E) {
-  if (!Value.isStrictlyPositive())
+  // This attribute requires a non-negative value.
+  if (!Value.isNonNegative())
     return S.Diag(E->getExprLoc(),
                   diag::err_attribute_requires_positive_integer)
-           << "'ivdep'" << /* positive */ 0;
+           << "'ivdep'" << /*non-negative*/ 1;
   return false;
 }
 
@@ -131,25 +238,30 @@ enum class IVDepExprResult {
   SafeLen,
 };
 
-static IVDepExprResult HandleFPGAIVDepAttrExpr(Sema &S, Expr *E,
-                                               unsigned &SafelenValue) {
+static IVDepExprResult HandleIVDepAttrExpr(Sema &S, Expr *E,
+                                           unsigned &SafelenValue) {
   if (!E)
     return IVDepExprResult::Null;
 
   if (E->isInstantiationDependent())
     return IVDepExprResult::Dependent;
 
-  llvm::APSInt ArgVal;
-
-  if (E->isIntegerConstantExpr(ArgVal, S.getASTContext())) {
-    if (checkSYCLIntelFPGAIVDepSafeLen(S, ArgVal, E))
+  std::optional<llvm::APSInt> ArgVal = E->getIntegerConstantExpr(S.getASTContext());
+  if (ArgVal) {
+    if (checkSYCLIntelIVDepSafeLen(S, *ArgVal, E))
       return IVDepExprResult::Invalid;
-    SafelenValue = ArgVal.getZExtValue();
+    SafelenValue = ArgVal->getZExtValue();
+    // ivdep attribute allows both safelen = 0 and safelen = 1 with a warning.
+    if (SafelenValue == 0 || SafelenValue == 1) {
+      S.Diag(E->getExprLoc(), diag::warn_ivdep_attribute_argument)
+          << SafelenValue;
+      return IVDepExprResult::Invalid;
+    }
     return IVDepExprResult::SafeLen;
   }
 
-  if (isa<DeclRefExpr>(E)) {
-    if (!cast<DeclRefExpr>(E)->getType()->isArrayType()) {
+  if (isa<DeclRefExpr>(E) || isa<MemberExpr>(E)) {
+    if (!E->getType()->isArrayType() && !E->getType()->isPointerType()) {
       S.Diag(E->getExprLoc(), diag::err_ivdep_declrefexpr_arg);
       return IVDepExprResult::Invalid;
     }
@@ -162,12 +274,12 @@ static IVDepExprResult HandleFPGAIVDepAttrExpr(Sema &S, Expr *E,
 
 // Note: At the time of this call, we don't know the order of the expressions,
 // so we name them vaguely until we can figure it out.
-SYCLIntelFPGAIVDepAttr *
-Sema::BuildSYCLIntelFPGAIVDepAttr(const AttributeCommonInfo &CI, Expr *Expr1,
+SYCLIntelIVDepAttr *
+Sema::BuildSYCLIntelIVDepAttr(const AttributeCommonInfo &CI, Expr *Expr1,
                                   Expr *Expr2) {
   unsigned SafelenValue = 0;
-  IVDepExprResult E1 = HandleFPGAIVDepAttrExpr(*this, Expr1, SafelenValue);
-  IVDepExprResult E2 = HandleFPGAIVDepAttrExpr(*this, Expr2, SafelenValue);
+  IVDepExprResult E1 = HandleIVDepAttrExpr(*this, Expr1, SafelenValue);
+  IVDepExprResult E2 = HandleIVDepAttrExpr(*this, Expr2, SafelenValue);
 
   if (E1 == IVDepExprResult::Invalid || E2 == IVDepExprResult::Invalid)
     return nullptr;
@@ -190,7 +302,7 @@ Sema::BuildSYCLIntelFPGAIVDepAttr(const AttributeCommonInfo &CI, Expr *Expr1,
   }
 
   return new (Context)
-      SYCLIntelFPGAIVDepAttr(Context, CI, SafeLenExpr, ArrayExpr, SafelenValue);
+      SYCLIntelIVDepAttr(Context, CI, SafeLenExpr, ArrayExpr, SafelenValue);
 }
 
 // Filters out any attributes from the list that are either not the specified
@@ -199,46 +311,46 @@ template <typename T>
 static void FilterAttributeList(ArrayRef<const Attr *> Attrs,
                     SmallVectorImpl<const T *> &FilteredAttrs) {
 
-  llvm::transform(Attrs, std::back_inserter(FilteredAttrs), [](const Attr *A) {
-    if (const auto *Cast = dyn_cast_or_null<const T>(A))
-      return Cast->isDependent() ? nullptr : Cast;
-    return static_cast<const T*>(nullptr);
-  });
+  llvm::transform(Attrs, std::back_inserter(FilteredAttrs),
+                  [](const Attr *A) -> const T * {
+                    if (const auto *Cast = dyn_cast<T>(A))
+                      return Cast->isDependent() ? nullptr : Cast;
+                    return nullptr;
+                  });
   FilteredAttrs.erase(
-      std::remove(FilteredAttrs.begin(), FilteredAttrs.end(),
-                  static_cast<const T*>(nullptr)),
+      std::remove(FilteredAttrs.begin(), FilteredAttrs.end(), nullptr),
       FilteredAttrs.end());
 }
 
 static void
-CheckRedundantSYCLIntelFPGAIVDepAttrs(Sema &S, ArrayRef<const Attr *> Attrs) {
+CheckRedundantSYCLIntelIVDepAttrs(Sema &S, ArrayRef<const Attr *> Attrs) {
   // Skip SEMA if we're in a template, this will be diagnosed later.
   if (S.getCurLexicalContext()->isDependentContext())
     return;
 
-  SmallVector<const SYCLIntelFPGAIVDepAttr *, 8> FilteredAttrs;
+  SmallVector<const SYCLIntelIVDepAttr *, 8> FilteredAttrs;
   // Filter down to just non-dependent ivdeps.
   FilterAttributeList(Attrs, FilteredAttrs);
   if (FilteredAttrs.empty())
     return;
 
-  SmallVector<const SYCLIntelFPGAIVDepAttr *, 8> SortedAttrs(FilteredAttrs);
-  llvm::stable_sort(SortedAttrs, SYCLIntelFPGAIVDepAttr::SafelenCompare);
+  SmallVector<const SYCLIntelIVDepAttr *, 8> SortedAttrs(FilteredAttrs);
+  llvm::stable_sort(SortedAttrs, SYCLIntelIVDepAttr::SafelenCompare);
 
   // Find the maximum without an array expression, which ends up in the 2nd
   // expr.
   const auto *GlobalMaxItr =
-      llvm::find_if(SortedAttrs, [](const SYCLIntelFPGAIVDepAttr *A) {
+      llvm::find_if(SortedAttrs, [](const SYCLIntelIVDepAttr *A) {
         return !A->getArrayExpr();
       });
-  const SYCLIntelFPGAIVDepAttr *GlobalMax =
+  const SYCLIntelIVDepAttr *GlobalMax =
       GlobalMaxItr == SortedAttrs.end() ? nullptr : *GlobalMaxItr;
 
   for (const auto *A : FilteredAttrs) {
     if (A == GlobalMax)
       continue;
 
-    if (GlobalMax && !SYCLIntelFPGAIVDepAttr::SafelenCompare(A, GlobalMax)) {
+    if (GlobalMax && !SYCLIntelIVDepAttr::SafelenCompare(A, GlobalMax)) {
       S.Diag(A->getLocation(), diag::warn_ivdep_redundant)
           << !GlobalMax->isInf() << GlobalMax->getSafelenValue() << !A->isInf()
           << A->getSafelenValue();
@@ -249,15 +361,15 @@ CheckRedundantSYCLIntelFPGAIVDepAttrs(Sema &S, ArrayRef<const Attr *> Attrs) {
     if (!A->getArrayExpr())
       continue;
 
-    const VarDecl *ArrayDecl = A->getArrayDecl();
+    const ValueDecl *ArrayDecl = A->getArrayDecl();
     auto Other = llvm::find_if(SortedAttrs,
-                               [ArrayDecl](const SYCLIntelFPGAIVDepAttr *A) {
+                               [ArrayDecl](const SYCLIntelIVDepAttr *A) {
                                  return ArrayDecl == A->getArrayDecl();
                                });
     assert(Other != SortedAttrs.end() && "Should find at least itself");
 
     // Diagnose if lower/equal to the lowest with this array.
-    if (*Other != A && !SYCLIntelFPGAIVDepAttr::SafelenCompare(A, *Other)) {
+    if (*Other != A && !SYCLIntelIVDepAttr::SafelenCompare(A, *Other)) {
       S.Diag(A->getLocation(), diag::warn_ivdep_redundant)
           << !(*Other)->isInf() << (*Other)->getSafelenValue() << !A->isInf()
           << A->getSafelenValue();
@@ -266,16 +378,112 @@ CheckRedundantSYCLIntelFPGAIVDepAttrs(Sema &S, ArrayRef<const Attr *> Attrs) {
   }
 }
 
-static Attr *handleIntelFPGAIVDepAttr(Sema &S, const ParsedAttr &A) {
+static Attr *handleIntelIVDepAttr(Sema &S, Stmt *St, const ParsedAttr &A) {
   unsigned NumArgs = A.getNumArgs();
-  if (NumArgs > 2) {
-    S.Diag(A.getLoc(), diag::err_attribute_too_many_arguments) << A << 2;
-    return nullptr;
-  }
 
-  return S.BuildSYCLIntelFPGAIVDepAttr(
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  return S.BuildSYCLIntelIVDepAttr(
       A, NumArgs >= 1 ? A.getArgAsExpr(0) : nullptr,
       NumArgs == 2 ? A.getArgAsExpr(1) : nullptr);
+}
+
+static void
+CheckForDuplicateSYCLIntelLoopCountAttrs(Sema &S,
+                                         ArrayRef<const Attr *> Attrs) {
+  // Create a list of SYCLIntelLoopCount attributes only.
+  SmallVector<const SYCLIntelLoopCountAttr *, 8> OnlyLoopCountAttrs;
+  llvm::transform(
+      Attrs, std::back_inserter(OnlyLoopCountAttrs), [](const Attr *A) {
+        return dyn_cast_or_null<const SYCLIntelLoopCountAttr>(A);
+      });
+  OnlyLoopCountAttrs.erase(
+      std::remove(OnlyLoopCountAttrs.begin(), OnlyLoopCountAttrs.end(),
+                  static_cast<const SYCLIntelLoopCountAttr *>(nullptr)),
+      OnlyLoopCountAttrs.end());
+  if (OnlyLoopCountAttrs.empty())
+    return;
+
+  unsigned int MinCount = 0;
+  unsigned int MaxCount = 0;
+  unsigned int AvgCount = 0;
+  unsigned int Count = 0;
+  for (const auto *A : OnlyLoopCountAttrs) {
+    const auto *At = dyn_cast<SYCLIntelLoopCountAttr>(A);
+    At->isMin()   ? MinCount++
+    : At->isMax() ? MaxCount++
+    : At->isAvg() ? AvgCount++
+                  : Count++;
+    if (MinCount > 1 || MaxCount > 1 || AvgCount > 1 || Count > 1)
+      S.Diag(A->getLocation(), diag::err_sycl_loop_attr_duplication) << 1 << A;
+  }
+}
+
+SYCLIntelLoopCountAttr *
+Sema::BuildSYCLIntelLoopCountAttr(const AttributeCommonInfo &CI, Expr *E) {
+  if (!E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
+
+    // This attribute requires a non-negative value.
+    if (ArgVal < 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*non-negative*/ 1;
+      return nullptr;
+    }
+  }
+
+  return new (Context) SYCLIntelLoopCountAttr(Context, CI, E);
+}
+
+static Attr *handleSYCLIntelLoopCountAttr(Sema &S, Stmt *St,
+                                          const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  Expr *E = A.getArgAsExpr(0);
+  return S.BuildSYCLIntelLoopCountAttr(A, E);
+}
+
+static Attr *handleIntelNofusionAttr(Sema &S, Stmt *St,
+                                     const ParsedAttr &A) {
+  return new (S.Context) SYCLIntelNofusionAttr(S.Context, A);
+}
+
+SYCLIntelMaxReinvocationDelayAttr *
+Sema::BuildSYCLIntelMaxReinvocationDelayAttr(const AttributeCommonInfo &CI,
+                                             Expr *E) {
+  if (!E->isValueDependent()) {
+    llvm::APSInt ArgVal;
+    ExprResult Res = VerifyIntegerConstantExpression(E, &ArgVal);
+    if (Res.isInvalid())
+      return nullptr;
+    E = Res.get();
+
+    // This attribute requires a strictly positive value.
+    if (ArgVal <= 0) {
+      Diag(E->getExprLoc(), diag::err_attribute_requires_positive_integer)
+          << CI << /*positive*/ 0;
+      return nullptr;
+    }
+  }
+
+  return new (Context) SYCLIntelMaxReinvocationDelayAttr(Context, CI, E);
+}
+
+static Attr * handleSYCLIntelMaxReinvocationDelayAttr(Sema &S, Stmt *St,
+                                                      const ParsedAttr &A) {
+  S.CheckDeprecatedSYCLAttributeSpelling(A);
+
+  Expr *E = A.getArgAsExpr(0);
+  return S.BuildSYCLIntelMaxReinvocationDelayAttr(A, E);
+}
+
+static Attr *handleSYCLIntelEnableLoopPipeliningAttr(Sema &S, Stmt *,
+                                                     const ParsedAttr &A) {
+  return new (S.Context) SYCLIntelEnableLoopPipeliningAttr(S.Context, A);
 }
 
 static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const ParsedAttr &A,
@@ -291,10 +499,10 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                  PragmaNameLoc->Ident->getName())
           .Default("clang loop");
 
-  if (St->getStmtClass() != Stmt::DoStmtClass &&
-      St->getStmtClass() != Stmt::ForStmtClass &&
-      St->getStmtClass() != Stmt::CXXForRangeStmtClass &&
-      St->getStmtClass() != Stmt::WhileStmtClass) {
+  // This could be handled automatically by adding a Subjects definition in
+  // Attr.td, but that would make the diagnostic behavior worse in this case
+  // because the user spells this attribute as a pragma.
+  if (!isa<DoStmt, ForStmt, CXXForRangeStmt, WhileStmt>(St)) {
     std::string Pragma = "#pragma " + std::string(PragmaName);
     S.Diag(St->getBeginLoc(), diag::err_pragma_loop_precedes_nonloop) << Pragma;
     return nullptr;
@@ -343,10 +551,18 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                        LoopHintAttr::PipelineInitiationInterval)
                  .Case("distribute", LoopHintAttr::Distribute)
                  .Default(LoopHintAttr::Vectorize);
-    if (Option == LoopHintAttr::VectorizeWidth ||
-        Option == LoopHintAttr::InterleaveCount ||
-        Option == LoopHintAttr::UnrollCount ||
-        Option == LoopHintAttr::PipelineInitiationInterval) {
+    if (Option == LoopHintAttr::VectorizeWidth) {
+      assert((ValueExpr || (StateLoc && StateLoc->Ident)) &&
+             "Attribute must have a valid value expression or argument.");
+      if (ValueExpr && S.CheckLoopHintExpr(ValueExpr, St->getBeginLoc()))
+        return nullptr;
+      if (StateLoc && StateLoc->Ident && StateLoc->Ident->isStr("scalable"))
+        State = LoopHintAttr::ScalableWidth;
+      else
+        State = LoopHintAttr::FixedWidth;
+    } else if (Option == LoopHintAttr::InterleaveCount ||
+               Option == LoopHintAttr::UnrollCount ||
+               Option == LoopHintAttr::PipelineInitiationInterval) {
       assert(ValueExpr && "Attribute must have a valid value expression.");
       if (S.CheckLoopHintExpr(ValueExpr, St->getBeginLoc()))
         return nullptr;
@@ -377,16 +593,22 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const ParsedAttr &A,
 
 namespace {
 class CallExprFinder : public ConstEvaluatedExprVisitor<CallExprFinder> {
-  bool FoundCallExpr = false;
+  bool FoundAsmStmt = false;
+  std::vector<const CallExpr *> CallExprs;
 
 public:
   typedef ConstEvaluatedExprVisitor<CallExprFinder> Inherited;
 
   CallExprFinder(Sema &S, const Stmt *St) : Inherited(S.Context) { Visit(St); }
 
-  bool foundCallExpr() { return FoundCallExpr; }
+  bool foundCallExpr() { return !CallExprs.empty(); }
+  const std::vector<const CallExpr *> &getCallExprs() { return CallExprs; }
 
-  void VisitCallExpr(const CallExpr *E) { FoundCallExpr = true; }
+  bool foundAsmStmt() { return FoundAsmStmt; }
+
+  void VisitCallExpr(const CallExpr *E) { CallExprs.push_back(E); }
+
+  void VisitAsmStmt(const AsmStmt *S) { FoundAsmStmt = true; }
 
   void Visit(const Stmt *St) {
     if (!St)
@@ -399,38 +621,167 @@ public:
 static Attr *handleNoMergeAttr(Sema &S, Stmt *St, const ParsedAttr &A,
                                SourceRange Range) {
   NoMergeAttr NMA(S.Context, A);
-  if (S.CheckAttrNoArgs(A))
-    return nullptr;
-
   CallExprFinder CEF(S, St);
 
-  if (!CEF.foundCallExpr()) {
-    S.Diag(St->getBeginLoc(), diag::warn_nomerge_attribute_ignored_in_stmt)
-        << NMA.getSpelling();
+  if (!CEF.foundCallExpr() && !CEF.foundAsmStmt()) {
+    S.Diag(St->getBeginLoc(), diag::warn_attribute_ignored_no_calls_in_stmt)
+        << A;
     return nullptr;
   }
 
   return ::new (S.Context) NoMergeAttr(S.Context, A);
 }
 
+template <typename OtherAttr, int DiagIdx>
+static bool CheckStmtInlineAttr(Sema &SemaRef, const Stmt *OrigSt,
+                                const Stmt *CurSt,
+                                const AttributeCommonInfo &A) {
+  CallExprFinder OrigCEF(SemaRef, OrigSt);
+  CallExprFinder CEF(SemaRef, CurSt);
+
+  // If the call expressions lists are equal in size, we can skip
+  // previously emitted diagnostics. However, if the statement has a pack
+  // expansion, we have no way of telling which CallExpr is the instantiated
+  // version of the other. In this case, we will end up re-diagnosing in the
+  // instantiation.
+  // ie: [[clang::always_inline]] non_dependent(), (other_call<Pack>()...)
+  // will diagnose nondependent again.
+  bool CanSuppressDiag =
+      OrigSt && CEF.getCallExprs().size() == OrigCEF.getCallExprs().size();
+
+  if (!CEF.foundCallExpr()) {
+    return SemaRef.Diag(CurSt->getBeginLoc(),
+                        diag::warn_attribute_ignored_no_calls_in_stmt)
+           << A;
+  }
+
+  for (const auto &Tup :
+       llvm::zip_longest(OrigCEF.getCallExprs(), CEF.getCallExprs())) {
+    // If the original call expression already had a callee, we already
+    // diagnosed this, so skip it here. We can't skip if there isn't a 1:1
+    // relationship between the two lists of call expressions.
+    if (!CanSuppressDiag || !(*std::get<0>(Tup))->getCalleeDecl()) {
+      const Decl *Callee = (*std::get<1>(Tup))->getCalleeDecl();
+      if (Callee &&
+          (Callee->hasAttr<OtherAttr>() || Callee->hasAttr<FlattenAttr>())) {
+        SemaRef.Diag(CurSt->getBeginLoc(),
+                     diag::warn_function_stmt_attribute_precedence)
+            << A << (Callee->hasAttr<OtherAttr>() ? DiagIdx : 1);
+        SemaRef.Diag(Callee->getBeginLoc(), diag::note_conflicting_attribute);
+      }
+    }
+  }
+
+  return false;
+}
+
+bool Sema::CheckNoInlineAttr(const Stmt *OrigSt, const Stmt *CurSt,
+                             const AttributeCommonInfo &A) {
+  return CheckStmtInlineAttr<AlwaysInlineAttr, 0>(*this, OrigSt, CurSt, A);
+}
+
+bool Sema::CheckAlwaysInlineAttr(const Stmt *OrigSt, const Stmt *CurSt,
+                                 const AttributeCommonInfo &A) {
+  return CheckStmtInlineAttr<NoInlineAttr, 2>(*this, OrigSt, CurSt, A);
+}
+
+static Attr *handleNoInlineAttr(Sema &S, Stmt *St, const ParsedAttr &A,
+                                SourceRange Range) {
+  NoInlineAttr NIA(S.Context, A);
+  if (!NIA.isClangNoInline()) {
+    S.Diag(St->getBeginLoc(), diag::warn_function_attribute_ignored_in_stmt)
+        << "[[clang::noinline]]";
+    return nullptr;
+  }
+
+  if (S.CheckNoInlineAttr(/*OrigSt=*/nullptr, St, A))
+    return nullptr;
+
+  return ::new (S.Context) NoInlineAttr(S.Context, A);
+}
+
+static Attr *handleAlwaysInlineAttr(Sema &S, Stmt *St, const ParsedAttr &A,
+                                    SourceRange Range) {
+  AlwaysInlineAttr AIA(S.Context, A);
+  if (!AIA.isClangAlwaysInline()) {
+    S.Diag(St->getBeginLoc(), diag::warn_function_attribute_ignored_in_stmt)
+        << "[[clang::always_inline]]";
+    return nullptr;
+  }
+
+  if (S.CheckAlwaysInlineAttr(/*OrigSt=*/nullptr, St, A))
+    return nullptr;
+
+  return ::new (S.Context) AlwaysInlineAttr(S.Context, A);
+}
+
+static Attr *handleMustTailAttr(Sema &S, Stmt *St, const ParsedAttr &A,
+                                SourceRange Range) {
+  // Validation is in Sema::ActOnAttributedStmt().
+  return ::new (S.Context) MustTailAttr(S.Context, A);
+}
+
+static Attr *handleLikely(Sema &S, Stmt *St, const ParsedAttr &A,
+                          SourceRange Range) {
+
+  if (!S.getLangOpts().CPlusPlus20 && A.isCXX11Attribute() && !A.getScopeName())
+    S.Diag(A.getLoc(), diag::ext_cxx20_attr) << A << Range;
+
+  return ::new (S.Context) LikelyAttr(S.Context, A);
+}
+
+static Attr *handleUnlikely(Sema &S, Stmt *St, const ParsedAttr &A,
+                            SourceRange Range) {
+
+  if (!S.getLangOpts().CPlusPlus20 && A.isCXX11Attribute() && !A.getScopeName())
+    S.Diag(A.getLoc(), diag::ext_cxx20_attr) << A << Range;
+
+  return ::new (S.Context) UnlikelyAttr(S.Context, A);
+}
+
+#define WANT_STMT_MERGE_LOGIC
+#include "clang/Sema/AttrParsedAttrImpl.inc"
+#undef WANT_STMT_MERGE_LOGIC
+
 static void
 CheckForIncompatibleAttributes(Sema &S,
                                const SmallVectorImpl<const Attr *> &Attrs) {
-  // There are 6 categories of loop hints attributes: vectorize, interleave,
-  // unroll, unroll_and_jam, pipeline and distribute. Except for distribute they
-  // come in two variants: a state form and a numeric form.  The state form
-  // selectively defaults/enables/disables the transformation for the loop
-  // (for unroll, default indicates full unrolling rather than enabling the
-  // transformation). The numeric form form provides an integer hint (for
-  // example, unroll count) to the transformer. The following array accumulates
-  // the hints encountered while iterating through the attributes to check for
-  // compatibility.
+  // The vast majority of attributed statements will only have one attribute
+  // on them, so skip all of the checking in the common case.
+  if (Attrs.size() < 2)
+    return;
+
+  // First, check for the easy cases that are table-generated for us.
+  if (!DiagnoseMutualExclusions(S, Attrs))
+    return;
+
+  enum CategoryType {
+    // For the following categories, they come in two variants: a state form and
+    // a numeric form. The state form may be one of default, enable, and
+    // disable. The numeric form provides an integer hint (for example, unroll
+    // count) to the transformer.
+    Vectorize,
+    Interleave,
+    UnrollAndJam,
+    Pipeline,
+    // For unroll, default indicates full unrolling rather than enabling the
+    // transformation.
+    Unroll,
+    // The loop distribution transformation only has a state form that is
+    // exposed by #pragma clang loop distribute (enable | disable).
+    Distribute,
+    // The vector predication only has a state form that is exposed by
+    // #pragma clang loop vectorize_predicate (enable | disable).
+    VectorizePredicate,
+    // This serves as a indicator to how many category are listed in this enum.
+    NumberOfCategories
+  };
+  // The following array accumulates the hints encountered while iterating
+  // through the attributes to check for compatibility.
   struct {
     const LoopHintAttr *StateAttr;
     const LoopHintAttr *NumericAttr;
-  } HintAttrs[] = {{nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr},
-                   {nullptr, nullptr}, {nullptr, nullptr}, {nullptr, nullptr},
-                   {nullptr, nullptr}};
+  } HintAttrs[CategoryType::NumberOfCategories] = {};
 
   for (const auto *I : Attrs) {
     const LoopHintAttr *LH = dyn_cast<LoopHintAttr>(I);
@@ -439,16 +790,8 @@ CheckForIncompatibleAttributes(Sema &S,
     if (!LH)
       continue;
 
+    CategoryType Category = CategoryType::NumberOfCategories;
     LoopHintAttr::OptionType Option = LH->getOption();
-    enum {
-      Vectorize,
-      Interleave,
-      Unroll,
-      UnrollAndJam,
-      Distribute,
-      Pipeline,
-      VectorizePredicate
-    } Category;
     switch (Option) {
     case LoopHintAttr::Vectorize:
     case LoopHintAttr::VectorizeWidth:
@@ -479,7 +822,7 @@ CheckForIncompatibleAttributes(Sema &S,
       break;
     };
 
-    assert(Category < sizeof(HintAttrs) / sizeof(HintAttrs[0]));
+    assert(Category != NumberOfCategories && "Unhandled loop hint option");
     auto &CategoryState = HintAttrs[Category];
     const LoopHintAttr *PrevAttr;
     if (Option == LoopHintAttr::Vectorize ||
@@ -521,76 +864,44 @@ CheckForIncompatibleAttributes(Sema &S,
 }
 
 template <typename LoopAttrT>
-static void CheckForDuplicationSYCLLoopAttribute(
-    Sema &S, const SmallVectorImpl<const Attr *> &Attrs, SourceRange Range,
-    bool isIntelFPGAAttr = true) {
+static void
+CheckForDuplicationSYCLLoopAttribute(Sema &S,
+                                     const SmallVectorImpl<const Attr *> &Attrs,
+                                     bool isIntelFPGAAttr = true) {
   const LoopAttrT *LoopAttr = nullptr;
 
   for (const auto *I : Attrs) {
-    if (LoopAttr) {
-      if (isa<LoopAttrT>(I)) {
-        SourceLocation Loc = Range.getBegin();
-        // Cannot specify same type of attribute twice.
-        S.Diag(Loc, diag::err_sycl_loop_attr_duplication)
-            << isIntelFPGAAttr << LoopAttr->getName();
-      }
+    if (LoopAttr && isa<LoopAttrT>(I)) {
+      // Cannot specify same type of attribute twice.
+      S.Diag(I->getLocation(), diag::err_sycl_loop_attr_duplication)
+          << isIntelFPGAAttr << LoopAttr;
     }
     if (isa<LoopAttrT>(I))
       LoopAttr = cast<LoopAttrT>(I);
-  }
-}
-
-/// Diagnose mutually exclusive attributes when present on a given
-/// declaration. Returns true if diagnosed.
-template <typename LoopAttrT, typename LoopAttrT2>
-static void CheckMutualExclusionSYCLLoopAttribute(
-    Sema &S, const SmallVectorImpl<const Attr *> &Attrs, SourceRange Range) {
-  const LoopAttrT *LoopAttr = nullptr;
-  const LoopAttrT2 *LoopAttr2 = nullptr;
-
-  for (const auto *I : Attrs) {
-    if (isa<LoopAttrT>(I))
-      LoopAttr = cast<LoopAttrT>(I);
-    if (isa<LoopAttrT2>(I))
-      LoopAttr2 = cast<LoopAttrT2>(I);
-    if (LoopAttr && LoopAttr2) {
-      S.Diag(Range.getBegin(), diag::err_attributes_are_not_compatible)
-          << LoopAttr->getSpelling() << LoopAttr2->getSpelling();
-    }
   }
 }
 
 static void CheckForIncompatibleSYCLLoopAttributes(
-    Sema &S, const SmallVectorImpl<const Attr *> &Attrs, SourceRange Range) {
-  CheckForDuplicationSYCLLoopAttribute<SYCLIntelFPGAIIAttr>(S, Attrs, Range);
-  CheckForDuplicationSYCLLoopAttribute<SYCLIntelFPGAMaxConcurrencyAttr>(
-      S, Attrs, Range);
-  CheckForDuplicationSYCLLoopAttribute<SYCLIntelFPGALoopCoalesceAttr>(S, Attrs,
-                                                                      Range);
-  CheckForDuplicationSYCLLoopAttribute<SYCLIntelFPGADisableLoopPipeliningAttr>(
-      S, Attrs, Range);
-  CheckForDuplicationSYCLLoopAttribute<SYCLIntelFPGAMaxInterleavingAttr>(
-      S, Attrs, Range);
-  CheckForDuplicationSYCLLoopAttribute<SYCLIntelFPGASpeculatedIterationsAttr>(
-      S, Attrs, Range);
-  CheckForDuplicationSYCLLoopAttribute<LoopUnrollHintAttr>(S, Attrs, Range,
-                                                           false);
-  CheckMutualExclusionSYCLLoopAttribute<SYCLIntelFPGADisableLoopPipeliningAttr,
-                                        SYCLIntelFPGAMaxInterleavingAttr>(
-      S, Attrs, Range);
-  CheckMutualExclusionSYCLLoopAttribute<SYCLIntelFPGADisableLoopPipeliningAttr,
-                                        SYCLIntelFPGASpeculatedIterationsAttr>(
-      S, Attrs, Range);
-  CheckMutualExclusionSYCLLoopAttribute<SYCLIntelFPGADisableLoopPipeliningAttr,
-                                        SYCLIntelFPGAIIAttr>(S, Attrs, Range);
-  CheckMutualExclusionSYCLLoopAttribute<SYCLIntelFPGADisableLoopPipeliningAttr,
-                                        SYCLIntelFPGAIVDepAttr>(S, Attrs,
-                                                                Range);
-  CheckMutualExclusionSYCLLoopAttribute<SYCLIntelFPGADisableLoopPipeliningAttr,
-                                        SYCLIntelFPGAMaxConcurrencyAttr>(
-      S, Attrs, Range);
-
-  CheckRedundantSYCLIntelFPGAIVDepAttrs(S, Attrs);
+    Sema &S, const SmallVectorImpl<const Attr *> &Attrs) {
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelInitiationIntervalAttr>(
+      S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelMaxConcurrencyAttr>(S,
+                                                                        Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelLoopCoalesceAttr>(S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelDisableLoopPipeliningAttr>(
+      S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelMaxInterleavingAttr>(S,
+                                                                         Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelSpeculatedIterationsAttr>(
+      S, Attrs);
+  CheckForDuplicateSYCLIntelLoopCountAttrs(S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<LoopUnrollHintAttr>(S, Attrs, false);
+  CheckRedundantSYCLIntelIVDepAttrs(S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelNofusionAttr>(S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelMaxReinvocationDelayAttr>(
+      S, Attrs);
+  CheckForDuplicationSYCLLoopAttribute<SYCLIntelEnableLoopPipeliningAttr>(
+      S, Attrs);
 }
 
 void CheckForIncompatibleUnrollHintAttributes(
@@ -624,20 +935,19 @@ static bool CheckLoopUnrollAttrExpr(Sema &S, Expr *E,
                                     const AttributeCommonInfo &A,
                                     unsigned *UnrollFactor = nullptr) {
   if (E && !E->isInstantiationDependent()) {
-    llvm::APSInt ArgVal(32);
-
-    if (!E->isIntegerConstantExpr(ArgVal, S.Context))
+    std::optional<llvm::APSInt> ArgVal = E->getIntegerConstantExpr(S.Context);
+    if (!ArgVal)
       return S.Diag(E->getExprLoc(), diag::err_attribute_argument_type)
              << A.getAttrName() << AANT_ArgumentIntegerConstant
              << E->getSourceRange();
 
-    if (ArgVal.isNonPositive())
+    if (ArgVal->isNonPositive())
       return S.Diag(E->getExprLoc(),
                     diag::err_attribute_requires_positive_integer)
              << A.getAttrName() << /* positive */ 0;
 
     if (UnrollFactor)
-      *UnrollFactor = ArgVal.getZExtValue();
+      *UnrollFactor = ArgVal->getZExtValue();
   }
   return false;
 }
@@ -665,50 +975,61 @@ static Attr *handleLoopUnrollHint(Sema &S, Stmt *St, const ParsedAttr &A,
   // determines unrolling factor) or 1 argument (the unroll factor provided
   // by the user).
 
-  unsigned NumArgs = A.getNumArgs();
-
-  if (NumArgs > 1) {
-    S.Diag(A.getLoc(), diag::err_attribute_too_many_arguments) << A << 1;
-    return nullptr;
-  }
-
-  Expr *E = NumArgs ? A.getArgAsExpr(0) : nullptr;
+  Expr *E = A.getNumArgs() ? A.getArgAsExpr(0) : nullptr;
   if (A.getParsedKind() == ParsedAttr::AT_OpenCLUnrollHint)
     return S.BuildOpenCLLoopUnrollHintAttr(A, E);
-  else if (A.getParsedKind() == ParsedAttr::AT_LoopUnrollHint)
+  if (A.getParsedKind() == ParsedAttr::AT_LoopUnrollHint)
     return S.BuildLoopUnrollHintAttr(A, E);
 
-  return nullptr;
+  llvm_unreachable("Unknown loop unroll hint");
 }
 
 static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &A,
                                   SourceRange Range) {
-  switch (A.getKind()) {
-  case ParsedAttr::UnknownAttribute:
+  if (A.isInvalid() || A.getKind() == ParsedAttr::IgnoredAttribute)
+    return nullptr;
+
+  // Unknown attributes are automatically warned on. Target-specific attributes
+  // which do not apply to the current target architecture are treated as
+  // though they were unknown attributes.
+  const TargetInfo *Aux = S.Context.getAuxTargetInfo();
+  if (A.getKind() == ParsedAttr::UnknownAttribute ||
+      !(A.existsInTarget(S.Context.getTargetInfo()) ||
+        (S.Context.getLangOpts().SYCLIsDevice && Aux &&
+         A.existsInTarget(*Aux)))) {
     S.Diag(A.getLoc(), A.isDeclspecAttribute()
                            ? (unsigned)diag::warn_unhandled_ms_attribute_ignored
                            : (unsigned)diag::warn_unknown_attribute_ignored)
-        << A;
+        << A << A.getRange();
     return nullptr;
+  }
+
+  if (S.checkCommonAttributeFeatures(St, A))
+    return nullptr;
+
+  switch (A.getKind()) {
+  case ParsedAttr::AT_AlwaysInline:
+    return handleAlwaysInlineAttr(S, St, A, Range);
   case ParsedAttr::AT_FallThrough:
     return handleFallThroughAttr(S, St, A, Range);
   case ParsedAttr::AT_LoopHint:
     return handleLoopHintAttr(S, St, A, Range);
-  case ParsedAttr::AT_SYCLIntelFPGAIVDep:
-    return handleIntelFPGAIVDepAttr(S, A);
-  case ParsedAttr::AT_SYCLIntelFPGAII:
-    return handleIntelFPGALoopAttr<SYCLIntelFPGAIIAttr>(S, A);
-  case ParsedAttr::AT_SYCLIntelFPGAMaxConcurrency:
-    return handleIntelFPGALoopAttr<SYCLIntelFPGAMaxConcurrencyAttr>(S, A);
-  case ParsedAttr::AT_SYCLIntelFPGALoopCoalesce:
-    return handleIntelFPGALoopAttr<SYCLIntelFPGALoopCoalesceAttr>(S, A);
-  case ParsedAttr::AT_SYCLIntelFPGADisableLoopPipelining:
-    return handleIntelFPGALoopAttr<SYCLIntelFPGADisableLoopPipeliningAttr>(S,
-                                                                           A);
-  case ParsedAttr::AT_SYCLIntelFPGAMaxInterleaving:
-    return handleIntelFPGALoopAttr<SYCLIntelFPGAMaxInterleavingAttr>(S, A);
-  case ParsedAttr::AT_SYCLIntelFPGASpeculatedIterations:
-    return handleIntelFPGALoopAttr<SYCLIntelFPGASpeculatedIterationsAttr>(S, A);
+  case ParsedAttr::AT_SYCLIntelIVDep:
+    return handleIntelIVDepAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelInitiationInterval:
+    return handleSYCLIntelInitiationIntervalAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelMaxConcurrency:
+    return handleSYCLIntelMaxConcurrencyAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelLoopCoalesce:
+    return handleSYCLIntelLoopCoalesceAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelDisableLoopPipelining:
+    return handleSYCLIntelDisableLoopPipeliningAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelMaxInterleaving:
+    return handleSYCLIntelMaxInterleavingAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelSpeculatedIterations:
+    return handleSYCLIntelSpeculatedIterationsAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelLoopCount:
+    return handleSYCLIntelLoopCountAttr(S, St, A);
   case ParsedAttr::AT_OpenCLUnrollHint:
   case ParsedAttr::AT_LoopUnrollHint:
     return handleLoopUnrollHint(S, St, A, Range);
@@ -716,34 +1037,42 @@ static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &A,
     return handleSuppressAttr(S, St, A, Range);
   case ParsedAttr::AT_NoMerge:
     return handleNoMergeAttr(S, St, A, Range);
+  case ParsedAttr::AT_NoInline:
+    return handleNoInlineAttr(S, St, A, Range);
+  case ParsedAttr::AT_MustTail:
+    return handleMustTailAttr(S, St, A, Range);
+  case ParsedAttr::AT_Likely:
+    return handleLikely(S, St, A, Range);
+  case ParsedAttr::AT_Unlikely:
+    return handleUnlikely(S, St, A, Range);
+  case ParsedAttr::AT_SYCLIntelNofusion:
+    return handleIntelNofusionAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelMaxReinvocationDelay:
+    return handleSYCLIntelMaxReinvocationDelayAttr(S, St, A);
+  case ParsedAttr::AT_SYCLIntelEnableLoopPipelining:
+    return handleSYCLIntelEnableLoopPipeliningAttr(S, St, A);
   default:
-    // if we're here, then we parsed a known attribute, but didn't recognize
-    // it as a statement attribute => it is declaration attribute
+    // N.B., ClangAttrEmitter.cpp emits a diagnostic helper that ensures a
+    // declaration attribute is not written on a statement, but this code is
+    // needed for attributes in Attr.td that do not list any subjects.
     S.Diag(A.getRange().getBegin(), diag::err_decl_attribute_invalid_on_stmt)
         << A << St->getBeginLoc();
     return nullptr;
   }
 }
 
-StmtResult Sema::ProcessStmtAttributes(Stmt *S,
-                                       const ParsedAttributesView &AttrList,
-                                       SourceRange Range) {
-  SmallVector<const Attr*, 8> Attrs;
-  for (const ParsedAttr &AL : AttrList) {
-    if (Attr *a = ProcessStmtAttribute(*this, S, AL, Range))
-      Attrs.push_back(a);
+void Sema::ProcessStmtAttributes(Stmt *S, const ParsedAttributes &InAttrs,
+                                 SmallVectorImpl<const Attr *> &OutAttrs) {
+  for (const ParsedAttr &AL : InAttrs) {
+    if (const Attr *A = ProcessStmtAttribute(*this, S, AL, InAttrs.Range))
+      OutAttrs.push_back(A);
   }
 
-  CheckForIncompatibleAttributes(*this, Attrs);
-  CheckForIncompatibleSYCLLoopAttributes(*this, Attrs, Range);
-  CheckForIncompatibleUnrollHintAttributes(*this, Attrs, Range);
-
-  if (Attrs.empty())
-    return S;
-
-  return ActOnAttributedStmt(Range.getBegin(), Attrs, S);
+  CheckForIncompatibleAttributes(*this, OutAttrs);
+  CheckForIncompatibleSYCLLoopAttributes(*this, OutAttrs);
+  CheckForIncompatibleUnrollHintAttributes(*this, OutAttrs, InAttrs.Range);
 }
 bool Sema::CheckRebuiltAttributedStmtAttributes(ArrayRef<const Attr *> Attrs) {
-  CheckRedundantSYCLIntelFPGAIVDepAttrs(*this, Attrs);
+  CheckRedundantSYCLIntelIVDepAttrs(*this, Attrs);
   return false;
 }

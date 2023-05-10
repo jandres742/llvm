@@ -1,7 +1,3 @@
-"""Test aspects of lldb commands on universal binaries."""
-
-
-
 import unittest2
 import os
 import lldb
@@ -14,9 +10,9 @@ def haswellOrLater():
     return "AVX2" in features.split()
 
 class UniversalTestCase(TestBase):
+    """Test aspects of lldb commands on universal binaries."""
 
     NO_DEBUG_INFO_TESTCASE = True
-    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -29,6 +25,7 @@ class UniversalTestCase(TestBase):
     @unittest2.skipUnless(hasattr(os, "uname") and os.uname()[4] in
                           ['x86_64'], "requires x86_64")
     @skipIfDarwinEmbedded # this test file assumes we're targetting an x86 system
+    @skipIf(compiler="clang", compiler_version=['<', '7.0'])
     def test_sbdebugger_create_target_with_file_and_target_triple(self):
         """Test the SBDebugger.CreateTargetWithFileAndTargetTriple() API."""
         # Invoke the default build rule.
@@ -39,9 +36,10 @@ class UniversalTestCase(TestBase):
 
         # Create a target by the debugger.
         target = self.dbg.CreateTargetWithFileAndTargetTriple(
-            exe, "x86_64-apple-macosx")
+            exe, "x86_64-apple-macosx10.10")
         self.assertTrue(target, VALID_TARGET)
-        self.expect("image list -A -b", substrs=["x86_64 testit"])
+        self.expect("image list -t -b", substrs=["x86_64-apple-macosx10.9.0 testit"])
+        self.expect("target list", substrs=["testit", "arch=x86_64-apple-macosx10.10"])
 
         # Now launch the process, and do not stop at entry point.
         process = target.LaunchSimple(
@@ -52,6 +50,7 @@ class UniversalTestCase(TestBase):
     @unittest2.skipUnless(hasattr(os, "uname") and os.uname()[4] in
                           ['x86_64'], "requires x86_64")
     @skipIfDarwinEmbedded # this test file assumes we're targetting an x86 system
+    @skipIf(compiler="clang", compiler_version=['<', '7.0'])
     def test_process_launch_for_universal(self):
         """Test process launch of a universal binary."""
         from lldbsuite.test.lldbutil import print_registers
@@ -137,13 +136,12 @@ class UniversalTestCase(TestBase):
             "Our main breakpoint has locations.")
 
         popen = self.spawnSubprocess(exe, ["keep_waiting"])
-        self.addTearDownHook(self.cleanupSubprocesses)
 
         error = lldb.SBError()
         empty_listener = lldb.SBListener()
         process = target.AttachToProcessWithID(
             empty_listener, popen.pid, error)
-        self.assertTrue(error.Success(), "Attached to process.")
+        self.assertSuccess(error, "Attached to process.")
 
         self.expect("image list -A -b", substrs=["x86_64h testit"])
 

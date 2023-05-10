@@ -20,6 +20,7 @@ def LoopLikeOpInterface : OpInterface<"LoopLikeOpInterface"> {
     Encodes properties of a loop. Operations that implement this interface will
     be considered by loop-invariant code motion.
   }];
+  let cppNamespace = "::mlir";
 
   let methods = [
     InterfaceMethod<[{
@@ -29,21 +30,80 @@ def LoopLikeOpInterface : OpInterface<"LoopLikeOpInterface"> {
         explicit capture of dependencies, an implementation could check whether
         the value corresponds to a captured dependency.
       }],
-      "bool", "isDefinedOutsideOfLoop", (ins "Value ":$value)
+      "bool", "isDefinedOutsideOfLoop", (ins "::mlir::Value ":$value), [{}], [{
+        return value.getParentRegion()->isProperAncestor(&$_op.getLoopBody());
+      }]
     >,
     InterfaceMethod<[{
         Returns the region that makes up the body of the loop and should be
         inspected for loop-invariant operations.
       }],
-      "Region &", "getLoopBody"
+      "::mlir::Region &", "getLoopBody"
     >,
     InterfaceMethod<[{
-        Moves the given vector of operations out of the loop. The vector is
-        sorted topologically.
+        Moves the given loop-invariant operation out of the loop.
       }],
-      "LogicalResult", "moveOutOfLoop", (ins "ArrayRef<Operation *>":$ops)
+      "void", "moveOutOfLoop",
+      (ins "::mlir::Operation *":$op), [{}], [{
+        op->moveBefore($_op);
+      }]
+    >,
+    InterfaceMethod<[{
+        If there is a single induction variable return it, otherwise return
+        std::nullopt.
+      }],
+      /*retTy=*/"::std::optional<::mlir::Value>",
+      /*methodName=*/"getSingleInductionVar",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return std::nullopt;
+      }]
+    >,
+    InterfaceMethod<[{
+        Return the single lower bound value or attribute if it exists, otherwise
+        return std::nullopt.
+      }],
+      /*retTy=*/"::std::optional<::mlir::OpFoldResult>",
+      /*methodName=*/"getSingleLowerBound",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return std::nullopt;
+      }]
+    >,
+    InterfaceMethod<[{
+        Return the single step value or attribute if it exists, otherwise
+        return std::nullopt.
+      }],
+      /*retTy=*/"::std::optional<::mlir::OpFoldResult>",
+      /*methodName=*/"getSingleStep",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return std::nullopt;
+      }]
+    >,
+    InterfaceMethod<[{
+        Return the single upper bound value or attribute if it exists, otherwise
+        return std::nullopt.
+      }],
+      /*retTy=*/"::std::optional<::mlir::OpFoldResult>",
+      /*methodName=*/"getSingleUpperBound",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return std::nullopt;
+      }]
     >,
   ];
+
+  let extraClassDeclaration = [{
+    /// Returns if a block is inside a loop (within the current function). This
+    /// can either be because the block is nested inside a LoopLikeInterface, or
+    /// because the control flow graph is cyclic
+    static bool blockIsInLoop(Block *block);
+  }];
 }
 
 #endif // MLIR_INTERFACES_LOOPLIKEINTERFACE

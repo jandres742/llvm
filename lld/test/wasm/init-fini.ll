@@ -1,5 +1,5 @@
-; RUN: llc -filetype=obj -o %t.o %s
-; RUN: llc -filetype=obj %S/Inputs/global-ctor-dtor.ll -o %t.global-ctor-dtor.o
+; RUN: llc -mcpu=mvp -filetype=obj -o %t.o %s
+; RUN: llc -mcpu=mvp -filetype=obj %S/Inputs/global-ctor-dtor.ll -o %t.global-ctor-dtor.o
 
 target triple = "wasm32-unknown-unknown"
 
@@ -37,18 +37,18 @@ entry:
   ret void
 }
 
-@llvm.global_ctors = appending global [4 x { i32, void ()*, i8* }] [
-  { i32, void ()*, i8* } { i32 1001, void ()* @func1, i8* null },
-  { i32, void ()*, i8* } { i32 101, void ()* @func1, i8* null },
-  { i32, void ()*, i8* } { i32 101, void ()* @func2, i8* null },
-  { i32, void ()*, i8* } { i32 4000, void ()* @externCtor, i8* null }
+@llvm.global_ctors = appending global [4 x { i32, ptr, ptr }] [
+  { i32, ptr, ptr } { i32 1001, ptr @func1, ptr null },
+  { i32, ptr, ptr } { i32 101, ptr @func1, ptr null },
+  { i32, ptr, ptr } { i32 101, ptr @func2, ptr null },
+  { i32, ptr, ptr } { i32 4000, ptr @externCtor, ptr null }
 ]
 
-@llvm.global_dtors = appending global [4 x { i32, void ()*, i8* }] [
-  { i32, void ()*, i8* } { i32 1001, void ()* @func3, i8* null },
-  { i32, void ()*, i8* } { i32 101, void ()* @func3, i8* null },
-  { i32, void ()*, i8* } { i32 101, void ()* @func4, i8* null },
-  { i32, void ()*, i8* } { i32 4000, void ()* @externDtor, i8* null }
+@llvm.global_dtors = appending global [4 x { i32, ptr, ptr }] [
+  { i32, ptr, ptr } { i32 1001, ptr @func3, ptr null },
+  { i32, ptr, ptr } { i32 101, ptr @func3, ptr null },
+  { i32, ptr, ptr } { i32 101, ptr @func4, ptr null },
+  { i32, ptr, ptr } { i32 4000, ptr @externDtor, ptr null }
 ]
 
 ; RUN: wasm-ld --allow-undefined %t.o %t.global-ctor-dtor.o -o %t.wasm
@@ -127,6 +127,9 @@ entry:
 ; CHECK-NEXT:         Name:            .Lcall_dtors.2002
 ; CHECK-NEXT:       - Index:           22
 ; CHECK-NEXT:         Name:            .Lregister_call_dtors.2002
+; CHECK-NEXT:     GlobalNames:
+; CHECK-NEXT:       - Index:           0
+; CHECK-NEXT:         Name:            __stack_pointer
 ; CHECK-NEXT: ...
 
 ; RUN: wasm-ld -r %t.o %t.global-ctor-dtor.o -o %t.reloc.wasm
@@ -136,15 +139,15 @@ entry:
 ; RELOC-NEXT:  InitFunctions [
 ; RELOC-NEXT:    0 (priority=101)
 ; RELOC-NEXT:    1 (priority=101)
-; RELOC-NEXT:    14 (priority=101)
-; RELOC-NEXT:    10 (priority=101)
-; RELOC-NEXT:    20 (priority=101)
-; RELOC-NEXT:    10 (priority=202)
-; RELOC-NEXT:    22 (priority=202)
+; RELOC-NEXT:    15 (priority=101)
+; RELOC-NEXT:    11 (priority=101)
+; RELOC-NEXT:    21 (priority=101)
+; RELOC-NEXT:    11 (priority=202)
+; RELOC-NEXT:    23 (priority=202)
 ; RELOC-NEXT:    0 (priority=1001)
-; RELOC-NEXT:    16 (priority=1001)
-; RELOC-NEXT:    10 (priority=2002)
-; RELOC-NEXT:    24 (priority=2002)
+; RELOC-NEXT:    17 (priority=1001)
+; RELOC-NEXT:    11 (priority=2002)
+; RELOC-NEXT:    25 (priority=2002)
 ; RELOC-NEXT:    9 (priority=4000)
-; RELOC-NEXT:    18 (priority=4000)
+; RELOC-NEXT:    19 (priority=4000)
 ; RELOC-NEXT:  ]

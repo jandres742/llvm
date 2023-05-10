@@ -8,9 +8,9 @@
 
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 
-#include "llvm/Support/Host.h"
-#include "llvm/Support/TargetRegistry.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Host.h"
 
 namespace llvm {
 namespace orc {
@@ -18,7 +18,7 @@ namespace orc {
 JITTargetMachineBuilder::JITTargetMachineBuilder(Triple TT)
     : TT(std::move(TT)) {
   Options.EmulatedTLS = true;
-  Options.ExplicitEmulatedTLS = true;
+  Options.UseInitArray = true;
 }
 
 Expected<JITTargetMachineBuilder> JITTargetMachineBuilder::detectHost() {
@@ -47,6 +47,10 @@ JITTargetMachineBuilder::createTargetMachine() {
   if (!TheTarget)
     return make_error<StringError>(std::move(ErrMsg), inconvertibleErrorCode());
 
+  if (!TheTarget->hasJIT())
+    return make_error<StringError>("Target has no JIT support",
+                                   inconvertibleErrorCode());
+
   auto *TM =
       TheTarget->createTargetMachine(TT.getTriple(), CPU, Features.getString(),
                                      Options, RM, CM, OptLevel, /*JIT*/ true);
@@ -65,9 +69,13 @@ JITTargetMachineBuilder &JITTargetMachineBuilder::addFeatures(
 }
 
 #ifndef NDEBUG
-raw_ostream &operator<<(raw_ostream &OS, const JITTargetMachineBuilder &JTMB) {
-  OS << "{ Triple = \"" << JTMB.TT.str() << "\", CPU = \"" << JTMB.CPU
-     << "\", Options = <not-printable>, Relocation Model = ";
+void JITTargetMachineBuilderPrinter::print(raw_ostream &OS) const {
+  OS << Indent << "{\n"
+     << Indent << "  Triple = \"" << JTMB.TT.str() << "\"\n"
+     << Indent << "  CPU = \"" << JTMB.CPU << "\"\n"
+     << Indent << "  Features = \"" << JTMB.Features.getString() << "\"\n"
+     << Indent << "  Options = <not-printable>\n"
+     << Indent << "  Relocation Model = ";
 
   if (JTMB.RM) {
     switch (*JTMB.RM) {
@@ -91,9 +99,10 @@ raw_ostream &operator<<(raw_ostream &OS, const JITTargetMachineBuilder &JTMB) {
       break;
     }
   } else
-    OS << "unspecified";
+    OS << "unspecified (will use target default)";
 
-  OS << ", Code Model = ";
+  OS << "\n"
+     << Indent << "  Code Model = ";
 
   if (JTMB.CM) {
     switch (*JTMB.CM) {
@@ -114,9 +123,10 @@ raw_ostream &operator<<(raw_ostream &OS, const JITTargetMachineBuilder &JTMB) {
       break;
     }
   } else
-    OS << "unspecified";
+    OS << "unspecified (will use target default)";
 
-  OS << ", Optimization Level = ";
+  OS << "\n"
+     << Indent << "  Optimization Level = ";
   switch (JTMB.OptLevel) {
   case CodeGenOpt::None:
     OS << "None";
@@ -132,8 +142,7 @@ raw_ostream &operator<<(raw_ostream &OS, const JITTargetMachineBuilder &JTMB) {
     break;
   }
 
-  OS << " }";
-  return OS;
+  OS << "\n" << Indent << "}\n";
 }
 #endif // NDEBUG
 

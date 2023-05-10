@@ -6,48 +6,73 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <CL/sycl/detail/common.hpp>
-#include <CL/sycl/info/info_desc.hpp>
-#include <CL/sycl/program.hpp>
 #include <detail/context_impl.hpp>
+#include <detail/kernel_bundle_impl.hpp>
 #include <detail/kernel_impl.hpp>
-#include <detail/kernel_info.hpp>
+#include <detail/program_impl.hpp>
 
 #include <memory>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 namespace detail {
 
-kernel_impl::kernel_impl(RT::PiKernel Kernel, ContextImplPtr Context)
+kernel_impl::kernel_impl(RT::PiKernel Kernel, ContextImplPtr Context,
+                         KernelBundleImplPtr KernelBundleImpl,
+                         const KernelArgMask *ArgMask)
     : kernel_impl(Kernel, Context,
                   std::make_shared<program_impl>(Context, Kernel),
-                  /*IsCreatedFromSource*/ true) {
+                  /*IsCreatedFromSource*/ true, KernelBundleImpl, ArgMask) {
+  // Enable USM indirect access for interoperability kernels.
+  // Some PI Plugins (like OpenCL) require this call to enable USM
+  // For others, PI will turn this into a NOP.
+  getPlugin().call<PiApiKind::piKernelSetExecInfo>(
+      MKernel, PI_USM_INDIRECT_ACCESS, sizeof(pi_bool), &PI_TRUE);
+
   // This constructor is only called in the interoperability kernel constructor.
-  // Let the runtime caller handle native kernel retaining in other cases if
-  // it's needed.
-  getPlugin().call<PiApiKind::piKernelRetain>(MKernel);
+  MIsInterop = true;
 }
 
 kernel_impl::kernel_impl(RT::PiKernel Kernel, ContextImplPtr ContextImpl,
-                         ProgramImplPtr ProgramImpl,
-                         bool IsCreatedFromSource)
+                         ProgramImplPtr ProgramImpl, bool IsCreatedFromSource,
+                         KernelBundleImplPtr KernelBundleImpl,
+                         const KernelArgMask *ArgMask)
     : MKernel(Kernel), MContext(ContextImpl),
       MProgramImpl(std::move(ProgramImpl)),
-      MCreatedFromSource(IsCreatedFromSource) {
+      MCreatedFromSource(IsCreatedFromSource),
+      MKernelBundleImpl(std::move(KernelBundleImpl)),
+      MKernelArgMaskPtr{ArgMask} {
 
   RT::PiContext Context = nullptr;
   // Using the plugin from the passed ContextImpl
   getPlugin().call<PiApiKind::piKernelGetInfo>(
       MKernel, PI_KERNEL_INFO_CONTEXT, sizeof(Context), &Context, nullptr);
   if (ContextImpl->getHandleRef() != Context)
-    throw cl::sycl::invalid_parameter_error(
+    throw sycl::invalid_parameter_error(
         "Input context must be the same as the context of cl_kernel",
-        PI_INVALID_CONTEXT);
+        PI_ERROR_INVALID_CONTEXT);
+
+  MIsInterop = MProgramImpl->isInterop();
 }
 
-kernel_impl::kernel_impl(ContextImplPtr Context,
-                         ProgramImplPtr ProgramImpl)
+kernel_impl::kernel_impl(RT::PiKernel Kernel, ContextImplPtr ContextImpl,
+                         DeviceImageImplPtr DeviceImageImpl,
+                         KernelBundleImplPtr KernelBundleImpl,
+                         const KernelArgMask *ArgMask)
+    : MKernel(Kernel), MContext(std::move(ContextImpl)), MProgramImpl(nullptr),
+      MCreatedFromSource(false), MDeviceImageImpl(std::move(DeviceImageImpl)),
+      MKernelBundleImpl(std::move(KernelBundleImpl)),
+      MKernelArgMaskPtr{ArgMask} {
+
+  // kernel_impl shared ownership of kernel handle
+  if (!is_host()) {
+    getPlugin().call<PiApiKind::piKernelRetain>(MKernel);
+  }
+
+  MIsInterop = MKernelBundleImpl->isInterop();
+}
+
+kernel_impl::kernel_impl(ContextImplPtr Context, ProgramImplPtr ProgramImpl)
     : MContext(Context), MProgramImpl(std::move(ProgramImpl)) {}
 
 kernel_impl::~kernel_impl() {
@@ -56,92 +81,6 @@ kernel_impl::~kernel_impl() {
     getPlugin().call<PiApiKind::piKernelRelease>(MKernel);
   }
 }
-
-template <info::kernel param>
-typename info::param_traits<info::kernel, param>::return_type
-kernel_impl::get_info() const {
-  if (is_host()) {
-    // TODO implement
-    assert(0 && "Not implemented");
-  }
-  return get_kernel_info<
-      typename info::param_traits<info::kernel, param>::return_type,
-      param>::get(this->getHandleRef(), getPlugin());
-}
-
-template <> context kernel_impl::get_info<info::kernel::context>() const {
-  return createSyclObjFromImpl<context>(MContext);
-}
-
-template <> program kernel_impl::get_info<info::kernel::program>() const {
-  return createSyclObjFromImpl<program>(MProgramImpl);
-}
-
-template <info::kernel_work_group param>
-typename info::param_traits<info::kernel_work_group, param>::return_type
-kernel_impl::get_work_group_info(const device &Device) const {
-  if (is_host()) {
-    return get_kernel_work_group_info_host<param>(Device);
-  }
-  return get_kernel_work_group_info<
-      typename info::param_traits<info::kernel_work_group, param>::return_type,
-      param>::get(this->getHandleRef(), getSyclObjImpl(Device)->getHandleRef(),
-                  getPlugin());
-}
-
-template <info::kernel_sub_group param>
-typename info::param_traits<info::kernel_sub_group, param>::return_type
-kernel_impl::get_sub_group_info(const device &Device) const {
-  if (is_host()) {
-    throw runtime_error("Sub-group feature is not supported on HOST device.",
-                        PI_INVALID_DEVICE);
-  }
-  return get_kernel_sub_group_info<param>::get(
-      this->getHandleRef(), getSyclObjImpl(Device)->getHandleRef(),
-      getPlugin());
-}
-
-template <info::kernel_sub_group param>
-typename info::param_traits<info::kernel_sub_group, param>::return_type
-kernel_impl::get_sub_group_info(
-    const device &Device,
-    typename info::param_traits<info::kernel_sub_group, param>::input_type
-        Value) const {
-  if (is_host()) {
-    throw runtime_error("Sub-group feature is not supported on HOST device.",
-                        PI_INVALID_DEVICE);
-  }
-  return get_kernel_sub_group_info_with_input<param>::get(
-      this->getHandleRef(), getSyclObjImpl(Device)->getHandleRef(), Value,
-      getPlugin());
-}
-
-#define PARAM_TRAITS_SPEC(param_type, param, ret_type)                         \
-  template ret_type kernel_impl::get_info<info::param_type::param>() const;
-
-#include <CL/sycl/info/kernel_traits.def>
-
-#undef PARAM_TRAITS_SPEC
-
-#define PARAM_TRAITS_SPEC(param_type, param, ret_type)                         \
-  template ret_type kernel_impl::get_work_group_info<info::param_type::param>( \
-      const device &) const;
-
-#include <CL/sycl/info/kernel_work_group_traits.def>
-
-#undef PARAM_TRAITS_SPEC
-
-#define PARAM_TRAITS_SPEC(param_type, param, ret_type)                         \
-  template ret_type kernel_impl::get_sub_group_info<info::param_type::param>(  \
-      const device &) const;
-#define PARAM_TRAITS_SPEC_WITH_INPUT(param_type, param, ret_type, in_type)     \
-  template ret_type kernel_impl::get_sub_group_info<info::param_type::param>(  \
-      const device &, in_type) const;
-
-#include <CL/sycl/info/kernel_sub_group_traits.def>
-
-#undef PARAM_TRAITS_SPEC
-#undef PARAM_TRAITS_SPEC_WITH_INPUT
 
 bool kernel_impl::isCreatedFromSource() const {
   // TODO it is not clear how to understand whether the SYCL kernel is created
@@ -159,6 +98,31 @@ bool kernel_impl::isCreatedFromSource() const {
   return MCreatedFromSource;
 }
 
+bool kernel_impl::isBuiltInKernel(const device &Device) const {
+  auto BuiltInKernels = Device.get_info<info::device::built_in_kernel_ids>();
+  if (BuiltInKernels.empty())
+    return false;
+  std::string KernelName = get_info<info::kernel::function_name>();
+  return (std::any_of(
+      BuiltInKernels.begin(), BuiltInKernels.end(),
+      [&KernelName](kernel_id &Id) { return Id.get_name() == KernelName; }));
+}
+
+void kernel_impl::checkIfValidForNumArgsInfoQuery() const {
+  if (MKernelBundleImpl->isInterop())
+    return;
+  auto Devices = MKernelBundleImpl->get_devices();
+  if (std::any_of(Devices.begin(), Devices.end(),
+                  [this](device &Device) { return isBuiltInKernel(Device); }))
+    return;
+
+  throw sycl::exception(
+      sycl::make_error_code(errc::invalid),
+      "info::kernel::num_args descriptor may only be used to query a kernel "
+      "that resides in a kernel bundle constructed using a backend specific"
+      "interoperability function or to query a device built-in kernel");
+}
+
 } // namespace detail
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

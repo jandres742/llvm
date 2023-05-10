@@ -1,5 +1,5 @@
-; RUN: llc < %s -filetype=obj -o - | llvm-readobj --codeview --codeview-subsection-bytes | FileCheck %s
-; RUN: llc < %s -o - | llvm-mc -filetype=obj --triple=x86_64-windows | llvm-readobj --codeview --codeview-subsection-bytes | FileCheck %s
+; RUN: llc < %s -filetype=obj -o - | llvm-readobj --codeview --codeview-subsection-bytes - | FileCheck %s
+; RUN: llc < %s -o - | llvm-mc -filetype=obj --triple=x86_64-windows | llvm-readobj --codeview --codeview-subsection-bytes - | FileCheck %s
 
 ; Check how we pad out the LF_FUNC_ID records. The 00F3F2F1 bytes in LeafData are
 ; what's interesting here.
@@ -57,10 +57,10 @@ target triple = "x86_64-pc-windows-msvc"
 ; Function Attrs: norecurse nounwind
 define i32 @main() #0 !dbg !6 {
 entry:
-  store volatile i32 0, i32* @x, align 4, !dbg !11, !tbaa !16
-  store volatile i32 0, i32* @x, align 4, !dbg !20, !tbaa !16
-  store volatile i32 0, i32* @x, align 4, !dbg !23, !tbaa !16
-  store volatile i32 0, i32* @x, align 4, !dbg !26, !tbaa !16
+  store volatile i32 0, ptr @x, align 4, !dbg !11, !tbaa !16
+  store volatile i32 0, ptr @x, align 4, !dbg !20, !tbaa !16
+  store volatile i32 0, ptr @x, align 4, !dbg !23, !tbaa !16
+  store volatile i32 0, ptr @x, align 4, !dbg !26, !tbaa !16
   ret i32 0, !dbg !29
 }
 

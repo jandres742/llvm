@@ -9,6 +9,7 @@
 #include "../ClangTidy.h"
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
+#include "AvoidEndlCheck.h"
 #include "FasterStringFindCheck.h"
 #include "ForRangeCopyCheck.h"
 #include "ImplicitConversionInLoopCheck.h"
@@ -18,19 +19,20 @@
 #include "MoveConstArgCheck.h"
 #include "MoveConstructorInitCheck.h"
 #include "NoAutomaticMoveCheck.h"
+#include "NoIntToPtrCheck.h"
 #include "NoexceptMoveConstructorCheck.h"
 #include "TriviallyDestructibleCheck.h"
 #include "TypePromotionInMathFnCheck.h"
 #include "UnnecessaryCopyInitialization.h"
 #include "UnnecessaryValueParamCheck.h"
 
-namespace clang {
-namespace tidy {
+namespace clang::tidy {
 namespace performance {
 
 class PerformanceModule : public ClangTidyModule {
 public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
+    CheckFactories.registerCheck<AvoidEndlCheck>("performance-avoid-endl");
     CheckFactories.registerCheck<FasterStringFindCheck>(
         "performance-faster-string-find");
     CheckFactories.registerCheck<ForRangeCopyCheck>(
@@ -49,6 +51,7 @@ public:
         "performance-move-constructor-init");
     CheckFactories.registerCheck<NoAutomaticMoveCheck>(
         "performance-no-automatic-move");
+    CheckFactories.registerCheck<NoIntToPtrCheck>("performance-no-int-to-ptr");
     CheckFactories.registerCheck<NoexceptMoveConstructorCheck>(
         "performance-noexcept-move-constructor");
     CheckFactories.registerCheck<TriviallyDestructibleCheck>(
@@ -72,5 +75,4 @@ static ClangTidyModuleRegistry::Add<PerformanceModule>
 // and thus register the PerformanceModule.
 volatile int PerformanceModuleAnchorSource = 0;
 
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy

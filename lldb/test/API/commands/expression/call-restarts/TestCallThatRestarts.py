@@ -11,8 +11,6 @@ from lldbsuite.test import lldbutil
 
 
 class ExprCommandThatRestartsTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
     NO_DEBUG_INFO_TESTCASE = True
 
     def setUp(self):
@@ -22,11 +20,10 @@ class ExprCommandThatRestartsTestCase(TestBase):
         self.main_source = "lotta-signals.c"
         self.main_source_spec = lldb.SBFileSpec(self.main_source)
 
-    @skipIfFreeBSD  # llvm.org/pr19246: intermittent failure
     @skipIfDarwin  # llvm.org/pr19246: intermittent failure
     @skipIfWindows  # Test relies on signals, unsupported on Windows
     @expectedFlakeyAndroid(bugnumber="llvm.org/pr19246")
-    @expectedFailureNetBSD
+    @expectedFlakeyNetBSD
     def test(self):
         """Test calling function that hits a signal and restarts."""
         self.build()
@@ -34,17 +31,16 @@ class ExprCommandThatRestartsTestCase(TestBase):
 
     def check_after_call(self, num_sigchld):
         after_call = self.sigchld_no.GetValueAsSigned(-1)
-        self.assertTrue(
-            after_call -
-            self.start_sigchld_no == num_sigchld,
+        self.assertEqual(
+            after_call - self.start_sigchld_no, num_sigchld,
             "Really got %d SIGCHLD signals through the call." %
             (num_sigchld))
         self.start_sigchld_no = after_call
 
         # Check that we are back where we were before:
         frame = self.thread.GetFrameAtIndex(0)
-        self.assertTrue(
-            self.orig_frame_pc == frame.GetPC(),
+        self.assertEqual(
+            self.orig_frame_pc, frame.GetPC(),
             "Restored the zeroth frame correctly")
 
     def call_function(self):
@@ -52,10 +48,7 @@ class ExprCommandThatRestartsTestCase(TestBase):
                                       'Stop here in main.', self.main_source_spec)
 
         # Make sure the SIGCHLD behavior is pass/no-stop/no-notify:
-        return_obj = lldb.SBCommandReturnObject()
-        self.dbg.GetCommandInterpreter().HandleCommand(
-            "process handle SIGCHLD -s 0 -p 1 -n 0", return_obj)
-        self.assertTrue(return_obj.Succeeded(), "Set SIGCHLD to pass, no-stop")
+        self.runCmd("process handle SIGCHLD -s 0 -p 1 -n 0")
 
         # The sigchld_no variable should be 0 at this point.
         self.sigchld_no = target.FindFirstGlobalVariable("sigchld_no")
@@ -64,8 +57,8 @@ class ExprCommandThatRestartsTestCase(TestBase):
             "Got a value for sigchld_no")
 
         self.start_sigchld_no = self.sigchld_no.GetValueAsSigned(-1)
-        self.assertTrue(
-            self.start_sigchld_no != -1,
+        self.assertNotEqual(
+            self.start_sigchld_no, -1,
             "Got an actual value for sigchld_no")
 
         options = lldb.SBExpressionOptions()
@@ -84,7 +77,7 @@ class ExprCommandThatRestartsTestCase(TestBase):
             "call_me (%d)" %
             (num_sigchld), options)
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())
         self.assertEquals(value.GetValueAsSigned(-1), num_sigchld)
 
         self.check_after_call(num_sigchld)
@@ -101,23 +94,21 @@ class ExprCommandThatRestartsTestCase(TestBase):
             "call_me (%d)" %
             (num_sigchld), options)
 
-        self.assertTrue(value.IsValid() and value.GetError().Success())
+        self.assertTrue(value.IsValid())
+        self.assertSuccess(value.GetError())
         self.assertEquals(value.GetValueAsSigned(-1), num_sigchld)
         self.check_after_call(num_sigchld)
 
         # Now set the signal to print but not stop and make sure that calling
         # still works:
-        self.dbg.GetCommandInterpreter().HandleCommand(
-            "process handle SIGCHLD -s 0 -p 1 -n 1", return_obj)
-        self.assertTrue(
-            return_obj.Succeeded(),
-            "Set SIGCHLD to pass, no-stop, notify")
+        self.runCmd("process handle SIGCHLD -s 0 -p 1 -n 1")
 
         value = frame.EvaluateExpression(
             "call_me (%d)" %
             (num_sigchld), options)
 
-        self.assertTrue(value.IsValid() and value.GetError().Success())
+        self.assertTrue(value.IsValid())
+        self.assertSuccess(value.GetError())
         self.assertEquals(value.GetValueAsSigned(-1), num_sigchld)
         self.check_after_call(num_sigchld)
 
@@ -128,39 +119,31 @@ class ExprCommandThatRestartsTestCase(TestBase):
             "call_me (%d)" %
             (num_sigchld), options)
 
-        self.assertTrue(value.IsValid() and value.GetError().Success())
+        self.assertTrue(value.IsValid())
+        self.assertSuccess(value.GetError())
         self.assertEquals(value.GetValueAsSigned(-1), num_sigchld)
         self.check_after_call(num_sigchld)
 
         # Okay, now set UnwindOnError to true, and then make the signal behavior to stop
         # and see that now we do stop at the signal point:
 
-        self.dbg.GetCommandInterpreter().HandleCommand(
-            "process handle SIGCHLD -s 1 -p 1 -n 1", return_obj)
-        self.assertTrue(
-            return_obj.Succeeded(),
-            "Set SIGCHLD to pass, stop, notify")
+        self.runCmd("process handle SIGCHLD -s 1 -p 1 -n 1")
 
         value = frame.EvaluateExpression(
             "call_me (%d)" %
             (num_sigchld), options)
-        self.assertTrue(
-            value.IsValid() and value.GetError().Success() == False)
+        self.assertTrue(value.IsValid())
+        self.assertFalse(value.GetError().Success())
 
         # Set signal handling back to no-stop, and continue and we should end
         # up back in out starting frame:
-        self.dbg.GetCommandInterpreter().HandleCommand(
-            "process handle SIGCHLD -s 0 -p 1 -n 1", return_obj)
-        self.assertTrue(
-            return_obj.Succeeded(),
-            "Set SIGCHLD to pass, no-stop, notify")
+        self.runCmd("process handle SIGCHLD -s 0 -p 1 -n 1")
 
         error = process.Continue()
-        self.assertTrue(
-            error.Success(),
+        self.assertSuccess(error,
             "Continuing after stopping for signal succeeds.")
 
         frame = self.thread.GetFrameAtIndex(0)
-        self.assertTrue(
-            frame.GetPC() == self.orig_frame_pc,
+        self.assertEqual(
+            frame.GetPC(), self.orig_frame_pc,
             "Continuing returned to the place we started.")

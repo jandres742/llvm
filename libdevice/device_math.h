@@ -10,8 +10,44 @@
 #define __LIBDEVICE_DEVICE_MATH_H__
 
 #include "device.h"
+#if defined(__SPIR__) || defined(__NVPTX__)
+#include <cstdint>
 
-#ifdef __SPIR__
+typedef struct {
+  int32_t quot;
+  int32_t rem;
+} __devicelib_div_t_32;
+
+typedef struct {
+  int64_t quot;
+  int64_t rem;
+} __devicelib_div_t_64;
+
+typedef __devicelib_div_t_32 div_t;
+#ifdef _WIN32
+typedef __devicelib_div_t_32 ldiv_t;
+#else
+typedef __devicelib_div_t_64 ldiv_t;
+#endif
+typedef __devicelib_div_t_64 lldiv_t;
+
+DEVICE_EXTERN_C
+int __devicelib_abs(int x);
+
+DEVICE_EXTERN_C
+long int __devicelib_labs(long int x);
+
+DEVICE_EXTERN_C
+long long int __devicelib_llabs(long long int x);
+
+DEVICE_EXTERN_C
+div_t __devicelib_div(int x, int y);
+
+DEVICE_EXTERN_C
+ldiv_t __devicelib_ldiv(long int x, long int y);
+
+DEVICE_EXTERN_C
+lldiv_t __devicelib_lldiv(long long int x, long long int y);
 
 DEVICE_EXTERN_C
 double __devicelib_log(double x);
@@ -249,5 +285,9 @@ float __devicelib_logbf(float x);
 
 DEVICE_EXTERN_C
 float __devicelib_scalbnf(float x, int n);
-#endif // __SPIR__
+
+DEVICE_EXTERN_C
+double __devicelib_scalbn(double x, int exp);
+
+#endif // __SPIR__ || __NVPTX__
 #endif // __LIBDEVICE_DEVICE_MATH_H__

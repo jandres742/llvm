@@ -14,18 +14,21 @@
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CompilationDatabase.h"
+#include "clang/Tooling/DependencyScanning/DependencyScanningTool.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
 #include <algorithm>
 #include <string>
 
-namespace clang {
-namespace tooling {
+using namespace clang;
+using namespace tooling;
+using namespace dependencies;
 
 namespace {
 
@@ -203,5 +206,163 @@ TEST(DependencyScanner, ScanDepsReuseFilemanagerHasInclude) {
   EXPECT_EQ(convert_to_slash(Deps[5]), "/root/symlink.h");
 }
 
-} // end namespace tooling
-} // end namespace clang
+TEST(DependencyScanner, ScanDepsWithFS) {
+  std::vector<std::string> CommandLine = {"clang",
+                                          "-target",
+                                          "x86_64-apple-macosx10.7",
+                                          "-c",
+                                          "test.cpp",
+                                          "-o"
+                                          "test.cpp.o"};
+  StringRef CWD = "/root";
+
+  auto VFS = new llvm::vfs::InMemoryFileSystem();
+  VFS->setCurrentWorkingDirectory(CWD);
+  auto Sept = llvm::sys::path::get_separator();
+  std::string HeaderPath =
+      std::string(llvm::formatv("{0}root{0}header.h", Sept));
+  std::string TestPath = std::string(llvm::formatv("{0}root{0}test.cpp", Sept));
+
+  VFS->addFile(HeaderPath, 0, llvm::MemoryBuffer::getMemBuffer("\n"));
+  VFS->addFile(TestPath, 0,
+               llvm::MemoryBuffer::getMemBuffer("#include \"header.h\"\n"));
+
+  DependencyScanningService Service(ScanningMode::DependencyDirectivesScan,
+                                    ScanningOutputFormat::Make);
+  DependencyScanningTool ScanTool(Service, VFS);
+
+  std::string DepFile;
+  ASSERT_THAT_ERROR(
+      ScanTool.getDependencyFile(CommandLine, CWD).moveInto(DepFile),
+      llvm::Succeeded());
+  using llvm::sys::path::convert_to_slash;
+  EXPECT_EQ(convert_to_slash(DepFile),
+            "test.cpp.o: /root/test.cpp /root/header.h\n");
+}
+
+// Note: We want to test caching in DependencyScanningWorkerFilesystem. To do
+// that, we need to be able to mutate the underlying file system. However,
+// InMemoryFileSystem does not allow changing the contents of a file after it's
+// been created.
+// To simulate the behavior, we create two separate in-memory file systems, each
+// containing different version of the same file. We pass those to two scanning
+// file systems that share the same cache.
+
+TEST(DependencyScanningFileSystemTest, CacheFileContentsEnabled) {
+  DependencyScanningFilesystemSharedCache SharedCache;
+
+  StringRef Path = "/root/source.c";
+  auto Contents1 = llvm::MemoryBuffer::getMemBuffer("contents1");
+  auto Contents2 = llvm::MemoryBuffer::getMemBuffer("contents2");
+
+  {
+    auto InMemoryFS =
+        llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+    ASSERT_TRUE(InMemoryFS->addFile(Path, 0, std::move(Contents1)));
+    DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+    auto File = ScanningFS.openFileForRead(Path);
+    ASSERT_TRUE(File);
+    auto Buffer = (*File)->getBuffer("Buffer for /root/source.c.");
+    ASSERT_TRUE(Buffer);
+    auto Contents = (*Buffer)->getBuffer();
+    EXPECT_EQ(Contents, "contents1");
+  }
+
+  {
+    auto InMemoryFS =
+        llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+    ASSERT_TRUE(InMemoryFS->addFile(Path, 0, std::move(Contents2)));
+    DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+    auto File = ScanningFS.openFileForRead(Path);
+    ASSERT_TRUE(File);
+    auto Buffer = (*File)->getBuffer("Buffer for /root/source.c.");
+    ASSERT_TRUE(Buffer);
+    auto Contents = (*Buffer)->getBuffer();
+    EXPECT_EQ(Contents, "contents1");
+  }
+}
+
+TEST(DependencyScanningFileSystemTest, CacheFileContentsDisabled) {
+  DependencyScanningFilesystemSharedCache SharedCache;
+
+  StringRef Path = "/root/module.pcm";
+  auto Contents1 = llvm::MemoryBuffer::getMemBuffer("contents1");
+  auto Contents2 = llvm::MemoryBuffer::getMemBuffer("contents2");
+
+  {
+    auto InMemoryFS =
+        llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+    ASSERT_TRUE(InMemoryFS->addFile(Path, 0, std::move(Contents1)));
+    DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+    auto File = ScanningFS.openFileForRead(Path);
+    ASSERT_TRUE(File);
+    auto Buffer = (*File)->getBuffer("Buffer for /root/module.pcm.");
+    ASSERT_TRUE(Buffer);
+    auto Contents = (*Buffer)->getBuffer();
+    EXPECT_EQ(Contents, "contents1");
+  }
+
+  {
+    auto InMemoryFS =
+        llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+    ASSERT_TRUE(InMemoryFS->addFile(Path, 0, std::move(Contents2)));
+    DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+    auto File = ScanningFS.openFileForRead(Path);
+    ASSERT_TRUE(File);
+    auto Buffer = (*File)->getBuffer("Buffer for /root/module.pcm.");
+    ASSERT_TRUE(Buffer);
+    auto Contents = (*Buffer)->getBuffer();
+    EXPECT_EQ(Contents, "contents2");
+  }
+}
+
+TEST(DependencyScanningFileSystemTest, CacheStatFailureEnabled) {
+  DependencyScanningFilesystemSharedCache SharedCache;
+  auto InMemoryFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+
+  StringRef Path = "/root/source.c";
+
+  auto Stat1 = ScanningFS.status(Path);
+  EXPECT_FALSE(Stat1);
+
+  auto Contents = llvm::MemoryBuffer::getMemBuffer("contents");
+  InMemoryFS->addFile(Path, 0, std::move(Contents));
+
+  auto Stat2 = ScanningFS.status(Path);
+  EXPECT_FALSE(Stat2);
+}
+
+TEST(DependencyScanningFileSystemTest, CacheStatFailureDisabledFile) {
+  DependencyScanningFilesystemSharedCache SharedCache;
+  auto InMemoryFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+
+  StringRef Path = "/root/vector";
+
+  auto Stat1 = ScanningFS.status(Path);
+  EXPECT_FALSE(Stat1);
+
+  auto Contents = llvm::MemoryBuffer::getMemBuffer("contents");
+  InMemoryFS->addFile(Path, 0, std::move(Contents));
+
+  auto Stat2 = ScanningFS.status(Path);
+  EXPECT_TRUE(Stat2);
+}
+
+TEST(DependencyScanningFileSystemTest, CacheStatFailureDisabledDirectory) {
+  DependencyScanningFilesystemSharedCache SharedCache;
+  auto InMemoryFS = llvm::makeIntrusiveRefCnt<llvm::vfs::InMemoryFileSystem>();
+  DependencyScanningWorkerFilesystem ScanningFS(SharedCache, InMemoryFS);
+
+  StringRef Path = "/root/dir";
+
+  auto Stat1 = ScanningFS.status(Path);
+  EXPECT_FALSE(Stat1);
+
+  auto Contents = llvm::MemoryBuffer::getMemBuffer("contents");
+  InMemoryFS->addFile("/root/dir/file", 0, std::move(Contents));
+
+  auto Stat2 = ScanningFS.status(Path);
+  EXPECT_TRUE(Stat2);
+}

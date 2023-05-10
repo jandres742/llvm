@@ -44,10 +44,12 @@
 #include "SPIRVEnum.h"
 #include "SPIRVError.h"
 #include "SPIRVIsValidEnum.h"
+
 #include <cassert>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -60,6 +62,7 @@ class SPIRVDecoder;
 class SPIRVType;
 class SPIRVValue;
 class SPIRVDecorate;
+class SPIRVDecorateId;
 class SPIRVForward;
 class SPIRVMemberDecorate;
 class SPIRVLine;
@@ -267,6 +270,7 @@ public:
 
   bool exist(SPIRVId) const;
   template <class T> T *get(SPIRVId TheId) const {
+    // NOLINTNEXTLINE
     return static_cast<T *>(getEntry(TheId));
   }
   SPIRVEntry *getEntry(SPIRVId) const;
@@ -289,21 +293,34 @@ public:
   Op getOpCode() const { return OpCode; }
   SPIRVModule *getModule() const { return Module; }
   virtual SPIRVCapVec getRequiredCapability() const { return SPIRVCapVec(); }
-  virtual SPIRVExtSet getRequiredExtensions() const { return SPIRVExtSet(); }
+  virtual std::optional<ExtensionID> getRequiredExtension() const { return {}; }
   const std::string &getName() const { return Name; }
+  size_t getNumDecorations() const { return Decorates.size(); }
   bool hasDecorate(Decoration Kind, size_t Index = 0,
                    SPIRVWord *Result = 0) const;
+  bool hasDecorateId(Decoration Kind, size_t Index = 0,
+                     SPIRVId *Result = 0) const;
   bool hasMemberDecorate(Decoration Kind, size_t Index = 0,
                          SPIRVWord MemberNumber = 0,
                          SPIRVWord *Result = 0) const;
   std::vector<SPIRVWord> getDecorationLiterals(Decoration Kind) const;
+  std::vector<SPIRVId> getDecorationIdLiterals(Decoration Kind) const;
   std::vector<SPIRVWord>
   getMemberDecorationLiterals(Decoration Kind, SPIRVWord MemberNumber) const;
   std::vector<std::string> getDecorationStringLiteral(Decoration Kind) const;
+  std::vector<std::vector<std::string>>
+  getAllDecorationStringLiterals(Decoration Kind) const;
+  std::vector<std::vector<std::string>>
+  getAllMemberDecorationStringLiterals(Decoration Kind,
+                                       SPIRVWord MemberNumber) const;
   std::vector<std::string>
   getMemberDecorationStringLiteral(Decoration Kind,
                                    SPIRVWord MemberNumber) const;
   std::set<SPIRVWord> getDecorate(Decoration Kind, size_t Index = 0) const;
+  std::vector<SPIRVDecorate const *> getDecorations(Decoration Kind) const;
+  std::vector<SPIRVDecorate const *> getDecorations() const;
+  std::set<SPIRVId> getDecorateId(Decoration Kind, size_t Index = 0) const;
+  std::vector<SPIRVDecorateId const *> getDecorationIds(Decoration Kind) const;
   bool hasId() const { return !(Attrib & SPIRVEA_NOID); }
   bool hasLine() const { return Line != nullptr; }
   bool hasLinkageType() const;
@@ -314,8 +331,9 @@ public:
   bool isExtInst(const SPIRVExtInstSetKind InstSet,
                  const SPIRVWord ExtOp) const;
   bool isDecorate() const { return OpCode == OpDecorate; }
+  bool isDecorateId() const { return OpCode == OpDecorateId; }
   bool isMemberDecorate() const { return OpCode == OpMemberDecorate; }
-  bool isForward() const { return OpCode == OpForward; }
+  bool isForward() const { return OpCode == internal::OpForward; }
   bool isLabel() const { return OpCode == OpLabel; }
   bool isUndef() const { return OpCode == OpUndef; }
   bool isControlBarrier() const { return OpCode == OpControlBarrier; }
@@ -330,9 +348,11 @@ public:
   virtual bool isImplemented() const { return true; }
 
   void addDecorate(SPIRVDecorate *);
+  void addDecorate(SPIRVDecorateId *);
   void addDecorate(Decoration Kind);
   void addDecorate(Decoration Kind, SPIRVWord Literal);
   void eraseDecorate(Decoration);
+  void eraseDecorateId(Decoration);
   void addMemberDecorate(SPIRVMemberDecorate *);
   void addMemberDecorate(SPIRVWord MemberNumber, Decoration Kind);
   void addMemberDecorate(SPIRVWord MemberNumber, Decoration Kind,
@@ -347,6 +367,7 @@ public:
   virtual void setScope(SPIRVEntry *Scope){};
   void takeAnnotations(SPIRVForward *);
   void takeDecorates(SPIRVEntry *);
+  void takeDecorateIds(SPIRVEntry *);
   void takeMemberDecorates(SPIRVEntry *);
 
   /// After a SPIRV entry is created during reading SPIRV binary by default
@@ -381,6 +402,12 @@ public:
     assert(Module && "Invalid module");
     assert(OpCode != OpNop && "Invalid op code");
     assert((!hasId() || isValidId(Id)) && "Invalid Id");
+    if (WordCount > 65535) {
+      std::stringstream SS;
+      SS << "Id: " << Id << ", OpCode: " << OpCodeNameMap::map(OpCode)
+         << ", Name: \"" << Name << "\"\n";
+      getErrorLog().checkError(false, SPIRVEC_InvalidWordCount, SS.str());
+    }
   }
   void validateFunctionControlMask(SPIRVWord FCtlMask) const;
   void validateValues(const std::vector<SPIRVId> &) const;
@@ -398,12 +425,13 @@ public:
 protected:
   /// An entry may have multiple FuncParamAttr decorations.
   typedef std::multimap<Decoration, const SPIRVDecorate *> DecorateMapType;
-  typedef std::map<std::pair<SPIRVWord, Decoration>,
-                   const SPIRVMemberDecorate *>
+  typedef std::multimap<Decoration, const SPIRVDecorateId *> DecorateIdMapType;
+  typedef std::multimap<std::pair<SPIRVWord, Decoration>,
+                        const SPIRVMemberDecorate *>
       MemberDecorateMapType;
 
   bool canHaveMemberDecorates() const {
-    return OpCode == OpTypeStruct || OpCode == OpForward;
+    return OpCode == OpTypeStruct || OpCode == internal::OpForward;
   }
   MemberDecorateMapType &getMemberDecorates() {
     assert(canHaveMemberDecorates());
@@ -420,6 +448,7 @@ protected:
   SPIRVWord WordCount;
 
   DecorateMapType Decorates;
+  DecorateIdMapType DecorateIds;
   MemberDecorateMapType MemberDecorates;
   std::shared_ptr<const SPIRVLine> Line;
 };
@@ -503,10 +532,11 @@ public:
   SPIRVEntryPoint(SPIRVModule *TheModule, SPIRVExecutionModelKind,
                   SPIRVId TheId, const std::string &TheName,
                   std::vector<SPIRVId> Variables);
-  SPIRVEntryPoint() : ExecModel(ExecutionModelKernel) {}
+  SPIRVEntryPoint() {}
+
   _SPIRV_DCL_ENCDEC
 protected:
-  SPIRVExecutionModelKind ExecModel;
+  SPIRVExecutionModelKind ExecModel = ExecutionModelMax;
   std::string Name;
 
 private:
@@ -674,7 +704,7 @@ class SPIRVComponentExecutionModes {
 public:
   void addExecutionMode(SPIRVExecutionMode *ExecMode) {
     // There should not be more than 1 execution mode kind except the ones
-    // mentioned in SPV_KHR_float_controls.
+    // mentioned in SPV_KHR_float_controls and SPV_INTEL_float_controls2.
 #ifndef NDEBUG
     auto IsDenorm = [](auto EMK) {
       return EMK == ExecutionModeDenormPreserve ||
@@ -682,13 +712,20 @@ public:
     };
     auto IsRoundingMode = [](auto EMK) {
       return EMK == ExecutionModeRoundingModeRTE ||
-             EMK == ExecutionModeRoundingModeRTZ;
+             EMK == ExecutionModeRoundingModeRTZ ||
+             EMK == ExecutionModeRoundingModeRTPINTEL ||
+             EMK == ExecutionModeRoundingModeRTNINTEL;
+    };
+    auto IsFPMode = [](auto EMK) {
+      return EMK == ExecutionModeFloatingPointModeALTINTEL ||
+             EMK == ExecutionModeFloatingPointModeIEEEINTEL;
     };
     auto IsOtherFP = [](auto EMK) {
       return EMK == ExecutionModeSignedZeroInfNanPreserve;
     };
     auto IsFloatControl = [&](auto EMK) {
-      return IsDenorm(EMK) || IsRoundingMode(EMK) || IsOtherFP(EMK);
+      return IsDenorm(EMK) || IsRoundingMode(EMK) || IsFPMode(EMK) ||
+             IsOtherFP(EMK);
     };
     auto IsCompatible = [&](SPIRVExecutionMode *EM0, SPIRVExecutionMode *EM1) {
       if (EM0->getTargetId() != EM1->getTargetId())
@@ -702,7 +739,8 @@ public:
       if (TW0 != TW1)
         return true;
       return !(IsDenorm(EMK0) && IsDenorm(EMK1)) &&
-             !(IsRoundingMode(EMK0) && IsRoundingMode(EMK1));
+             !(IsRoundingMode(EMK0) && IsRoundingMode(EMK1)) &&
+             !(IsFPMode(EMK0) && IsFPMode(EMK1));
     };
     for (auto I = ExecModes.begin(); I != ExecModes.end(); ++I) {
       assert(IsCompatible(ExecMode, (*I).second) &&
@@ -806,16 +844,19 @@ public:
     }
   }
 
-  SPIRVExtSet getRequiredExtensions() const override {
-    switch (Kind) {
-    case CapabilityDenormPreserve:
-    case CapabilityDenormFlushToZero:
-    case CapabilitySignedZeroInfNanPreserve:
-    case CapabilityRoundingModeRTE:
-    case CapabilityRoundingModeRTZ:
-      return getSet(ExtensionID::SPV_KHR_float_controls);
+  std::optional<ExtensionID> getRequiredExtension() const override {
+    switch (static_cast<unsigned>(Kind)) {
+    case CapabilityRoundToInfinityINTEL:
+    case CapabilityFloatingPointModeINTEL:
+    case CapabilityFunctionFloatControlINTEL:
+      return ExtensionID::SPV_INTEL_float_controls2;
+    case CapabilityVectorComputeINTEL:
+    case CapabilityVectorAnyINTEL:
+      return ExtensionID::SPV_INTEL_vector_compute;
+    case internal::CapabilityFastCompositeINTEL:
+      return ExtensionID::SPV_INTEL_fast_composite;
     default:
-      return SPIRVExtSet();
+      return {};
     }
   }
 
@@ -828,6 +869,118 @@ template <class T> T *bcast(SPIRVEntry *E) { return static_cast<T *>(E); }
 template <spv::Op OC> bool isa(SPIRVEntry *E) {
   return E ? E->getOpCode() == OC : false;
 }
+
+template <spv::Op OC>
+class SPIRVContinuedInstINTELBase : public SPIRVEntryNoId<OC> {
+public:
+  template <spv::Op _OC, class T = void>
+  using EnableIfCompositeConst =
+      typename std::enable_if_t<_OC == OpConstantCompositeContinuedINTEL ||
+                                    _OC ==
+                                        OpSpecConstantCompositeContinuedINTEL,
+                                T>;
+  // Complete constructor
+  SPIRVContinuedInstINTELBase(SPIRVModule *M,
+                              const std::vector<SPIRVValue *> &TheElements)
+      : SPIRVEntryNoId<OC>(M, TheElements.size() + 1) {
+
+    Elements = SPIRVEntry::getIds(TheElements);
+    validate();
+  }
+
+  SPIRVContinuedInstINTELBase(SPIRVModule *M, unsigned NumOfElements)
+      : SPIRVEntryNoId<OC>(M, NumOfElements + 1) {
+    Elements.resize(NumOfElements, SPIRVID_INVALID);
+    validate();
+  }
+
+  // Incomplete constructor
+  SPIRVContinuedInstINTELBase() : SPIRVEntryNoId<OC>() {}
+
+  template <spv::Op OPC = OC>
+  EnableIfCompositeConst<OPC, std::vector<SPIRVValue *>> getElements() const {
+    return SPIRVEntry::getValues(Elements);
+  }
+
+  SPIRVCapVec getRequiredCapability() const override {
+    return getVec(CapabilityLongConstantCompositeINTEL);
+  }
+
+  std::optional<ExtensionID> getRequiredExtension() const override {
+    return ExtensionID::SPV_INTEL_long_constant_composite;
+  }
+
+  SPIRVWord getNumElements() const { return Elements.size(); }
+
+protected:
+  void validate() const override;
+  void setWordCount(SPIRVWord WordCount) override {
+    SPIRVEntry::setWordCount(WordCount);
+    Elements.resize(WordCount - 1);
+  }
+  _SPIRV_DCL_ENCDEC
+
+  std::vector<SPIRVId> Elements;
+};
+
+class SPIRVTypeStructContinuedINTEL
+    : public SPIRVContinuedInstINTELBase<OpTypeStructContinuedINTEL> {
+public:
+  constexpr static Op OC = OpTypeStructContinuedINTEL;
+  // Complete constructor
+  SPIRVTypeStructContinuedINTEL(SPIRVModule *M, unsigned NumOfElements)
+      : SPIRVContinuedInstINTELBase<OC>(M, NumOfElements) {}
+
+  // Incomplete constructor
+  SPIRVTypeStructContinuedINTEL() : SPIRVContinuedInstINTELBase<OC>() {}
+
+  void setElementId(size_t I, SPIRVId Id) { Elements[I] = Id; }
+
+  SPIRVType *getMemberType(size_t I) const;
+};
+
+using SPIRVConstantCompositeContinuedINTEL =
+    SPIRVContinuedInstINTELBase<OpConstantCompositeContinuedINTEL>;
+using SPIRVSpecConstantCompositeContinuedINTEL =
+    SPIRVContinuedInstINTELBase<OpSpecConstantCompositeContinuedINTEL>;
+
+template <spv::Op OpCode> struct InstToContinued;
+
+template <> struct InstToContinued<OpTypeStruct> {
+  using Type = SPIRVTypeStructContinuedINTEL *;
+  constexpr static spv::Op OpCode = OpTypeStructContinuedINTEL;
+};
+
+template <> struct InstToContinued<OpConstantComposite> {
+  using Type = SPIRVConstantCompositeContinuedINTEL *;
+  constexpr static spv::Op OpCode = OpConstantCompositeContinuedINTEL;
+};
+
+template <> struct InstToContinued<OpSpecConstantComposite> {
+  using Type = SPIRVSpecConstantCompositeContinuedINTEL *;
+  constexpr static spv::Op OpCode = OpSpecConstantCompositeContinuedINTEL;
+};
+
+class SPIRVModuleProcessed : public SPIRVEntryNoId<OpModuleProcessed> {
+public:
+  SPIRVModuleProcessed(SPIRVModule *M, const std::string &Process)
+      : SPIRVEntryNoId(M, FixedWC + getSizeInWords(Process)),
+        ProcessStr(Process) {
+    updateModuleVersion();
+  }
+  SPIRVModuleProcessed() { updateModuleVersion(); }
+  _SPIRV_DCL_ENCDEC
+  void validate() const override;
+  SPIRVWord getRequiredSPIRVVersion() const override {
+    return static_cast<SPIRVWord>(VersionNumber::SPIRV_1_1);
+  }
+
+  std::string getProcessStr();
+
+private:
+  std::string ProcessStr;
+  static const SPIRVWord FixedWC = 1;
+};
 
 // ToDo: The following typedef's are place holders for SPIRV entity classes
 // to be implemented.
@@ -855,9 +1008,6 @@ _SPIRV_OP(IAddCarry)
 _SPIRV_OP(ISubBorrow)
 _SPIRV_OP(SMulExtended)
 _SPIRV_OP(UMulExtended)
-_SPIRV_OP(BitFieldInsert)
-_SPIRV_OP(BitFieldSExtract)
-_SPIRV_OP(BitFieldUExtract)
 _SPIRV_OP(DPdx)
 _SPIRV_OP(DPdy)
 _SPIRV_OP(Fwidth)

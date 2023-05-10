@@ -105,7 +105,7 @@ BugDriver::deleteInstructionFromProgram(const Instruction *I,
     TheInst->replaceAllUsesWith(Constant::getNullValue(TheInst->getType()));
 
   // Remove the instruction from the program.
-  TheInst->getParent()->getInstList().erase(TheInst);
+  TheInst->eraseFromParent();
 
   // Spiff up the output a little bit.
   std::vector<std::string> Passes;
@@ -133,7 +133,6 @@ BugDriver::performFinalCleanups(std::unique_ptr<Module> M,
     I->setLinkage(GlobalValue::ExternalLinkage);
 
   std::vector<std::string> CleanupPasses;
-  CleanupPasses.push_back("globaldce");
 
   if (MayModifySemantics)
     CleanupPasses.push_back("deadarghaX0r");
@@ -386,7 +385,7 @@ BugDriver::extractMappedBlocksFromModule(const std::vector<BasicBlock *> &BBs,
   for (Function &F : *M)
     for (BasicBlock &BB : F)
       // Check if this block is going to be extracted.
-      if (std::find(BBs.begin(), BBs.end(), &BB) == BBs.end())
+      if (!llvm::is_contained(BBs, &BB))
         BlocksToExtract.push_back(&BB);
 
   raw_fd_ostream OS(Temp->FD, /*shouldClose*/ false);

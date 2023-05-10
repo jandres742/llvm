@@ -4,7 +4,6 @@ over a thread creation instruction.
 """
 
 
-
 import lldb
 from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
@@ -12,15 +11,13 @@ from lldbsuite.test import lldbutil
 
 
 class CreateDuringInstructionStepTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
     NO_DEBUG_INFO_TESTCASE = True
 
     @skipUnlessPlatform(['linux'])
     @expectedFailureAndroid('llvm.org/pr24737', archs=['arm'])
-    @skipIf(oslist=["linux"], archs=["arm"], bugnumber="llvm.org/pr24737")
+    @skipIf(oslist=["linux"], archs=["arm", "aarch64"], bugnumber="llvm.org/pr24737")
     def test_step_inst(self):
-        self.build(dictionary=self.getBuildFlags())
+        self.build()
         exe = self.getBuildArtifact("a.out")
         target = self.dbg.CreateTarget(exe)
         self.assertTrue(target and target.IsValid(), "Target is valid")
@@ -77,4 +74,4 @@ class CreateDuringInstructionStepTestCase(TestBase):
         process.Continue()
 
         # At this point, the inferior process should have exited.
-        self.assertEqual(process.GetState(), lldb.eStateExited, PROCESS_EXITED)
+        self.assertState(process.GetState(), lldb.eStateExited, PROCESS_EXITED)

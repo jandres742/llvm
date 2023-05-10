@@ -21,10 +21,13 @@ namespace Fortran::semantics {
 
 using namespace parser::literals;
 
-/// Convert mis-identified statement functions to array element assignments.
-/// Convert mis-identified format expressions to namelist group names.
-/// Convert mis-identified character variables in I/O units to integer
+/// Convert misidentified statement functions to array element assignments
+/// or pointer-valued function result assignments.
+/// Convert misidentified format expressions to namelist group names.
+/// Convert misidentified character variables in I/O units to integer
 /// unit number expressions.
+/// Convert misidentified named constants in data statement values to
+/// initial data targets
 class RewriteMutator {
 public:
   RewriteMutator(SemanticsContext &context)
@@ -38,11 +41,11 @@ public:
   void Post(parser::Name &);
   void Post(parser::SpecificationPart &);
   bool Pre(parser::ExecutionPart &);
-  void Post(parser::IoUnit &);
   void Post(parser::ReadStmt &);
   void Post(parser::WriteStmt &);
 
   // Name resolution yet implemented:
+  // TODO: Can some/all of these now be enabled?
   bool Pre(parser::EquivalenceStmt &) { return false; }
   bool Pre(parser::Keyword &) { return false; }
   bool Pre(parser::EntryStmt &) { return false; }
@@ -75,20 +78,40 @@ void RewriteMutator::Post(parser::Name &name) {
   }
 }
 
+static bool ReturnsDataPointer(const Symbol &symbol) {
+  if (const Symbol * funcRes{FindFunctionResult(symbol)}) {
+    return IsPointer(*funcRes) && !IsProcedure(*funcRes);
+  } else if (const auto *generic{symbol.detailsIf<GenericDetails>()}) {
+    for (auto ref : generic->specificProcs()) {
+      if (ReturnsDataPointer(*ref)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Find mis-parsed statement functions and move to stmtFuncsToConvert_ list.
 void RewriteMutator::Post(parser::SpecificationPart &x) {
   auto &list{std::get<std::list<parser::DeclarationConstruct>>(x.t)};
   for (auto it{list.begin()}; it != list.end();) {
-    if (auto stmt{std::get_if<stmtFuncType>(&it->u)}) {
-      Symbol *symbol{std::get<parser::Name>(stmt->statement.value().t).symbol};
-      if (symbol && symbol->has<ObjectEntityDetails>()) {
-        // not a stmt func: remove it here and add to ones to convert
-        stmtFuncsToConvert_.push_back(std::move(*stmt));
-        it = list.erase(it);
-        continue;
+    bool isAssignment{false};
+    if (auto *stmt{std::get_if<stmtFuncType>(&it->u)}) {
+      if (const Symbol *
+          symbol{std::get<parser::Name>(stmt->statement.value().t).symbol}) {
+        const Symbol &ultimate{symbol->GetUltimate()};
+        isAssignment =
+            ultimate.has<ObjectEntityDetails>() || ReturnsDataPointer(ultimate);
+        if (isAssignment) {
+          stmtFuncsToConvert_.emplace_back(std::move(*stmt));
+        }
       }
     }
-    ++it;
+    if (isAssignment) {
+      it = list.erase(it);
+    } else {
+      ++it;
+    }
   }
 }
 
@@ -104,25 +127,6 @@ bool RewriteMutator::Pre(parser::ExecutionPart &x) {
   }
   stmtFuncsToConvert_.clear();
   return true;
-}
-
-void RewriteMutator::Post(parser::IoUnit &x) {
-  if (auto *var{std::get_if<parser::Variable>(&x.u)}) {
-    const parser::Name &last{parser::GetLastName(*var)};
-    DeclTypeSpec *type{last.symbol ? last.symbol->GetType() : nullptr};
-    if (!type || type->category() != DeclTypeSpec::Character) {
-      // If the Variable is not known to be character (any kind), transform
-      // the I/O unit in situ to a FileUnitNumber so that automatic expression
-      // constraint checking will be applied.
-      auto expr{std::visit(
-          [](auto &&indirection) {
-            return parser::Expr{std::move(indirection)};
-          },
-          std::move(var->u))};
-      x.u = parser::FileUnitNumber{
-          parser::ScalarIntExpr{parser::IntExpr{std::move(expr)}}};
-    }
-  }
 }
 
 // When a namelist group name appears (without NML=) in a READ or WRITE
@@ -142,7 +146,25 @@ void FixMisparsedUntaggedNamelistName(READ_OR_WRITE &x) {
   }
 }
 
+// READ(CVAR) [, ...] will be misparsed as UNIT=CVAR; correct
+// it to READ CVAR [,...] with CVAR as a format rather than as
+// an internal I/O unit for unformatted I/O, which Fortran does
+// not support.
 void RewriteMutator::Post(parser::ReadStmt &x) {
+  if (x.iounit && !x.format && x.controls.empty()) {
+    if (auto *var{std::get_if<parser::Variable>(&x.iounit->u)}) {
+      const parser::Name &last{parser::GetLastName(*var)};
+      DeclTypeSpec *type{last.symbol ? last.symbol->GetType() : nullptr};
+      if (type && type->category() == DeclTypeSpec::Character) {
+        x.format = common::visit(
+            [](auto &&indirection) {
+              return parser::Expr{std::move(indirection)};
+            },
+            std::move(var->u));
+        x.iounit.reset();
+      }
+    }
+  }
   FixMisparsedUntaggedNamelistName(x);
 }
 

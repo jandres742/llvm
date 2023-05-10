@@ -12,11 +12,9 @@ from lldbsuite.test.lldbpexpect import PExpectTest
 
 
 class DriverBatchModeTest(PExpectTest):
-
-    mydir = TestBase.compute_mydir(__file__)
     source = 'main.c'
 
-    @skipIfRemote  # test not remote-ready llvm.org/pr24813
+    @skipIf(oslist=["linux"], archs=["arm", "aarch64"]) # Randomly fails on buildbot
     @expectedFlakeyFreeBSD("llvm.org/pr25172 fails rarely on the buildbot")
     def test_batch_mode_run_crash(self):
         """Test that the lldb driver's batch mode works correctly."""
@@ -45,9 +43,9 @@ class DriverBatchModeTest(PExpectTest):
         child.expect_exact('(char *) touch_me_not')
         # Then we should have a live prompt:
         self.expect_prompt()
-        self.expect("frame variable touch_me_not", substrs='(char *) touch_me_not')
+        self.expect("frame variable touch_me_not", substrs=['(char *) touch_me_not'])
 
-    @skipIfRemote  # test not remote-ready llvm.org/pr24813
+    @skipIf(oslist=["linux"], archs=["arm", "aarch64"]) # Randomly fails on buildbot
     @expectedFlakeyFreeBSD("llvm.org/pr25172 fails rarely on the buildbot")
     def test_batch_mode_run_exit(self):
         """Test that the lldb driver's batch mode works correctly."""
@@ -77,7 +75,7 @@ class DriverBatchModeTest(PExpectTest):
         import pexpect
         child.expect(pexpect.EOF)
 
-    @skipIfRemote
+    @skipIf(oslist=["linux"], archs=["arm", "aarch64"]) # Randomly fails on buildbot
     @expectedFlakeyFreeBSD("llvm.org/pr25172 fails rarely on the buildbot")
     def test_batch_mode_launch_stop_at_entry(self):
         """Test that the lldb driver's batch mode works correctly for process launch."""
@@ -101,7 +99,7 @@ class DriverBatchModeTest(PExpectTest):
         child.expect_exact("continue")
         # The App should have not have crashed:
         child.expect_exact("Got there on time and it did not crash.")
-        
+
         # Then lldb should exit.
         child.expect_exact("exited")
         import pexpect
@@ -112,7 +110,7 @@ class DriverBatchModeTest(PExpectTest):
             self.victim.close()
             self.victim = None
 
-    @skipIfRemote  # test not remote-ready llvm.org/pr24813
+    @skipIf(oslist=["linux"], archs=["arm", "aarch64"]) # Randomly fails on buildbot
     @expectedFlakeyFreeBSD("llvm.org/pr25172 fails rarely on the buildbot")
     @expectedFailureNetBSD
     def test_batch_mode_attach_exit(self):

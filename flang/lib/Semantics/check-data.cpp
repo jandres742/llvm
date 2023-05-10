@@ -6,28 +6,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+// DATA statement semantic analysis.
+// - Applies static semantic checks to the variables in each data-stmt-set with
+//   class DataVarChecker;
+// - Invokes conversion of DATA statement values to static initializers
+
 #include "check-data.h"
+#include "data-to-inits.h"
 #include "flang/Evaluate/traverse.h"
-#include "flang/Semantics/expression.h"
+#include "flang/Parser/parse-tree.h"
+#include "flang/Parser/tools.h"
+#include "flang/Semantics/tools.h"
+#include <algorithm>
+#include <vector>
 
 namespace Fortran::semantics {
-
-void DataChecker::Leave(const parser::DataStmtConstant &dataConst) {
-  if (auto *structure{
-          std::get_if<parser::StructureConstructor>(&dataConst.u)}) {
-    for (const auto &component :
-        std::get<std::list<parser::ComponentSpec>>(structure->t)) {
-      const parser::Expr &parsedExpr{
-          std::get<parser::ComponentDataSource>(component.t).v.value()};
-      if (const auto *expr{GetExpr(parsedExpr)}) {
-        if (!evaluate::IsConstantExpr(*expr)) { // C884
-          exprAnalyzer_.Say(parsedExpr.source,
-              "Structure constructor in data value must be a constant expression"_err_en_US);
-        }
-      }
-    }
-  }
-}
 
 // Ensures that references to an implied DO loop control variable are
 // represented as such in the "body" of the implied DO loop.
@@ -35,7 +28,9 @@ void DataChecker::Enter(const parser::DataImpliedDo &x) {
   auto name{std::get<parser::DataImpliedDo::Bounds>(x.t).name.thing.thing};
   int kind{evaluate::ResultType<evaluate::ImpliedDoIndex>::kind};
   if (const auto dynamicType{evaluate::DynamicType::From(*name.symbol)}) {
-    kind = dynamicType->kind();
+    if (dynamicType->category() == TypeCategory::Integer) {
+      kind = dynamicType->kind();
+    }
   }
   exprAnalyzer_.AddImpliedDo(name.source, kind);
 }
@@ -45,6 +40,9 @@ void DataChecker::Leave(const parser::DataImpliedDo &x) {
   exprAnalyzer_.RemoveImpliedDo(name.source);
 }
 
+// DataVarChecker applies static checks once to each variable that appears
+// in a data-stmt-set.  These checks are independent of the values that
+// correspond to the variables.
 class DataVarChecker : public evaluate::AllTraverse<DataVarChecker, true> {
 public:
   using Base = evaluate::AllTraverse<DataVarChecker, true>;
@@ -53,6 +51,45 @@ public:
   using Base::operator();
   bool HasComponentWithoutSubscripts() const {
     return hasComponent_ && !hasSubscript_;
+  }
+  bool operator()(const Symbol &symbol) { // C876
+    // 8.6.7p(2) - precludes non-pointers of derived types with
+    // default component values
+    const Scope &scope{context_.FindScope(source_)};
+    bool isFirstSymbol{isFirstSymbol_};
+    isFirstSymbol_ = false;
+    if (const char *whyNot{IsAutomatic(symbol) ? "Automatic variable"
+                : IsDummy(symbol)              ? "Dummy argument"
+                : IsFunctionResult(symbol)     ? "Function result"
+                : IsAllocatable(symbol)        ? "Allocatable"
+                : IsInitialized(symbol, true /*ignore DATA*/,
+                      true /*ignore allocatable components*/)
+                ? "Default-initialized"
+                : IsProcedure(symbol) && !IsPointer(symbol) ? "Procedure"
+                // remaining checks don't apply to components
+                : !isFirstSymbol                   ? nullptr
+                : IsHostAssociated(symbol, scope)  ? "Host-associated object"
+                : IsUseAssociated(symbol, scope)   ? "USE-associated object"
+                : symbol.has<AssocEntityDetails>() ? "Construct association"
+                : IsPointer(symbol) && (hasComponent_ || hasSubscript_)
+                ? "Target of pointer"
+                : nullptr}) {
+      context_.Say(source_,
+          "%s '%s' must not be initialized in a DATA statement"_err_en_US,
+          whyNot, symbol.name());
+      return false;
+    }
+    if (IsProcedurePointer(symbol)) {
+      context_.Say(source_,
+          "Procedure pointer '%s' in a DATA statement is not standard"_port_en_US,
+          symbol.name());
+    }
+    if (IsInBlankCommon(symbol)) {
+      context_.Say(source_,
+          "Blank COMMON object '%s' in a DATA statement is not standard"_port_en_US,
+          symbol.name());
+    }
+    return true;
   }
   bool operator()(const evaluate::Component &component) {
     hasComponent_ = true;
@@ -73,12 +110,6 @@ public:
         return false;
       }
     }
-    if (!isFirstSymbolChecked_) {
-      isFirstSymbolChecked_ = true;
-      if (!CheckFirstSymbol(component.GetFirstSymbol())) {
-        return false;
-      }
-    }
     return (*this)(component.base()) && (*this)(lastSymbol);
   }
   bool operator()(const evaluate::ArrayRef &arrayRef) {
@@ -91,22 +122,14 @@ public:
         (*this)(substring.upper());
   }
   bool operator()(const evaluate::CoarrayRef &) { // C874
-    hasSubscript_ = true;
     context_.Say(
         source_, "Data object must not be a coindexed variable"_err_en_US);
     return false;
   }
-  bool operator()(const evaluate::Symbol &symbol) {
-    if (!isFirstSymbolChecked_) {
-      return CheckFirstSymbol(symbol) && CheckAnySymbol(symbol);
-    } else {
-      return CheckAnySymbol(symbol);
-    }
-  }
   bool operator()(const evaluate::Subscript &subs) {
     DataVarChecker subscriptChecker{context_, source_};
     subscriptChecker.RestrictPointer();
-    return std::visit(
+    return common::visit(
                common::visitors{
                    [&](const evaluate::IndirectSubscriptIntegerExpr &expr) {
                      return CheckSubscriptExpr(expr);
@@ -147,62 +170,18 @@ private:
       return true;
     }
   }
-  bool CheckFirstSymbol(const Symbol &symbol);
-  bool CheckAnySymbol(const Symbol &symbol);
 
   SemanticsContext &context_;
   parser::CharBlock source_;
   bool hasComponent_{false};
   bool hasSubscript_{false};
   bool isPointerAllowed_{true};
-  bool isFirstSymbolChecked_{false};
+  bool isFirstSymbol_{true};
 };
 
-bool DataVarChecker::CheckFirstSymbol(const Symbol &symbol) { // C876
-  const Scope &scope{context_.FindScope(source_)};
-  if (IsDummy(symbol)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be a dummy argument"_err_en_US,
-        symbol.name().ToString());
-  } else if (IsFunction(symbol)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be a function name"_err_en_US,
-        symbol.name().ToString());
-  } else if (symbol.IsFuncResult()) {
-    context_.Say(source_,
-        "Data object part '%s' must not be a function result"_err_en_US,
-        symbol.name().ToString());
-  } else if (IsHostAssociated(symbol, scope)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be accessed by host association"_err_en_US,
-        symbol.name().ToString());
-  } else if (IsUseAssociated(symbol, scope)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be accessed by use association"_err_en_US,
-        symbol.name().ToString());
-  } else if (IsInBlankCommon(symbol)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be in blank COMMON"_err_en_US,
-        symbol.name().ToString());
-  } else {
-    return true;
-  }
-  return false;
-}
-
-bool DataVarChecker::CheckAnySymbol(const Symbol &symbol) { // C876
-  if (IsAutomaticObject(symbol)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be an automatic object"_err_en_US,
-        symbol.name().ToString());
-  } else if (IsAllocatable(symbol)) {
-    context_.Say(source_,
-        "Data object part '%s' must not be an allocatable object"_err_en_US,
-        symbol.name().ToString());
-  } else {
-    return true;
-  }
-  return false;
+static bool IsValidDataObject(const SomeExpr &expr) { // C878, C879
+  return !evaluate::IsConstantExpr(expr) &&
+      (evaluate::IsVariable(expr) || evaluate::IsProcedurePointer(expr));
 }
 
 void DataChecker::Leave(const parser::DataIDoObject &object) {
@@ -211,44 +190,76 @@ void DataChecker::Leave(const parser::DataIDoObject &object) {
               &object.u)}) {
     if (MaybeExpr expr{exprAnalyzer_.Analyze(*designator)}) {
       auto source{designator->thing.value().source};
-      if (evaluate::IsConstantExpr(*expr)) { // C878,C879
-        exprAnalyzer_.Say(
-            source, "Data implied do object must be a variable"_err_en_US);
-      } else {
-        DataVarChecker checker{exprAnalyzer_.context(), source};
-        if (checker(*expr) && checker.HasComponentWithoutSubscripts()) { // C880
-          exprAnalyzer_.Say(source,
+      DataVarChecker checker{exprAnalyzer_.context(), source};
+      if (checker(*expr)) {
+        if (checker.HasComponentWithoutSubscripts()) { // C880
+          exprAnalyzer_.context().Say(source,
               "Data implied do structure component must be subscripted"_err_en_US);
+        } else if (!IsValidDataObject(*expr)) {
+          exprAnalyzer_.context().Say(
+              source, "Data implied do object must be a variable"_err_en_US);
+        } else {
+          return;
         }
       }
     }
+    currentSetHasFatalErrors_ = true;
   }
 }
 
 void DataChecker::Leave(const parser::DataStmtObject &dataObject) {
-  if (const auto *var{
-          std::get_if<common::Indirection<parser::Variable>>(&dataObject.u)}) {
-    if (auto expr{exprAnalyzer_.Analyze(*var)}) {
-      DataVarChecker{exprAnalyzer_.context(),
-          parser::FindSourceLocation(dataObject)}(expr);
+  common::visit(
+      common::visitors{
+          [](const parser::DataImpliedDo &) { // has own Enter()/Leave()
+          },
+          [&](const auto &var) {
+            auto expr{exprAnalyzer_.Analyze(var)};
+            auto source{parser::FindSourceLocation(dataObject)};
+            if (!expr ||
+                !DataVarChecker{exprAnalyzer_.context(), source}(*expr)) {
+              currentSetHasFatalErrors_ = true;
+            } else if (!IsValidDataObject(*expr)) {
+              exprAnalyzer_.context().Say(
+                  source, "Data statement object must be a variable"_err_en_US);
+              currentSetHasFatalErrors_ = true;
+            }
+          },
+      },
+      dataObject.u);
+}
+
+void DataChecker::Leave(const parser::DataStmtSet &set) {
+  if (!currentSetHasFatalErrors_) {
+    AccumulateDataInitializations(inits_, exprAnalyzer_, set);
+  }
+  currentSetHasFatalErrors_ = false;
+}
+
+// Handle legacy DATA-style initialization, e.g. REAL PI/3.14159/, for
+// variables and components (esp. for DEC STRUCTUREs)
+template <typename A> void DataChecker::LegacyDataInit(const A &decl) {
+  if (const auto &init{
+          std::get<std::optional<parser::Initialization>>(decl.t)}) {
+    const Symbol *name{std::get<parser::Name>(decl.t).symbol};
+    const auto *list{
+        std::get_if<std::list<common::Indirection<parser::DataStmtValue>>>(
+            &init->u)};
+    if (name && list) {
+      AccumulateDataInitializations(inits_, exprAnalyzer_, *name, *list);
     }
   }
 }
 
-void DataChecker::Leave(const parser::DataStmtRepeat &dataRepeat) {
-  if (const auto *designator{parser::Unwrap<parser::Designator>(dataRepeat)}) {
-    if (auto *dataRef{std::get_if<parser::DataRef>(&designator->u)}) {
-      if (MaybeExpr checked{exprAnalyzer_.Analyze(*dataRef)}) {
-        auto expr{evaluate::Fold(
-            exprAnalyzer_.GetFoldingContext(), std::move(checked))};
-        if (auto i64{ToInt64(expr)}) {
-          if (*i64 < 0) { // C882
-            exprAnalyzer_.Say(designator->source,
-                "Repeat count for data value must not be negative"_err_en_US);
-          }
-        }
-      }
-    }
-  }
+void DataChecker::Leave(const parser::ComponentDecl &decl) {
+  LegacyDataInit(decl);
 }
+
+void DataChecker::Leave(const parser::EntityDecl &decl) {
+  LegacyDataInit(decl);
+}
+
+void DataChecker::CompileDataInitializationsIntoInitializers() {
+  ConvertToInitializers(inits_, exprAnalyzer_);
+}
+
 } // namespace Fortran::semantics

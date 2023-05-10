@@ -1,9 +1,9 @@
-#! /usr/bin/env python
-
-from __future__ import print_function
+#!/usr/bin/env python
 
 import argparse
 import os
+import platform
+import shutil
 import signal
 import subprocess
 import sys
@@ -110,6 +110,12 @@ parser.add_argument('inputs',
                     nargs='+',
                     help='Source file(s) to compile / object file(s) to link')
 
+parser.add_argument('--std',
+                    metavar='std',
+                    dest='std',
+                    required=False,
+                    help='Specify the C/C++ standard.')
+
 
 args = parser.parse_args(args=sys.argv[1:])
 
@@ -170,16 +176,14 @@ def print_environment(env):
         print('    {0} = {1}'.format(e, formatted_value))
 
 def find_executable(binary_name, search_paths):
-    if sys.platform == 'win32':
-        binary_name = binary_name + '.exe'
-
-    search_paths = os.pathsep.join(search_paths)
-    paths = search_paths + os.pathsep + os.environ.get('PATH', '')
-    for path in paths.split(os.pathsep):
-        p = os.path.join(path, binary_name)
-        if os.path.exists(p) and not os.path.isdir(p):
-            return os.path.normpath(p)
-    return None
+    # shutil.which will ignore PATH if given a path argument, we want to include it.
+    search_paths.append(os.environ.get('PATH', ''))
+    search_path = os.pathsep.join(search_paths)
+    binary_path = shutil.which(binary_name, path=search_path)
+    if binary_path is not None:
+        # So for example, we get '/bin/gcc' instead of '/usr/../bin/gcc'.
+        binary_path = os.path.normpath(binary_path)
+    return binary_path
 
 def find_toolchain(compiler, tools_dir):
     if compiler == 'msvc':
@@ -233,6 +237,7 @@ class Builder(object):
         self.verbose = args.verbose
         self.obj_ext = obj_ext
         self.lib_paths = args.libs_dir
+        self.std = args.std
 
     def _exe_file_name(self):
         assert self.mode != 'compile'
@@ -277,7 +282,10 @@ class MsvcBuilder(Builder):
     def __init__(self, toolchain_type, args):
         Builder.__init__(self, toolchain_type, args, '.obj')
 
-        self.msvc_arch_str = 'x86' if self.arch == '32' else 'x64'
+        if platform.uname().machine.lower() == 'arm64':
+            self.msvc_arch_str = 'arm' if self.arch == '32' else 'arm64'
+        else:
+            self.msvc_arch_str = 'x86' if self.arch == '32' else 'x64'
 
         if toolchain_type == 'msvc':
             # Make sure we're using the appropriate toolchain for the desired
@@ -580,6 +588,9 @@ class MsvcBuilder(Builder):
             args.append('--')
         args.append(source)
 
+        if self.std:
+            args.append('/std:' + self.std)
+
         return ('compiling', [source], obj,
                 self.compile_env,
                 args)
@@ -623,6 +634,9 @@ class MsvcBuilder(Builder):
 class GccBuilder(Builder):
     def __init__(self, toolchain_type, args):
         Builder.__init__(self, toolchain_type, args, '.o')
+        if sys.platform == 'darwin':
+            cmd = ['xcrun', '--sdk', args.apple_sdk, '--show-sdk-path']
+            self.apple_sdk = subprocess.check_output(cmd).strip().decode('utf-8')
 
     def _get_compilation_command(self, source, obj):
         args = []
@@ -645,6 +659,12 @@ class GccBuilder(Builder):
         args.extend(['-o', obj])
         args.append(source)
 
+        if sys.platform == 'darwin':
+            args.extend(['-isysroot', self.apple_sdk])
+
+        if self.std:
+            args.append('-std={0}'.format(self.std))
+
         return ('compiling', [source], obj, None, args)
 
     def _get_link_command(self):
@@ -663,6 +683,9 @@ class GccBuilder(Builder):
                 args += ['-L' + x, '-Wl,-rpath,' + x]
         args.extend(['-o', self._exe_file_name()])
         args.extend(self._obj_file_names())
+
+        if sys.platform == 'darwin':
+            args.extend(['-isysroot', self.apple_sdk])
 
         return ('linking', self._obj_file_names(), self._exe_file_name(), None, args)
 
@@ -779,6 +802,7 @@ if args.verbose:
     print('  Verbose: ' + str(args.verbose))
     print('  Dryrun: ' + str(args.dry))
     print('  Inputs: ' + format_text(args.inputs, 0, 10))
+    print('  C/C++ Standard: ' + str(args.std))
     print('Script Environment:')
     print_environment(os.environ)
 

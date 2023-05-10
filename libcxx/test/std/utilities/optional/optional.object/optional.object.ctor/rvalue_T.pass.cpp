@@ -8,7 +8,7 @@
 //
 // UNSUPPORTED: c++03, c++11, c++14
 
-// XFAIL: dylib-has-no-bad_optional_access && !no-exceptions
+// XFAIL: availability-bad_optional_access-missing && !no-exceptions
 
 // <optional>
 
@@ -134,15 +134,10 @@ int main(int, char**)
     }
 #ifndef TEST_HAS_NO_EXCEPTIONS
     {
-        struct Z {
-            Z(int) {}
-            Z(Z&&) {throw 6;}
-        };
-        typedef Z T;
         try
         {
-            T t(3);
-            optional<T> opt(std::move(t));
+            Z z(3);
+            optional<Z> opt(std::move(z));
             assert(false);
         }
         catch (int i)

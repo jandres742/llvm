@@ -27,7 +27,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetOptions.h"
-#include <algorithm> // std::sort
+#include <algorithm>
 
 using namespace llvm;
 
@@ -427,19 +427,20 @@ bool XCoreFrameLowering::spillCalleeSavedRegisters(
   if (MI != MBB.end() && !MI->isDebugInstr())
     DL = MI->getDebugLoc();
 
-  for (auto it = CSI.begin(); it != CSI.end(); ++it) {
-    unsigned Reg = it->getReg();
+  for (const CalleeSavedInfo &I : CSI) {
+    Register Reg = I.getReg();
     assert(Reg != XCore::LR && !(Reg == XCore::R10 && hasFP(*MF)) &&
            "LR & FP are always handled in emitPrologue");
 
     // Add the callee-saved register as live-in. It's killed at the spill.
     MBB.addLiveIn(Reg);
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
-    TII.storeRegToStackSlot(MBB, MI, Reg, true, it->getFrameIdx(), RC, TRI);
+    TII.storeRegToStackSlot(MBB, MI, Reg, true, I.getFrameIdx(), RC, TRI,
+                            Register());
     if (emitFrameMoves) {
       auto Store = MI;
       --Store;
-      XFI->getSpillLabels().push_back(std::make_pair(Store, *it));
+      XFI->getSpillLabels().push_back(std::make_pair(Store, I));
     }
   }
   return true;
@@ -455,12 +456,13 @@ bool XCoreFrameLowering::restoreCalleeSavedRegisters(
   if (!AtStart)
     --BeforeI;
   for (const CalleeSavedInfo &CSR : CSI) {
-    unsigned Reg = CSR.getReg();
+    Register Reg = CSR.getReg();
     assert(Reg != XCore::LR && !(Reg == XCore::R10 && hasFP(*MF)) &&
            "LR & FP are always handled in emitEpilogue");
 
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
-    TII.loadRegFromStackSlot(MBB, MI, Reg, CSR.getFrameIdx(), RC, TRI);
+    TII.loadRegFromStackSlot(MBB, MI, Reg, CSR.getFrameIdx(), RC, TRI,
+                             Register());
     assert(MI != MBB.begin() &&
            "loadRegFromStackSlot didn't insert any code!");
     // Insert in reverse order.  loadRegFromStackSlot can insert multiple
@@ -575,9 +577,9 @@ processFunctionBeforeFrameFinalized(MachineFunction &MF,
   // When using SP for large frames, we may need 2 scratch registers.
   // When using FP, for large or small frames, we may need 1 scratch register.
   unsigned Size = TRI.getSpillSize(RC);
-  unsigned Align = TRI.getSpillAlignment(RC);
+  Align Alignment = TRI.getSpillAlign(RC);
   if (XFI->isLargeFrame(MF) || hasFP(MF))
-    RS->addScavengingFrameIndex(MFI.CreateStackObject(Size, Align, false));
+    RS->addScavengingFrameIndex(MFI.CreateStackObject(Size, Alignment, false));
   if (XFI->isLargeFrame(MF) && !hasFP(MF))
-    RS->addScavengingFrameIndex(MFI.CreateStackObject(Size, Align, false));
+    RS->addScavengingFrameIndex(MFI.CreateStackObject(Size, Alignment, false));
 }

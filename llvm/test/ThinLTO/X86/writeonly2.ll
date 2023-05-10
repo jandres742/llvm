@@ -3,7 +3,7 @@
 
 ; RUN: opt -module-summary %s -o %t1.bc
 ; RUN: opt -module-summary %p/Inputs/index-const-prop.ll -o %t2.bc
-; RUN: llvm-lto2 run %t1.bc %t2.bc -save-temps \
+; RUN: llvm-lto2 run -opaque-pointers %t1.bc %t2.bc -save-temps \
 ; RUN:  -r=%t2.bc,foo,pl \
 ; RUN:  -r=%t2.bc,bar,pl \
 ; RUN:  -r=%t2.bc,baz,pl \
@@ -19,8 +19,8 @@
 ; with corresponsing stores
 ; RUN: llvm-dis %t3.2.5.precodegen.bc -o - | FileCheck %s --check-prefix=CODEGEN-SRC
 
-; IMPORT:       @gFoo.llvm.0 = internal unnamed_addr global i32 0, align 4
-; IMPORT-NEXT:  @gBar = internal local_unnamed_addr global i32 0, align 4
+; IMPORT:       @gBar = internal local_unnamed_addr global i32 0, align 4
+; IMPORT-NEXT:  @gFoo.llvm.0 = internal unnamed_addr global i32 0, align 4
 ; IMPORT:       !DICompileUnit({{.*}})
 
 ; CODEGEN-NOT:  gFoo

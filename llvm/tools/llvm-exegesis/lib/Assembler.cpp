@@ -11,6 +11,7 @@
 #include "SnippetRepetitor.h"
 #include "Target.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/CodeGen/FunctionLoweringInfo.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/MachineIRBuilder.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -128,7 +129,11 @@ void BasicBlockFiller::addReturn(const DebugLoc &DL) {
   } else {
     MachineIRBuilder MIB(MF);
     MIB.setMBB(*MBB);
-    MF.getSubtarget().getCallLowering()->lowerReturn(MIB, nullptr, {});
+
+    FunctionLoweringInfo FuncInfo;
+    FuncInfo.CanLowerReturn = true;
+    MF.getSubtarget().getCallLowering()->lowerReturn(MIB, nullptr, {}, FuncInfo,
+                                                     0);
   }
 }
 
@@ -148,7 +153,7 @@ ArrayRef<unsigned> FunctionFiller::getRegistersSetUp() const {
 }
 
 static std::unique_ptr<Module>
-createModule(const std::unique_ptr<LLVMContext> &Context, const DataLayout DL) {
+createModule(const std::unique_ptr<LLVMContext> &Context, const DataLayout &DL) {
   auto Mod = std::make_unique<Module>(ModuleID, *Context);
   Mod->setDataLayout(DL);
   return Mod;
@@ -159,10 +164,9 @@ BitVector getFunctionReservedRegs(const TargetMachine &TM) {
   std::unique_ptr<Module> Module = createModule(Context, TM.createDataLayout());
   // TODO: This only works for targets implementing LLVMTargetMachine.
   const LLVMTargetMachine &LLVMTM = static_cast<const LLVMTargetMachine &>(TM);
-  std::unique_ptr<MachineModuleInfoWrapperPass> MMIWP =
-      std::make_unique<MachineModuleInfoWrapperPass>(&LLVMTM);
+  auto MMIWP = std::make_unique<MachineModuleInfoWrapperPass>(&LLVMTM);
   MachineFunction &MF = createVoidVoidPtrMachineFunction(
-      FunctionID, Module.get(), &MMIWP.get()->getMMI());
+      FunctionID, Module.get(), &MMIWP->getMMI());
   // Saving reserved registers for client.
   return MF.getSubtarget().getRegisterInfo()->getReservedRegs(MF);
 }
@@ -204,6 +208,7 @@ Error assembleToStream(const ExegesisTarget &ET,
 
   // If the snippet setup is not complete, we disable liveliness tracking. This
   // means that we won't know what values are in the registers.
+  // FIXME: this should probably be an assertion.
   if (!IsSnippetSetupComplete)
     Properties.reset(MachineFunctionProperties::Property::TracksLiveness);
 
@@ -304,7 +309,7 @@ ExecutableFunction::ExecutableFunction(
               std::make_unique<TrackingSectionMemoryManager>(&CodeSize))
           .create(TM.release()));
   if (!ExecEngine)
-    report_fatal_error(Error);
+    report_fatal_error(Twine(Error));
   // Adding the generated object file containing the assembled function.
   // The ExecutionEngine makes sure the object file is copied into an
   // executable page.

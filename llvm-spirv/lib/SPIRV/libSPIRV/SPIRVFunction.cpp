@@ -160,9 +160,20 @@ bool SPIRVFunction::decodeBB(SPIRVDecoder &Decoder) {
     if (Inst->getOpCode() == OpUndef) {
       Module->add(Inst);
     } else {
-      if (Inst->isExtInst(SPIRVEIS_Debug, SPIRVDebug::Scope)) {
+      if (Inst->isExtInst(SPIRVEIS_Debug, SPIRVDebug::Scope) ||
+          Inst->isExtInst(SPIRVEIS_OpenCL_DebugInfo_100, SPIRVDebug::Scope) ||
+          Inst->isExtInst(SPIRVEIS_NonSemantic_Shader_DebugInfo_100,
+                          SPIRVDebug::Scope) ||
+          Inst->isExtInst(SPIRVEIS_NonSemantic_Shader_DebugInfo_200,
+                          SPIRVDebug::Scope)) {
         DebugScope = Inst;
-      } else if (Inst->isExtInst(SPIRVEIS_Debug, SPIRVDebug::NoScope)) {
+      } else if (Inst->isExtInst(SPIRVEIS_Debug, SPIRVDebug::NoScope) ||
+                 Inst->isExtInst(SPIRVEIS_OpenCL_DebugInfo_100,
+                                 SPIRVDebug::NoScope) ||
+                 Inst->isExtInst(SPIRVEIS_NonSemantic_Shader_DebugInfo_100,
+                                 SPIRVDebug::NoScope) ||
+                 Inst->isExtInst(SPIRVEIS_NonSemantic_Shader_DebugInfo_200,
+                                 SPIRVDebug::NoScope)) {
         DebugScope = nullptr;
       } else {
         Inst->setDebugScope(DebugScope);

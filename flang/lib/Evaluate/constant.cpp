@@ -14,15 +14,6 @@
 
 namespace Fortran::evaluate {
 
-std::size_t TotalElementCount(const ConstantSubscripts &shape) {
-  std::size_t size{1};
-  for (auto dim : shape) {
-    CHECK(dim >= 0);
-    size *= dim;
-  }
-  return size;
-}
-
 ConstantBounds::ConstantBounds(const ConstantSubscripts &shape)
     : shape_(shape), lbounds_(shape_.size(), 1) {}
 
@@ -34,6 +25,31 @@ ConstantBounds::~ConstantBounds() = default;
 void ConstantBounds::set_lbounds(ConstantSubscripts &&lb) {
   CHECK(lb.size() == shape_.size());
   lbounds_ = std::move(lb);
+  for (std::size_t j{0}; j < shape_.size(); ++j) {
+    if (shape_[j] == 0) {
+      lbounds_[j] = 1;
+    }
+  }
+}
+
+ConstantSubscripts ConstantBounds::ComputeUbounds(
+    std::optional<int> dim) const {
+  if (dim) {
+    CHECK(*dim < Rank());
+    return {lbounds_[*dim] + shape_[*dim] - 1};
+  } else {
+    ConstantSubscripts ubounds(Rank());
+    for (int i{0}; i < Rank(); ++i) {
+      ubounds[i] = lbounds_[i] + shape_[i] - 1;
+    }
+    return ubounds;
+  }
+}
+
+void ConstantBounds::SetLowerBoundsToOne() {
+  for (auto &n : lbounds_) {
+    n = 1;
+  }
 }
 
 Constant<SubscriptInteger> ConstantBounds::SHAPE() const {
@@ -55,6 +71,10 @@ ConstantSubscript ConstantBounds::SubscriptsToOffset(
   return offset;
 }
 
+std::size_t TotalElementCount(const ConstantSubscripts &shape) {
+  return static_cast<std::size_t>(GetSize(shape));
+}
+
 bool ConstantBounds::IncrementSubscripts(
     ConstantSubscripts &indices, const std::vector<int> *dimOrder) const {
   int rank{GetRank(shape_)};
@@ -67,7 +87,7 @@ bool ConstantBounds::IncrementSubscripts(
     if (++indices[k] < lb + shape_[k]) {
       return true;
     } else {
-      CHECK(indices[k] == lb + shape_[k]);
+      CHECK(indices[k] == lb + std::max<ConstantSubscript>(shape_[k], 1));
       indices[k] = lb;
     }
   }
@@ -84,7 +104,7 @@ std::optional<std::vector<int>> ValidateDimensionOrder(
       if (dim < 1 || dim > rank || seenDimensions.test(dim - 1)) {
         return std::nullopt;
       }
-      dimOrder[dim - 1] = j;
+      dimOrder[j] = dim - 1;
       seenDimensions.set(dim - 1);
     }
     return dimOrder;
@@ -93,13 +113,13 @@ std::optional<std::vector<int>> ValidateDimensionOrder(
   }
 }
 
-bool IsValidShape(const ConstantSubscripts &shape) {
+bool HasNegativeExtent(const ConstantSubscripts &shape) {
   for (ConstantSubscript extent : shape) {
     if (extent < 0) {
-      return false;
+      return true;
     }
   }
-  return shape.size() <= common::maxRank;
+  return false;
 }
 
 template <typename RESULT, typename ELEMENT>
@@ -221,6 +241,28 @@ auto Constant<Type<TypeCategory::Character, KIND>>::At(
 }
 
 template <int KIND>
+auto Constant<Type<TypeCategory::Character, KIND>>::Substring(
+    ConstantSubscript lo, ConstantSubscript hi) const
+    -> std::optional<Constant> {
+  std::vector<Element> elements;
+  ConstantSubscript n{GetSize(shape())};
+  ConstantSubscript newLength{0};
+  if (lo > hi) { // zero-length results
+    while (n-- > 0) {
+      elements.emplace_back(); // ""
+    }
+  } else if (lo < 1 || hi > length_) {
+    return std::nullopt;
+  } else {
+    newLength = hi - lo + 1;
+    for (ConstantSubscripts at{lbounds()}; n-- > 0; IncrementSubscripts(at)) {
+      elements.emplace_back(At(at).substr(lo - 1, newLength));
+    }
+  }
+  return Constant{newLength, std::move(elements), ConstantSubscripts{shape()}};
+}
+
+template <int KIND>
 auto Constant<Type<TypeCategory::Character, KIND>>::Reshape(
     ConstantSubscripts &&dims) const -> Constant<Result> {
   std::size_t n{TotalElementCount(dims)};
@@ -244,19 +286,26 @@ std::size_t Constant<Type<TypeCategory::Character, KIND>>::CopyFrom(
     std::size_t count, ConstantSubscripts &resultSubscripts,
     const std::vector<int> *dimOrder) {
   CHECK(length_ == source.length_);
-  std::size_t copied{0};
-  std::size_t elementBytes{length_ * sizeof(decltype(values_[0]))};
-  ConstantSubscripts sourceSubscripts{source.lbounds()};
-  while (copied < count) {
-    auto *dest{&values_.at(SubscriptsToOffset(resultSubscripts) * length_)};
-    const auto *src{&source.values_.at(
-        source.SubscriptsToOffset(sourceSubscripts) * length_)};
-    std::memcpy(dest, src, elementBytes);
-    copied++;
-    source.IncrementSubscripts(sourceSubscripts);
-    IncrementSubscripts(resultSubscripts, dimOrder);
+  if (length_ == 0) {
+    // It's possible that the array of strings consists of all empty strings.
+    // If so, constant folding will result in a string that's completely empty
+    // and the length_ will be zero, and there's nothing to do.
+    return count;
+  } else {
+    std::size_t copied{0};
+    std::size_t elementBytes{length_ * sizeof(decltype(values_[0]))};
+    ConstantSubscripts sourceSubscripts{source.lbounds()};
+    while (copied < count) {
+      auto *dest{&values_.at(SubscriptsToOffset(resultSubscripts) * length_)};
+      const auto *src{&source.values_.at(
+          source.SubscriptsToOffset(sourceSubscripts) * length_)};
+      std::memcpy(dest, src, elementBytes);
+      copied++;
+      source.IncrementSubscripts(sourceSubscripts);
+      IncrementSubscripts(resultSubscripts, dimOrder);
+    }
+    return copied;
   }
-  return copied;
 }
 
 // Constant<SomeDerived> specialization
@@ -308,5 +357,12 @@ std::size_t Constant<SomeDerived>::CopyFrom(const Constant<SomeDerived> &source,
   return Base::CopyFrom(source, count, resultSubscripts, dimOrder);
 }
 
+bool ComponentCompare::operator()(SymbolRef x, SymbolRef y) const {
+  return semantics::SymbolSourcePositionCompare{}(x, y);
+}
+
+#ifdef _MSC_VER // disable bogus warning about missing definitions
+#pragma warning(disable : 4661)
+#endif
 INSTANTIATE_CONSTANT_TEMPLATES
 } // namespace Fortran::evaluate

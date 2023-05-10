@@ -25,7 +25,9 @@ public:
 
   SBSymbolContext(const lldb::SBSymbolContext &rhs);
 
-  SBSymbolContext(const lldb_private::SymbolContext *sc_ptr);
+#ifndef SWIG
+  SBSymbolContext(const lldb_private::SymbolContext &sc_ptr);
+#endif
 
   ~SBSymbolContext();
 
@@ -71,8 +73,6 @@ protected:
   const lldb_private::SymbolContext &operator*() const;
 
   lldb_private::SymbolContext *get() const;
-
-  void SetSymbolContext(const lldb_private::SymbolContext *sc_ptr);
 
 private:
   std::unique_ptr<lldb_private::SymbolContext> m_opaque_up;

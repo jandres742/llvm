@@ -32,15 +32,13 @@ public:
     Symbol callable_symbol;
     Address callable_address;
     LineEntry callable_line_entry;
-    lldb::addr_t member__f_pointer_value = 0u;
+    lldb::addr_t member_f_pointer_value = 0u;
     LibCppStdFunctionCallableCase callable_case =
         LibCppStdFunctionCallableCase::Invalid;
   };
 
   LibCppStdFunctionCallableInfo
   FindLibCppStdFunctionCallableInfo(lldb::ValueObjectSP &valobj_sp);
-
-  ~CPPLanguageRuntime() override;
 
   static char ID;
 
@@ -79,7 +77,7 @@ public:
   lldb::ThreadPlanSP GetStepThroughTrampolinePlan(Thread &thread,
                                                   bool stop_others) override;
 
-  bool IsWhitelistedRuntimeValue(ConstString name) override;
+  bool IsAllowedRuntimeValue(ConstString name) override;
 protected:
   // Classes that inherit from CPPLanguageRuntime can see and modify these
   CPPLanguageRuntime(Process *process);
@@ -89,9 +87,6 @@ private:
     llvm::StringMap<CPPLanguageRuntime::LibCppStdFunctionCallableInfo>;
 
   OperatorStringToCallableInfoMap CallableLookupCache;
-
-  CPPLanguageRuntime(const CPPLanguageRuntime &) = delete;
-  const CPPLanguageRuntime &operator=(const CPPLanguageRuntime &) = delete;
 };
 
 } // namespace lldb_private

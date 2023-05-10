@@ -15,7 +15,7 @@ The first operator is always a ``MDString`` node with the string
 "branch_weights".  Number of operators depends on the terminator type.
 
 Branch weights might be fetch from the profiling file, or generated based on
-`__builtin_expect`_ instruction.
+`__builtin_expect`_ and `__builtin_expect_with_probability`_ instruction.
 
 All weights are represented as an unsigned 32-bit values, where higher value
 indicates greater chance to be taken.
@@ -31,8 +31,8 @@ operands for the true and the false branch.
 
 .. code-block:: none
 
-  !0 = metadata !{
-    metadata !"branch_weights",
+  !0 = !{
+    !"branch_weights",
     i32 <TRUE_BRANCH_WEIGHT>,
     i32 <FALSE_BRANCH_WEIGHT>
   }
@@ -45,8 +45,8 @@ is always case #0).
 
 .. code-block:: none
 
-  !0 = metadata !{
-    metadata !"branch_weights",
+  !0 = !{
+    !"branch_weights",
     i32 <DEFAULT_BRANCH_WEIGHT>
     [ , i32 <CASE_BRANCH_WEIGHT> ... ]
   }
@@ -58,8 +58,8 @@ Branch weights are assigned to every destination.
 
 .. code-block:: none
 
-  !0 = metadata !{
-    metadata !"branch_weights",
+  !0 = !{
+    !"branch_weights",
     i32 <LABEL_BRANCH_WEIGHT>
     [ , i32 <LABEL_BRANCH_WEIGHT> ... ]
   }
@@ -73,8 +73,8 @@ block and entry counts which may not be accurate with sampling.
 
 .. code-block:: none
 
-  !0 = metadata !{
-    metadata !"branch_weights",
+  !0 = !{
+    !"branch_weights",
     i32 <CALL_BRANCH_WEIGHT>
   }
 
@@ -93,8 +93,8 @@ is used.
 
 .. code-block:: none
 
-  !0 = metadata !{
-    metadata !"branch_weights",
+  !0 = !{
+    !"branch_weights",
     i32 <INVOKE_NORMAL_WEIGHT>
     [ , i32 <INVOKE_UNWIND_WEIGHT> ]
   }
@@ -142,6 +142,47 @@ case is assumed to be likely taken.
   case 0:  // ...
   case 3:  // ...
   case 5:  // This case is likely to be taken.
+  }
+
+.. _\__builtin_expect_with_probability:
+
+Built-in ``expect.with.probability`` Instruction
+================================================
+
+``__builtin_expect_with_probability(long exp, long c, double probability)`` has
+the same semantics as ``__builtin_expect``, but the caller provides the
+probability that ``exp == c``. The last argument ``probability`` must be
+constant floating-point expression and be in the range [0.0, 1.0] inclusive.
+The usage is also similar as ``__builtin_expect``, for example:
+
+``if`` statement
+^^^^^^^^^^^^^^^^
+
+If the expect comparison value ``c`` is equal to 1(true), and probability
+value ``probability`` is set to 0.8, that means the probability of condition
+to be true is 80% while that of false is 20%.
+
+.. code-block:: c++
+
+  if (__builtin_expect_with_probability(x > 0, 1, 0.8)) {
+    // This block is likely to be taken with probability 80%.
+  }
+
+``switch`` statement
+^^^^^^^^^^^^^^^^^^^^
+
+This is basically the same as ``switch`` statement in ``__builtin_expect``.
+The probability that ``exp`` is equal to the expect value is given in
+the third argument ``probability``, while the probability of other value is
+the average of remaining probability(``1.0 - probability``). For example:
+
+.. code-block:: c++
+
+  switch (__builtin_expect_with_probability(x, 5, 0.7)) {
+  default: break;  // Take this case with probability 10%
+  case 0:  break;  // Take this case with probability 10%
+  case 3:  break;  // Take this case with probability 10%
+  case 5:  break;  // This case is likely to be taken with probability 70%
   }
 
 CFG Modifications

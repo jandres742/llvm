@@ -47,252 +47,21 @@
 #define SPIRV_LIBSPIRV_SPIRVNAMEMAPENUM_H
 
 #include "SPIRVEnum.h"
-#include "spirv.hpp"
+#include "spirv/unified1/spirv.hpp"
+#include "spirv_internal.hpp"
 
 using namespace spv;
 
 namespace SPIRV {
 
-template <> inline void SPIRVMap<SourceLanguage, std::string>::init() {
-  add(SourceLanguageUnknown, "Unknown");
-  add(SourceLanguageESSL, "ESSL");
-  add(SourceLanguageGLSL, "GLSL");
-  add(SourceLanguageOpenCL_C, "OpenCL_C");
-  add(SourceLanguageOpenCL_CPP, "OpenCL_CPP");
-}
-SPIRV_DEF_NAMEMAP(SourceLanguage, SPIRVSourceLanguageNameMap)
-
-template <> inline void SPIRVMap<ExecutionModel, std::string>::init() {
-  add(ExecutionModelVertex, "Vertex");
-  add(ExecutionModelTessellationControl, "TessellationControl");
-  add(ExecutionModelTessellationEvaluation, "TessellationEvaluation");
-  add(ExecutionModelGeometry, "Geometry");
-  add(ExecutionModelFragment, "Fragment");
-  add(ExecutionModelGLCompute, "GLCompute");
-  add(ExecutionModelKernel, "Kernel");
-}
-SPIRV_DEF_NAMEMAP(ExecutionModel, SPIRVExecutionModelNameMap)
-
-template <> inline void SPIRVMap<AddressingModel, std::string>::init() {
-  add(AddressingModelLogical, "Logical");
-  add(AddressingModelPhysical32, "Physical32");
-  add(AddressingModelPhysical64, "Physical64");
-}
-SPIRV_DEF_NAMEMAP(AddressingModel, SPIRVAddressingModelNameMap)
-
-template <> inline void SPIRVMap<MemoryModel, std::string>::init() {
-  add(MemoryModelSimple, "Simple");
-  add(MemoryModelGLSL450, "GLSL450");
-  add(MemoryModelOpenCL, "OpenCL");
-}
-SPIRV_DEF_NAMEMAP(MemoryModel, SPIRVMemoryModelNameMap)
-
-template <> inline void SPIRVMap<ExecutionMode, std::string>::init() {
-  add(ExecutionModeInvocations, "Invocations");
-  add(ExecutionModeSpacingEqual, "SpacingEqual");
-  add(ExecutionModeSpacingFractionalEven, "SpacingFractionalEven");
-  add(ExecutionModeSpacingFractionalOdd, "SpacingFractionalOdd");
-  add(ExecutionModeVertexOrderCw, "VertexOrderCw");
-  add(ExecutionModeVertexOrderCcw, "VertexOrderCcw");
-  add(ExecutionModePixelCenterInteger, "PixelCenterInteger");
-  add(ExecutionModeOriginUpperLeft, "OriginUpperLeft");
-  add(ExecutionModeOriginLowerLeft, "OriginLowerLeft");
-  add(ExecutionModeEarlyFragmentTests, "EarlyFragmentTests");
-  add(ExecutionModePointMode, "PointMode");
-  add(ExecutionModeXfb, "Xfb");
-  add(ExecutionModeDepthReplacing, "DepthReplacing");
-  add(ExecutionModeDepthGreater, "DepthGreater");
-  add(ExecutionModeDepthLess, "DepthLess");
-  add(ExecutionModeDepthUnchanged, "DepthUnchanged");
-  add(ExecutionModeLocalSize, "LocalSize");
-  add(ExecutionModeLocalSizeHint, "LocalSizeHint");
-  add(ExecutionModeInputPoints, "InputPoints");
-  add(ExecutionModeInputLines, "InputLines");
-  add(ExecutionModeInputLinesAdjacency, "InputLinesAdjacency");
-  add(ExecutionModeTriangles, "Triangles");
-  add(ExecutionModeInputTrianglesAdjacency, "InputTrianglesAdjacency");
-  add(ExecutionModeQuads, "Quads");
-  add(ExecutionModeIsolines, "Isolines");
-  add(ExecutionModeOutputVertices, "OutputVertices");
-  add(ExecutionModeOutputPoints, "OutputPoints");
-  add(ExecutionModeOutputLineStrip, "OutputLineStrip");
-  add(ExecutionModeOutputTriangleStrip, "OutputTriangleStrip");
-  add(ExecutionModeVecTypeHint, "VecTypeHint");
-  add(ExecutionModeContractionOff, "ContractionOff");
-  add(ExecutionModeSubgroupSize, "SubgroupSize");
-  add(ExecutionModeMaxWorkgroupSizeINTEL, "MaxWorkgroupSizeINTEL");
-  add(ExecutionModeNoGlobalOffsetINTEL, "NoGlobalOffsetINTEL");
-  add(ExecutionModeMaxWorkDimINTEL, "MaxWorkDimINTEL");
-  add(ExecutionModeNumSIMDWorkitemsINTEL, "NumSIMDWorkitemsINTEL");
-  add(ExecutionModeDenormPreserve, "DenormPreserve");
-  add(ExecutionModeDenormFlushToZero, "DenormFlushToZero");
-  add(ExecutionModeSignedZeroInfNanPreserve, "SignedZeroInfNanPreserve");
-  add(ExecutionModeRoundingModeRTE, "RoundingModeRTE");
-  add(ExecutionModeRoundingModeRTZ, "RoundingModeRTZ");
-}
-SPIRV_DEF_NAMEMAP(ExecutionMode, SPIRVExecutionModeNameMap)
-
-template <> inline void SPIRVMap<StorageClass, std::string>::init() {
-  add(StorageClassUniformConstant, "UniformConstant");
-  add(StorageClassInput, "Input");
-  add(StorageClassUniform, "Uniform");
-  add(StorageClassOutput, "Output");
-  add(StorageClassWorkgroup, "Workgroup");
-  add(StorageClassCrossWorkgroup, "CrossWorkgroup");
-  add(StorageClassPrivate, "Private");
-  add(StorageClassFunction, "Function");
-  add(StorageClassGeneric, "Generic");
-  add(StorageClassPushConstant, "PushConstant");
-  add(StorageClassAtomicCounter, "AtomicCounter");
-  add(StorageClassImage, "Image");
-}
-SPIRV_DEF_NAMEMAP(StorageClass, SPIRVStorageClassNameMap)
-
-template <> inline void SPIRVMap<Dim, std::string>::init() {
-  add(Dim1D, "1D");
-  add(Dim2D, "2D");
-  add(Dim3D, "3D");
-  add(DimCube, "Cube");
-  add(DimRect, "Rect");
-  add(DimBuffer, "Buffer");
-  add(DimSubpassData, "SubpassData");
-}
-SPIRV_DEF_NAMEMAP(Dim, SPIRVDimNameMap)
-
-template <> inline void SPIRVMap<SamplerAddressingMode, std::string>::init() {
-  add(SamplerAddressingModeNone, "None");
-  add(SamplerAddressingModeClampToEdge, "ClampToEdge");
-  add(SamplerAddressingModeClamp, "Clamp");
-  add(SamplerAddressingModeRepeat, "Repeat");
-  add(SamplerAddressingModeRepeatMirrored, "RepeatMirrored");
-}
-SPIRV_DEF_NAMEMAP(SamplerAddressingMode, SPIRVSamplerAddressingModeNameMap)
-
-template <> inline void SPIRVMap<SamplerFilterMode, std::string>::init() {
-  add(SamplerFilterModeNearest, "Nearest");
-  add(SamplerFilterModeLinear, "Linear");
-}
-SPIRV_DEF_NAMEMAP(SamplerFilterMode, SPIRVSamplerFilterModeNameMap)
-
-template <> inline void SPIRVMap<ImageFormat, std::string>::init() {
-  add(ImageFormatUnknown, "Unknown");
-  add(ImageFormatRgba32f, "Rgba32f");
-  add(ImageFormatRgba16f, "Rgba16f");
-  add(ImageFormatR32f, "R32f");
-  add(ImageFormatRgba8, "Rgba8");
-  add(ImageFormatRgba8Snorm, "Rgba8Snorm");
-  add(ImageFormatRg32f, "Rg32f");
-  add(ImageFormatRg16f, "Rg16f");
-  add(ImageFormatR11fG11fB10f, "R11fG11fB10f");
-  add(ImageFormatR16f, "R16f");
-  add(ImageFormatRgba16, "Rgba16");
-  add(ImageFormatRgb10A2, "Rgb10A2");
-  add(ImageFormatRg16, "Rg16");
-  add(ImageFormatRg8, "Rg8");
-  add(ImageFormatR16, "R16");
-  add(ImageFormatR8, "R8");
-  add(ImageFormatRgba16Snorm, "Rgba16Snorm");
-  add(ImageFormatRg16Snorm, "Rg16Snorm");
-  add(ImageFormatRg8Snorm, "Rg8Snorm");
-  add(ImageFormatR16Snorm, "R16Snorm");
-  add(ImageFormatR8Snorm, "R8Snorm");
-  add(ImageFormatRgba32i, "Rgba32i");
-  add(ImageFormatRgba16i, "Rgba16i");
-  add(ImageFormatRgba8i, "Rgba8i");
-  add(ImageFormatR32i, "R32i");
-  add(ImageFormatRg32i, "Rg32i");
-  add(ImageFormatRg16i, "Rg16i");
-  add(ImageFormatRg8i, "Rg8i");
-  add(ImageFormatR16i, "R16i");
-  add(ImageFormatR8i, "R8i");
-  add(ImageFormatRgba32ui, "Rgba32ui");
-  add(ImageFormatRgba16ui, "Rgba16ui");
-  add(ImageFormatRgba8ui, "Rgba8ui");
-  add(ImageFormatR32ui, "R32ui");
-  add(ImageFormatRgb10a2ui, "Rgb10a2ui");
-  add(ImageFormatRg32ui, "Rg32ui");
-  add(ImageFormatRg16ui, "Rg16ui");
-  add(ImageFormatRg8ui, "Rg8ui");
-  add(ImageFormatR16ui, "R16ui");
-  add(ImageFormatR8ui, "R8ui");
-}
-SPIRV_DEF_NAMEMAP(ImageFormat, SPIRVImageFormatNameMap)
-
-template <> inline void SPIRVMap<ImageChannelOrder, std::string>::init() {
-  add(ImageChannelOrderR, "R");
-  add(ImageChannelOrderA, "A");
-  add(ImageChannelOrderRG, "RG");
-  add(ImageChannelOrderRA, "RA");
-  add(ImageChannelOrderRGB, "RGB");
-  add(ImageChannelOrderRGBA, "RGBA");
-  add(ImageChannelOrderBGRA, "BGRA");
-  add(ImageChannelOrderARGB, "ARGB");
-  add(ImageChannelOrderIntensity, "Intensity");
-  add(ImageChannelOrderLuminance, "Luminance");
-  add(ImageChannelOrderRx, "Rx");
-  add(ImageChannelOrderRGx, "RGx");
-  add(ImageChannelOrderRGBx, "RGBx");
-  add(ImageChannelOrderDepth, "Depth");
-  add(ImageChannelOrderDepthStencil, "DepthStencil");
-}
-SPIRV_DEF_NAMEMAP(ImageChannelOrder, SPIRVImageChannelOrderNameMap)
-
-template <> inline void SPIRVMap<ImageChannelDataType, std::string>::init() {
-  add(ImageChannelDataTypeSnormInt8, "SnormInt8");
-  add(ImageChannelDataTypeSnormInt16, "SnormInt16");
-  add(ImageChannelDataTypeUnormInt8, "UnormInt8");
-  add(ImageChannelDataTypeUnormInt16, "UnormInt16");
-  add(ImageChannelDataTypeUnormShort565, "UnormShort565");
-  add(ImageChannelDataTypeUnormShort555, "UnormShort555");
-  add(ImageChannelDataTypeUnormInt101010, "UnormInt101010");
-  add(ImageChannelDataTypeSignedInt8, "SignedInt8");
-  add(ImageChannelDataTypeSignedInt16, "SignedInt16");
-  add(ImageChannelDataTypeSignedInt32, "SignedInt32");
-  add(ImageChannelDataTypeUnsignedInt8, "UnsignedInt8");
-  add(ImageChannelDataTypeUnsignedInt16, "UnsignedInt16");
-  add(ImageChannelDataTypeUnsignedInt32, "UnsignedInt32");
-  add(ImageChannelDataTypeHalfFloat, "HalfFloat");
-  add(ImageChannelDataTypeFloat, "Float");
-  add(ImageChannelDataTypeUnormInt24, "UnormInt24");
-  add(ImageChannelDataTypeUnormInt101010_2, "UnormInt101010_2");
-}
-SPIRV_DEF_NAMEMAP(ImageChannelDataType, SPIRVImageChannelDataTypeNameMap)
-
-template <> inline void SPIRVMap<FPRoundingMode, std::string>::init() {
-  add(FPRoundingModeRTE, "RTE");
-  add(FPRoundingModeRTZ, "RTZ");
-  add(FPRoundingModeRTP, "RTP");
-  add(FPRoundingModeRTN, "RTN");
-}
-SPIRV_DEF_NAMEMAP(FPRoundingMode, SPIRVFPRoundingModeNameMap)
-
 template <> inline void SPIRVMap<LinkageType, std::string>::init() {
   add(LinkageTypeExport, "Export");
   add(LinkageTypeImport, "Import");
-  add(LinkageTypeInternal, "Internal");
+  add(LinkageTypeLinkOnceODR, "LinkOnceODR");
+  add(internal::LinkageTypeInternal, "Internal");
+  add(LinkageTypeMax, "Max");
 }
 SPIRV_DEF_NAMEMAP(LinkageType, SPIRVLinkageTypeNameMap)
-
-template <> inline void SPIRVMap<AccessQualifier, std::string>::init() {
-  add(AccessQualifierReadOnly, "ReadOnly");
-  add(AccessQualifierWriteOnly, "WriteOnly");
-  add(AccessQualifierReadWrite, "ReadWrite");
-}
-SPIRV_DEF_NAMEMAP(AccessQualifier, SPIRVAccessQualifierNameMap)
-
-template <>
-inline void SPIRVMap<FunctionParameterAttribute, std::string>::init() {
-  add(FunctionParameterAttributeZext, "Zext");
-  add(FunctionParameterAttributeSext, "Sext");
-  add(FunctionParameterAttributeByVal, "ByVal");
-  add(FunctionParameterAttributeSret, "Sret");
-  add(FunctionParameterAttributeNoAlias, "NoAlias");
-  add(FunctionParameterAttributeNoCapture, "NoCapture");
-  add(FunctionParameterAttributeNoWrite, "NoWrite");
-  add(FunctionParameterAttributeNoReadWrite, "NoReadWrite");
-}
-SPIRV_DEF_NAMEMAP(FunctionParameterAttribute,
-                  SPIRVFunctionParameterAttributeNameMap)
 
 template <> inline void SPIRVMap<Decoration, std::string>::init() {
   add(DecorationRelaxedPrecision, "RelaxedPrecision");
@@ -321,6 +90,7 @@ template <> inline void SPIRVMap<Decoration, std::string>::init() {
   add(DecorationNonWritable, "NonWritable");
   add(DecorationNonReadable, "NonReadable");
   add(DecorationUniform, "Uniform");
+  add(DecorationUniformId, "UniformId");
   add(DecorationSaturatedConversion, "SaturatedConversion");
   add(DecorationStream, "Stream");
   add(DecorationLocation, "Location");
@@ -339,10 +109,46 @@ template <> inline void SPIRVMap<Decoration, std::string>::init() {
   add(DecorationInputAttachmentIndex, "InputAttachmentIndex");
   add(DecorationAlignment, "Alignment");
   add(DecorationMaxByteOffset, "MaxByteOffset");
+  add(DecorationAlignmentId, "AlignmentId");
+  add(DecorationMaxByteOffsetId, "MaxByteOffsetId");
   add(DecorationNoSignedWrap, "NoSignedWrap");
   add(DecorationNoUnsignedWrap, "NoUnsignedWrap");
+  add(DecorationExplicitInterpAMD, "ExplicitInterpAMD");
+  add(DecorationOverrideCoverageNV, "OverrideCoverageNV");
+  add(DecorationPassthroughNV, "PassthroughNV");
+  add(DecorationViewportRelativeNV, "ViewportRelativeNV");
+  add(DecorationSecondaryViewportRelativeNV, "SecondaryViewportRelativeNV");
+  add(DecorationPerPrimitiveNV, "PerPrimitiveNV");
+  add(DecorationPerViewNV, "PerViewNV");
+  add(DecorationPerTaskNV, "PerTaskNV");
+  add(DecorationPerVertexKHR, "PerVertexKHR");
+  add(DecorationPerVertexNV, "PerVertexNV");
+  add(DecorationNonUniform, "NonUniform");
+  add(DecorationNonUniformEXT, "NonUniformEXT");
+  add(DecorationRestrictPointer, "RestrictPointer");
+  add(DecorationRestrictPointerEXT, "RestrictPointerEXT");
+  add(DecorationAliasedPointer, "AliasedPointer");
+  add(DecorationAliasedPointerEXT, "AliasedPointerEXT");
+  add(DecorationBindlessSamplerNV, "BindlessSamplerNV");
+  add(DecorationBindlessImageNV, "BindlessImageNV");
+  add(DecorationBoundSamplerNV, "BoundSamplerNV");
+  add(DecorationBoundImageNV, "BoundImageNV");
+  add(DecorationSIMTCallINTEL, "SIMTCallINTEL");
+  add(DecorationReferencedIndirectlyINTEL, "ReferencedIndirectlyINTEL");
+  add(DecorationClobberINTEL, "ClobberINTEL");
   add(DecorationSideEffectsINTEL, "SideEffectsINTEL");
+  add(DecorationVectorComputeVariableINTEL, "VectorComputeVariableINTEL");
+  add(DecorationFuncParamIOKindINTEL, "FuncParamIOKind");
+  add(DecorationVectorComputeFunctionINTEL, "VectorComputeFunctionINTEL");
+  add(DecorationStackCallINTEL, "StackCallINTEL");
+  add(DecorationGlobalVariableOffsetINTEL, "GlobalVariableOffsetINTEL");
+  add(DecorationCounterBuffer, "CounterBuffer");
+  add(DecorationHlslCounterBufferGOOGLE, "HlslCounterBufferGOOGLE");
+  add(DecorationHlslSemanticGOOGLE, "HlslSemanticGOOGLE");
   add(DecorationUserSemantic, "UserSemantic");
+  add(DecorationUserTypeGOOGLE, "UserTypeGOOGLE");
+  add(DecorationFunctionRoundingModeINTEL, "FunctionRoundingModeINTEL");
+  add(DecorationFunctionDenormModeINTEL, "FunctionDenormModeINTEL");
   add(DecorationRegisterINTEL, "RegisterINTEL");
   add(DecorationMemoryINTEL, "MemoryINTEL");
   add(DecorationNumbanksINTEL, "NumbanksINTEL");
@@ -355,8 +161,68 @@ template <> inline void SPIRVMap<Decoration, std::string>::init() {
   add(DecorationMergeINTEL, "MergeINTEL");
   add(DecorationBankBitsINTEL, "BankBitsINTEL");
   add(DecorationForcePow2DepthINTEL, "ForcePow2DepthINTEL");
-  add(DecorationReferencedIndirectlyINTEL, "ReferencedIndirectlyINTEL");
+  add(DecorationBurstCoalesceINTEL, "BurstCoalesceINTEL");
+  add(DecorationCacheSizeINTEL, "CacheSizeINTEL");
+  add(DecorationDontStaticallyCoalesceINTEL, "DontStaticallyCoalesceINTEL");
+  add(DecorationPrefetchINTEL, "PrefetchINTEL");
+  add(DecorationStallEnableINTEL, "StallEnableINTEL");
+  add(DecorationFuseLoopsInFunctionINTEL, "FuseLoopsInFunctionINTEL");
+  add(DecorationAliasScopeINTEL, "AliasScopeINTEL");
+  add(DecorationNoAliasINTEL, "NoAliasINTEL");
+  add(DecorationBufferLocationINTEL, "BufferLocationINTEL");
   add(DecorationIOPipeStorageINTEL, "IOPipeStorageINTEL");
+  add(DecorationFunctionFloatingPointModeINTEL,
+      "FunctionFloatingPointModeINTEL");
+  add(DecorationSingleElementVectorINTEL, "SingleElementVectorINTEL");
+  add(DecorationVectorComputeCallableFunctionINTEL,
+      "VectorComputeCallableFunctionINTEL");
+  add(DecorationMediaBlockIOINTEL, "MediaBlockIOINTEL");
+  add(DecorationAliasScopeINTEL, "AliasScopeINTEL");
+  add(DecorationNoAliasINTEL, "NoAliasINTEL");
+  add(DecorationConduitKernelArgumentINTEL, "ConduitKernelArgumentINTEL");
+  add(DecorationRegisterMapKernelArgumentINTEL,
+      "RegisterMapKernelArgumentINTEL");
+  add(DecorationMMHostInterfaceAddressWidthINTEL,
+      "MMHostInterfaceAddressWidthINTEL");
+  add(DecorationMMHostInterfaceDataWidthINTEL, "MMHostInterfaceDataWidthINTEL");
+  add(DecorationMMHostInterfaceLatencyINTEL, "MMHostInterfaceLatencyINTEL");
+  add(DecorationMMHostInterfaceReadWriteModeINTEL,
+      "MMHostInterfaceReadWriteModeINTEL");
+  add(DecorationMMHostInterfaceMaxBurstINTEL, "MMHostInterfaceMaxBurstINTEL");
+  add(DecorationMMHostInterfaceWaitRequestINTEL,
+      "MMHostInterfaceWaitRequestINTEL");
+  add(DecorationStableKernelArgumentINTEL, "StableKernelArgumentINTEL");
+  add(DecorationMathOpDSPModeINTEL, "MathOpDSPModeINTEL");
+  add(DecorationInitiationIntervalINTEL, "InitiationIntervalINTEL");
+  add(DecorationMaxConcurrencyINTEL, "MaxConcurrencyINTEL");
+  add(DecorationPipelineEnableINTEL, "PipelineEnableINTEL");
+  add(DecorationConduitKernelArgumentINTEL, "ConduitKernelArgumentINTEL");
+  add(DecorationRegisterMapKernelArgumentINTEL,
+      "RegisterMapKernelArgumentINTEL");
+  add(DecorationMMHostInterfaceAddressWidthINTEL,
+      "MMHostInterfaceAddressWidthINTEL");
+  add(DecorationMMHostInterfaceDataWidthINTEL, "MMHostInterfaceDataWidthINTEL");
+  add(DecorationMMHostInterfaceLatencyINTEL, "MMHostInterfaceLatencyINTEL");
+  add(DecorationMMHostInterfaceReadWriteModeINTEL,
+      "MMHostInterfaceReadWriteModeINTEL");
+  add(DecorationMMHostInterfaceMaxBurstINTEL, "MMHostInterfaceMaxBurstINTEL");
+  add(DecorationMMHostInterfaceWaitRequestINTEL,
+      "MMHostInterfaceWaitRequestINTEL");
+  add(DecorationStableKernelArgumentINTEL, "StableKernelArgumentINTEL");
+  add(DecorationLatencyControlLabelINTEL, "LatencyControlLabelINTEL");
+  add(DecorationLatencyControlConstraintINTEL, "LatencyControlConstraintINTEL");
+
+  // From spirv_internal.hpp
+  add(internal::DecorationFuncParamKindINTEL, "FuncParamKindINTEL");
+  add(internal::DecorationFuncParamDescINTEL, "FuncParamDescINTEL");
+  add(internal::DecorationCallableFunctionINTEL, "CallableFunctionINTEL");
+  add(internal::DecorationRuntimeAlignedINTEL, "RuntimeAlignedINTEL");
+  add(internal::DecorationHostAccessINTEL, "HostAccessINTEL");
+  add(internal::DecorationInitModeINTEL, "InitModeINTEL");
+  add(internal::DecorationImplementInCSRINTEL, "ImplementInCSRINTEL");
+  add(internal::DecorationArgumentAttributeINTEL, "ArgumentAttributeINTEL");
+
+  add(DecorationMax, "Max");
 }
 SPIRV_DEF_NAMEMAP(Decoration, SPIRVDecorationNameMap)
 
@@ -400,38 +266,94 @@ template <> inline void SPIRVMap<BuiltIn, std::string>::init() {
   add(BuiltInNumEnqueuedSubgroups, "BuiltInNumEnqueuedSubgroups");
   add(BuiltInSubgroupId, "BuiltInSubgroupId");
   add(BuiltInSubgroupLocalInvocationId, "BuiltInSubgroupLocalInvocationId");
-  add(BuiltInSubgroupEqMask, "BuiltInSubgroupEqMask");
-  add(BuiltInSubgroupGeMask, "BuiltInSubgroupGeMask");
-  add(BuiltInSubgroupGtMask, "BuiltInSubgroupGtMask");
-  add(BuiltInSubgroupLeMask, "BuiltInSubgroupLeMask");
-  add(BuiltInSubgroupLtMask, "BuiltInSubgroupLtMask");
   add(BuiltInVertexIndex, "BuiltInVertexIndex");
   add(BuiltInInstanceIndex, "BuiltInInstanceIndex");
+  add(BuiltInSubgroupEqMask, "BuiltInSubgroupEqMask");
+  add(BuiltInSubgroupEqMaskKHR, "BuiltInSubgroupEqMaskKHR");
+  add(BuiltInSubgroupGeMask, "BuiltInSubgroupGeMask");
+  add(BuiltInSubgroupGeMaskKHR, "BuiltInSubgroupGeMaskKHR");
+  add(BuiltInSubgroupGtMask, "BuiltInSubgroupGtMask");
+  add(BuiltInSubgroupGtMaskKHR, "BuiltInSubgroupGtMaskKHR");
+  add(BuiltInSubgroupLeMask, "BuiltInSubgroupLeMask");
+  add(BuiltInSubgroupLeMaskKHR, "BuiltInSubgroupLeMaskKHR");
+  add(BuiltInSubgroupLtMask, "BuiltInSubgroupLtMask");
+  add(BuiltInSubgroupLtMaskKHR, "BuiltInSubgroupLtMaskKHR");
+  add(BuiltInBaseVertex, "BuiltInBaseVertex");
+  add(BuiltInBaseInstance, "BuiltInBaseInstance");
+  add(BuiltInDrawIndex, "BuiltInDrawIndex");
+  add(BuiltInPrimitiveShadingRateKHR, "BuiltInPrimitiveShadingRateKHR");
+  add(BuiltInDeviceIndex, "BuiltInDeviceIndex");
+  add(BuiltInViewIndex, "BuiltInViewIndex");
+  add(BuiltInShadingRateKHR, "BuiltInShadingRateKHR");
+  add(BuiltInBaryCoordNoPerspAMD, "BuiltInBaryCoordNoPerspAMD");
+  add(BuiltInBaryCoordNoPerspCentroidAMD, "BuiltInBaryCoordNoPerspCentroidAMD");
+  add(BuiltInBaryCoordNoPerspSampleAMD, "BuiltInBaryCoordNoPerspSampleAMD");
+  add(BuiltInBaryCoordSmoothAMD, "BuiltInBaryCoordSmoothAMD");
+  add(BuiltInBaryCoordSmoothCentroidAMD, "BuiltInBaryCoordSmoothCentroidAMD");
+  add(BuiltInBaryCoordSmoothSampleAMD, "BuiltInBaryCoordSmoothSampleAMD");
+  add(BuiltInBaryCoordPullModelAMD, "BuiltInBaryCoordPullModelAMD");
+  add(BuiltInFragStencilRefEXT, "BuiltInFragStencilRefEXT");
+  add(BuiltInViewportMaskNV, "BuiltInViewportMaskNV");
+  add(BuiltInSecondaryPositionNV, "BuiltInSecondaryPositionNV");
+  add(BuiltInSecondaryViewportMaskNV, "BuiltInSecondaryViewportMaskNV");
+  add(BuiltInPositionPerViewNV, "BuiltInPositionPerViewNV");
+  add(BuiltInViewportMaskPerViewNV, "BuiltInViewportMaskPerViewNV");
+  add(BuiltInFullyCoveredEXT, "BuiltInFullyCoveredEXT");
+  add(BuiltInTaskCountNV, "BuiltInTaskCountNV");
+  add(BuiltInPrimitiveCountNV, "BuiltInPrimitiveCountNV");
+  add(BuiltInPrimitiveIndicesNV, "BuiltInPrimitiveIndicesNV");
+  add(BuiltInClipDistancePerViewNV, "BuiltInClipDistancePerViewNV");
+  add(BuiltInCullDistancePerViewNV, "BuiltInCullDistancePerViewNV");
+  add(BuiltInLayerPerViewNV, "BuiltInLayerPerViewNV");
+  add(BuiltInMeshViewCountNV, "BuiltInMeshViewCountNV");
+  add(BuiltInMeshViewIndicesNV, "BuiltInMeshViewIndicesNV");
+  add(BuiltInBaryCoordKHR, "BuiltInBaryCoordKHR");
+  add(BuiltInBaryCoordNV, "BuiltInBaryCoordNV");
+  add(BuiltInBaryCoordNoPerspKHR, "BuiltInBaryCoordNoPerspKHR");
+  add(BuiltInBaryCoordNoPerspNV, "BuiltInBaryCoordNoPerspNV");
+  add(BuiltInFragSizeEXT, "BuiltInFragSizeEXT");
+  add(BuiltInFragmentSizeNV, "BuiltInFragmentSizeNV");
+  add(BuiltInFragInvocationCountEXT, "BuiltInFragInvocationCountEXT");
+  add(BuiltInInvocationsPerPixelNV, "BuiltInInvocationsPerPixelNV");
+  add(BuiltInLaunchIdKHR, "BuiltInLaunchIdKHR");
+  add(BuiltInLaunchIdNV, "BuiltInLaunchIdNV");
+  add(BuiltInLaunchSizeKHR, "BuiltInLaunchSizeKHR");
+  add(BuiltInLaunchSizeNV, "BuiltInLaunchSizeNV");
+  add(BuiltInWorldRayOriginKHR, "BuiltInWorldRayOriginKHR");
+  add(BuiltInWorldRayOriginNV, "BuiltInWorldRayOriginNV");
+  add(BuiltInWorldRayDirectionKHR, "BuiltInWorldRayDirectionKHR");
+  add(BuiltInWorldRayDirectionNV, "BuiltInWorldRayDirectionNV");
+  add(BuiltInObjectRayOriginKHR, "BuiltInObjectRayOriginKHR");
+  add(BuiltInObjectRayOriginNV, "BuiltInObjectRayOriginNV");
+  add(BuiltInObjectRayDirectionKHR, "BuiltInObjectRayDirectionKHR");
+  add(BuiltInObjectRayDirectionNV, "BuiltInObjectRayDirectionNV");
+  add(BuiltInRayTminKHR, "BuiltInRayTminKHR");
+  add(BuiltInRayTminNV, "BuiltInRayTminNV");
+  add(BuiltInRayTmaxKHR, "BuiltInRayTmaxKHR");
+  add(BuiltInRayTmaxNV, "BuiltInRayTmaxNV");
+  add(BuiltInInstanceCustomIndexKHR, "BuiltInInstanceCustomIndexKHR");
+  add(BuiltInInstanceCustomIndexNV, "BuiltInInstanceCustomIndexNV");
+  add(BuiltInObjectToWorldKHR, "BuiltInObjectToWorldKHR");
+  add(BuiltInObjectToWorldNV, "BuiltInObjectToWorldNV");
+  add(BuiltInWorldToObjectKHR, "BuiltInWorldToObjectKHR");
+  add(BuiltInWorldToObjectNV, "BuiltInWorldToObjectNV");
+  add(BuiltInHitTNV, "BuiltInHitTNV");
+  add(BuiltInHitKindKHR, "BuiltInHitKindKHR");
+  add(BuiltInHitKindNV, "BuiltInHitKindNV");
+  add(BuiltInCurrentRayTimeNV, "BuiltInCurrentRayTimeNV");
+  add(BuiltInIncomingRayFlagsKHR, "BuiltInIncomingRayFlagsKHR");
+  add(BuiltInIncomingRayFlagsNV, "BuiltInIncomingRayFlagsNV");
+  add(BuiltInRayGeometryIndexKHR, "BuiltInRayGeometryIndexKHR");
+  add(BuiltInWarpsPerSMNV, "BuiltInWarpsPerSMNV");
+  add(BuiltInSMCountNV, "BuiltInSMCountNV");
+  add(BuiltInWarpIDNV, "BuiltInWarpIDNV");
+  add(BuiltInSMIDNV, "BuiltInSMIDNV");
+  add(BuiltInCullMaskKHR, "BuiltInCullMaskKHR");
+  add(BuiltInMax, "BuiltInMax");
+  add(internal::BuiltInSubDeviceIDINTEL, "BuiltInSubDeviceIDINTEL");
+  add(internal::BuiltInGlobalHWThreadIDINTEL, "BuiltInGlobalHWThreadIDINTEL");
 }
 SPIRV_DEF_NAMEMAP(BuiltIn, SPIRVBuiltInNameMap)
-
-template <> inline void SPIRVMap<Scope, std::string>::init() {
-  add(ScopeCrossDevice, "CrossDevice");
-  add(ScopeDevice, "Device");
-  add(ScopeWorkgroup, "Workgroup");
-  add(ScopeSubgroup, "Subgroup");
-  add(ScopeInvocation, "Invocation");
-}
-SPIRV_DEF_NAMEMAP(Scope, SPIRVScopeNameMap)
-
-template <> inline void SPIRVMap<GroupOperation, std::string>::init() {
-  add(GroupOperationReduce, "Reduce");
-  add(GroupOperationInclusiveScan, "InclusiveScan");
-  add(GroupOperationExclusiveScan, "ExclusiveScan");
-}
-SPIRV_DEF_NAMEMAP(GroupOperation, SPIRVGroupOperationNameMap)
-
-template <> inline void SPIRVMap<KernelEnqueueFlags, std::string>::init() {
-  add(KernelEnqueueFlagsNoWait, "NoWait");
-  add(KernelEnqueueFlagsWaitKernel, "WaitKernel");
-  add(KernelEnqueueFlagsWaitWorkGroup, "WaitWorkGroup");
-}
-SPIRV_DEF_NAMEMAP(KernelEnqueueFlags, SPIRVKernelEnqueueFlagsNameMap)
 
 template <> inline void SPIRVMap<Capability, std::string>::init() {
   add(CapabilityMatrix, "Matrix");
@@ -451,7 +373,6 @@ template <> inline void SPIRVMap<Capability, std::string>::init() {
   add(CapabilityImageReadWrite, "ImageReadWrite");
   add(CapabilityImageMipmap, "ImageMipmap");
   add(CapabilityPipes, "Pipes");
-  add(CapabilityPipeStorage, "PipeStorage");
   add(CapabilityGroups, "Groups");
   add(CapabilityDeviceEnqueue, "DeviceEnqueue");
   add(CapabilityLiteralSampler, "LiteralSampler");
@@ -497,36 +418,8 @@ template <> inline void SPIRVMap<Capability, std::string>::init() {
       "StorageImageWriteWithoutFormat");
   add(CapabilityMultiViewport, "MultiViewport");
   add(CapabilitySubgroupDispatch, "SubgroupDispatch");
-  add(CapabilityDenormPreserve, "DenormPreserve");
-  add(CapabilityDenormFlushToZero, "DenormFlushToZero");
-  add(CapabilitySignedZeroInfNanPreserve, "SignedZeroInfNanPreserve");
-  add(CapabilityRoundingModeRTE, "RoundingModeRTE");
-  add(CapabilityRoundingModeRTZ, "RoundingModeRTZ");
-  add(CapabilitySubgroupShuffleINTEL, "SubgroupShuffleINTEL");
-  add(CapabilitySubgroupBufferBlockIOINTEL, "SubgroupBufferBlockIOINTEL");
-  add(CapabilitySubgroupImageBlockIOINTEL, "SubgroupImageBlockIOINTEL");
-  add(CapabilitySubgroupImageMediaBlockIOINTEL,
-      "SubgroupImageMediaBlockIOINTEL");
-  add(CapabilityAsmINTEL, "AsmINTEL");
-  add(CapabilitySubgroupAvcMotionEstimationINTEL,
-      "SubgroupAvcMotionEstimationINTEL");
-  add(CapabilitySubgroupAvcMotionEstimationIntraINTEL,
-      "SubgroupAvcMotionEstimationIntraINTEL");
-  add(CapabilitySubgroupAvcMotionEstimationChromaINTEL,
-      "SubgroupAvcMotionEstimationChromaINTEL");
-  add(CapabilityFPGAMemoryAttributesINTEL, "FPGAMemoryAttributesINTEL");
-  add(CapabilityArbitraryPrecisionIntegersINTEL,
-      "ArbitraryPrecisionIntegersINTEL");
-  add(CapabilityFPGALoopControlsINTEL, "FPGALoopControlsINTEL");
-  add(CapabilityFPGARegINTEL, "FPGARegINTEL");
-  add(CapabilityBlockingPipesINTEL, "BlockingPipesINTEL");
-  add(CapabilityUnstructuredLoopControlsINTEL, "UnstructuredLoopControlsINTEL");
-  add(CapabilityFunctionPointersINTEL, "FunctionPointersINTEL");
-  add(CapabilityIndirectReferencesINTEL, "IndirectReferencesINTEL");
-  add(CapabilityKernelAttributesINTEL, "KernelAttributesINTEL");
-  add(CapabilityFPGAKernelAttributesINTEL, "FPGAKernelAttributesINTEL");
-  add(CapabilityIOPipeINTEL, "IOPipeINTEL");
-  add(CapabilityOptimizationHintsINTEL, "OptimizationHintsINTEL");
+  add(CapabilityNamedBarrier, "NamedBarrier");
+  add(CapabilityPipeStorage, "PipeStorage");
   add(CapabilityGroupNonUniform, "GroupNonUniform");
   add(CapabilityGroupNonUniformVote, "GroupNonUniformVote");
   add(CapabilityGroupNonUniformArithmetic, "GroupNonUniformArithmetic");
@@ -535,6 +428,238 @@ template <> inline void SPIRVMap<Capability, std::string>::init() {
   add(CapabilityGroupNonUniformShuffleRelative,
       "GroupNonUniformShuffleRelative");
   add(CapabilityGroupNonUniformClustered, "GroupNonUniformClustered");
+  add(CapabilityGroupNonUniformQuad, "GroupNonUniformQuad");
+  add(CapabilityShaderLayer, "ShaderLayer");
+  add(CapabilityShaderViewportIndex, "ShaderViewportIndex");
+  add(CapabilityUniformDecoration, "UniformDecoration");
+  add(CapabilityFragmentShadingRateKHR, "FragmentShadingRateKHR");
+  add(CapabilitySubgroupBallotKHR, "SubgroupBallotKHR");
+  add(CapabilityDrawParameters, "DrawParameters");
+  add(CapabilityWorkgroupMemoryExplicitLayoutKHR,
+      "WorkgroupMemoryExplicitLayoutKHR");
+  add(CapabilityWorkgroupMemoryExplicitLayout8BitAccessKHR,
+      "WorkgroupMemoryExplicitLayout8BitAccessKHR");
+  add(CapabilityWorkgroupMemoryExplicitLayout16BitAccessKHR,
+      "WorkgroupMemoryExplicitLayout16BitAccessKHR");
+  add(CapabilitySubgroupVoteKHR, "SubgroupVoteKHR");
+  add(CapabilityStorageBuffer16BitAccess, "StorageBuffer16BitAccess");
+  add(CapabilityStorageUniformBufferBlock16, "StorageUniformBufferBlock16");
+  add(CapabilityStorageUniform16, "StorageUniform16");
+  add(CapabilityUniformAndStorageBuffer16BitAccess,
+      "UniformAndStorageBuffer16BitAccess");
+  add(CapabilityStoragePushConstant16, "StoragePushConstant16");
+  add(CapabilityStorageInputOutput16, "StorageInputOutput16");
+  add(CapabilityDeviceGroup, "DeviceGroup");
+  add(CapabilityMultiView, "MultiView");
+  add(CapabilityVariablePointersStorageBuffer, "VariablePointersStorageBuffer");
+  add(CapabilityVariablePointers, "VariablePointers");
+  add(CapabilityAtomicStorageOps, "AtomicStorageOps");
+  add(CapabilitySampleMaskPostDepthCoverage, "SampleMaskPostDepthCoverage");
+  add(CapabilityStorageBuffer8BitAccess, "StorageBuffer8BitAccess");
+  add(CapabilityUniformAndStorageBuffer8BitAccess,
+      "UniformAndStorageBuffer8BitAccess");
+  add(CapabilityStoragePushConstant8, "StoragePushConstant8");
+  add(CapabilityDenormPreserve, "DenormPreserve");
+  add(CapabilityDenormFlushToZero, "DenormFlushToZero");
+  add(CapabilitySignedZeroInfNanPreserve, "SignedZeroInfNanPreserve");
+  add(CapabilityRoundingModeRTE, "RoundingModeRTE");
+  add(CapabilityRoundingModeRTZ, "RoundingModeRTZ");
+  add(CapabilityRayQueryProvisionalKHR, "RayQueryProvisionalKHR");
+  add(CapabilityRayQueryKHR, "RayQueryKHR");
+  add(CapabilityRayTraversalPrimitiveCullingKHR,
+      "RayTraversalPrimitiveCullingKHR");
+  add(CapabilityRayTracingKHR, "RayTracingKHR");
+  add(CapabilityFloat16ImageAMD, "Float16ImageAMD");
+  add(CapabilityImageGatherBiasLodAMD, "ImageGatherBiasLodAMD");
+  add(CapabilityFragmentMaskAMD, "FragmentMaskAMD");
+  add(CapabilityStencilExportEXT, "StencilExportEXT");
+  add(CapabilityImageReadWriteLodAMD, "ImageReadWriteLodAMD");
+  add(CapabilityInt64ImageEXT, "Int64ImageEXT");
+  add(CapabilityShaderClockKHR, "ShaderClockKHR");
+  add(CapabilitySampleMaskOverrideCoverageNV, "SampleMaskOverrideCoverageNV");
+  add(CapabilityGeometryShaderPassthroughNV, "GeometryShaderPassthroughNV");
+  add(CapabilityShaderViewportIndexLayerEXT, "ShaderViewportIndexLayerEXT");
+  add(CapabilityShaderViewportIndexLayerNV, "ShaderViewportIndexLayerNV");
+  add(CapabilityShaderViewportMaskNV, "ShaderViewportMaskNV");
+  add(CapabilityShaderStereoViewNV, "ShaderStereoViewNV");
+  add(CapabilityPerViewAttributesNV, "PerViewAttributesNV");
+  add(CapabilityFragmentFullyCoveredEXT, "FragmentFullyCoveredEXT");
+  add(CapabilityMeshShadingNV, "MeshShadingNV");
+  add(CapabilityImageFootprintNV, "ImageFootprintNV");
+  add(CapabilityFragmentBarycentricKHR, "FragmentBarycentricKHR");
+  add(CapabilityFragmentBarycentricNV, "FragmentBarycentricNV");
+  add(CapabilityComputeDerivativeGroupQuadsNV, "ComputeDerivativeGroupQuadsNV");
+  add(CapabilityFragmentDensityEXT, "FragmentDensityEXT");
+  add(CapabilityShadingRateNV, "ShadingRateNV");
+  add(CapabilityGroupNonUniformPartitionedNV, "GroupNonUniformPartitionedNV");
+  add(CapabilityShaderNonUniform, "ShaderNonUniform");
+  add(CapabilityShaderNonUniformEXT, "ShaderNonUniformEXT");
+  add(CapabilityRuntimeDescriptorArray, "RuntimeDescriptorArray");
+  add(CapabilityRuntimeDescriptorArrayEXT, "RuntimeDescriptorArrayEXT");
+  add(CapabilityInputAttachmentArrayDynamicIndexing,
+      "InputAttachmentArrayDynamicIndexing");
+  add(CapabilityInputAttachmentArrayDynamicIndexingEXT,
+      "InputAttachmentArrayDynamicIndexingEXT");
+  add(CapabilityUniformTexelBufferArrayDynamicIndexing,
+      "UniformTexelBufferArrayDynamicIndexing");
+  add(CapabilityUniformTexelBufferArrayDynamicIndexingEXT,
+      "UniformTexelBufferArrayDynamicIndexingEXT");
+  add(CapabilityStorageTexelBufferArrayDynamicIndexing,
+      "StorageTexelBufferArrayDynamicIndexing");
+  add(CapabilityStorageTexelBufferArrayDynamicIndexingEXT,
+      "StorageTexelBufferArrayDynamicIndexingEXT");
+  add(CapabilityUniformBufferArrayNonUniformIndexing,
+      "UniformBufferArrayNonUniformIndexing");
+  add(CapabilityUniformBufferArrayNonUniformIndexingEXT,
+      "UniformBufferArrayNonUniformIndexingEXT");
+  add(CapabilitySampledImageArrayNonUniformIndexing,
+      "SampledImageArrayNonUniformIndexing");
+  add(CapabilitySampledImageArrayNonUniformIndexingEXT,
+      "SampledImageArrayNonUniformIndexingEXT");
+  add(CapabilityStorageBufferArrayNonUniformIndexing,
+      "StorageBufferArrayNonUniformIndexing");
+  add(CapabilityStorageBufferArrayNonUniformIndexingEXT,
+      "StorageBufferArrayNonUniformIndexingEXT");
+  add(CapabilityStorageImageArrayNonUniformIndexing,
+      "StorageImageArrayNonUniformIndexing");
+  add(CapabilityStorageImageArrayNonUniformIndexingEXT,
+      "StorageImageArrayNonUniformIndexingEXT");
+  add(CapabilityInputAttachmentArrayNonUniformIndexing,
+      "InputAttachmentArrayNonUniformIndexing");
+  add(CapabilityInputAttachmentArrayNonUniformIndexingEXT,
+      "InputAttachmentArrayNonUniformIndexingEXT");
+  add(CapabilityUniformTexelBufferArrayNonUniformIndexing,
+      "UniformTexelBufferArrayNonUniformIndexing");
+  add(CapabilityUniformTexelBufferArrayNonUniformIndexingEXT,
+      "UniformTexelBufferArrayNonUniformIndexingEXT");
+  add(CapabilityStorageTexelBufferArrayNonUniformIndexing,
+      "StorageTexelBufferArrayNonUniformIndexing");
+  add(CapabilityStorageTexelBufferArrayNonUniformIndexingEXT,
+      "StorageTexelBufferArrayNonUniformIndexingEXT");
+  add(CapabilityRayTracingNV, "RayTracingNV");
+  add(CapabilityRayTracingMotionBlurNV, "RayTracingMotionBlurNV");
+  add(CapabilityVulkanMemoryModel, "VulkanMemoryModel");
+  add(CapabilityVulkanMemoryModelKHR, "VulkanMemoryModelKHR");
+  add(CapabilityVulkanMemoryModelDeviceScope, "VulkanMemoryModelDeviceScope");
+  add(CapabilityVulkanMemoryModelDeviceScopeKHR,
+      "VulkanMemoryModelDeviceScopeKHR");
+  add(CapabilityPhysicalStorageBufferAddresses,
+      "PhysicalStorageBufferAddresses");
+  add(CapabilityPhysicalStorageBufferAddressesEXT,
+      "PhysicalStorageBufferAddressesEXT");
+  add(CapabilityComputeDerivativeGroupLinearNV,
+      "ComputeDerivativeGroupLinearNV");
+  add(CapabilityRayTracingProvisionalKHR, "RayTracingProvisionalKHR");
+  add(CapabilityCooperativeMatrixNV, "CooperativeMatrixNV");
+  add(CapabilityFragmentShaderSampleInterlockEXT,
+      "FragmentShaderSampleInterlockEXT");
+  add(CapabilityFragmentShaderShadingRateInterlockEXT,
+      "FragmentShaderShadingRateInterlockEXT");
+  add(CapabilityShaderSMBuiltinsNV, "ShaderSMBuiltinsNV");
+  add(CapabilityFragmentShaderPixelInterlockEXT,
+      "FragmentShaderPixelInterlockEXT");
+  add(CapabilityDemoteToHelperInvocation, "DemoteToHelperInvocation");
+  add(CapabilityDemoteToHelperInvocationEXT, "DemoteToHelperInvocationEXT");
+  add(CapabilityBindlessTextureNV, "BindlessTextureNV");
+  add(CapabilitySubgroupShuffleINTEL, "SubgroupShuffleINTEL");
+  add(CapabilitySubgroupBufferBlockIOINTEL, "SubgroupBufferBlockIOINTEL");
+  add(CapabilitySubgroupImageBlockIOINTEL, "SubgroupImageBlockIOINTEL");
+  add(CapabilitySubgroupImageMediaBlockIOINTEL,
+      "SubgroupImageMediaBlockIOINTEL");
+  add(CapabilityRoundToInfinityINTEL, "RoundToInfinityINTEL");
+  add(CapabilityFloatingPointModeINTEL, "FloatingPointModeINTEL");
+  add(CapabilityIntegerFunctions2INTEL, "IntegerFunctions2INTEL");
+  add(CapabilityFunctionPointersINTEL, "FunctionPointersINTEL");
+  add(CapabilityIndirectReferencesINTEL, "IndirectReferencesINTEL");
+  add(CapabilityAsmINTEL, "AsmINTEL");
+  add(CapabilityAtomicFloat32MinMaxEXT, "AtomicFloat32MinMaxEXT");
+  add(CapabilityAtomicFloat64MinMaxEXT, "AtomicFloat64MinMaxEXT");
+  add(CapabilityAtomicFloat16MinMaxEXT, "AtomicFloat16MinMaxEXT");
+  add(CapabilityVectorComputeINTEL, "VectorComputeINTEL");
+  add(CapabilityVectorAnyINTEL, "VectorAnyINTEL");
+  add(CapabilityExpectAssumeKHR, "ExpectAssumeKHR");
+  add(CapabilitySubgroupAvcMotionEstimationINTEL,
+      "SubgroupAvcMotionEstimationINTEL");
+  add(CapabilitySubgroupAvcMotionEstimationIntraINTEL,
+      "SubgroupAvcMotionEstimationIntraINTEL");
+  add(CapabilitySubgroupAvcMotionEstimationChromaINTEL,
+      "SubgroupAvcMotionEstimationChromaINTEL");
+  add(CapabilityVariableLengthArrayINTEL, "VariableLengthArrayINTEL");
+  add(CapabilityFunctionFloatControlINTEL, "FunctionFloatControlINTEL");
+  add(CapabilityFPGAMemoryAttributesINTEL, "FPGAMemoryAttributesINTEL");
+  add(CapabilityFPFastMathModeINTEL, "FPFastMathModeINTEL");
+  add(CapabilityArbitraryPrecisionIntegersINTEL,
+      "ArbitraryPrecisionIntegersINTEL");
+  add(CapabilityArbitraryPrecisionFloatingPointINTEL,
+      "ArbitraryPrecisionFloatingPointINTEL");
+  add(CapabilityUnstructuredLoopControlsINTEL, "UnstructuredLoopControlsINTEL");
+  add(CapabilityFPGALoopControlsINTEL, "FPGALoopControlsINTEL");
+  add(CapabilityKernelAttributesINTEL, "KernelAttributesINTEL");
+  add(CapabilityFPGAKernelAttributesINTEL, "FPGAKernelAttributesINTEL");
+  add(CapabilityFPGAKernelAttributesv2INTEL, "FPGAKernelAttributesv2INTEL");
+  add(CapabilityFPGAMemoryAccessesINTEL, "FPGAMemoryAccessesINTEL");
+  add(CapabilityFPGAClusterAttributesINTEL, "FPGAClusterAttributesINTEL");
+  add(CapabilityLoopFuseINTEL, "LoopFuseINTEL");
+  add(CapabilityMemoryAccessAliasingINTEL, "MemoryAccessAliasingINTEL");
+  add(CapabilityFPGABufferLocationINTEL, "FPGABufferLocationINTEL");
+  add(CapabilityArbitraryPrecisionFixedPointINTEL,
+      "ArbitraryPrecisionFixedPointINTEL");
+  add(CapabilityUSMStorageClassesINTEL, "USMStorageClassesINTEL");
+  add(CapabilityIOPipesINTEL, "IOPipeINTEL");
+  add(CapabilityBlockingPipesINTEL, "BlockingPipesINTEL");
+  add(CapabilityFPGARegINTEL, "FPGARegINTEL");
+  add(CapabilityDotProductInputAll, "DotProductInputAll");
+  add(CapabilityDotProductInputAllKHR, "DotProductInputAllKHR");
+  add(CapabilityDotProductInput4x8Bit, "DotProductInput4x8Bit");
+  add(CapabilityDotProductInput4x8BitKHR, "DotProductInput4x8BitKHR");
+  add(CapabilityDotProductInput4x8BitPacked, "DotProductInput4x8BitPacked");
+  add(CapabilityDotProductInput4x8BitPackedKHR,
+      "DotProductInput4x8BitPackedKHR");
+  add(CapabilityDotProduct, "DotProduct");
+  add(CapabilityDotProductKHR, "DotProductKHR");
+  add(CapabilityRayCullMaskKHR, "RayCullMaskKHR");
+  add(CapabilityBitInstructions, "BitInstructions");
+  add(CapabilityGroupNonUniformRotateKHR, "GroupNonUniformRotateKHR");
+  add(CapabilityAtomicFloat32AddEXT, "AtomicFloat32AddEXT");
+  add(CapabilityAtomicFloat64AddEXT, "AtomicFloat64AddEXT");
+  add(CapabilityLongConstantCompositeINTEL, "LongConstantCompositeINTEL");
+  add(CapabilityOptNoneINTEL, "OptNoneINTEL");
+  add(CapabilityAtomicFloat16AddEXT, "AtomicFloat16AddEXT");
+  add(CapabilityDebugInfoModuleINTEL, "DebugInfoModuleINTEL");
+  add(CapabilitySplitBarrierINTEL, "SplitBarrierINTEL");
+  add(CapabilityGroupUniformArithmeticKHR, "GroupUniformArithmeticKHR");
+  add(CapabilityFPGAArgumentInterfacesINTEL, "FPGAArgumentInterfacesINTEL");
+  add(CapabilityFPGADSPControlINTEL, "FPGADSPControlINTEL");
+  add(CapabilityFPGAInvocationPipeliningAttributesINTEL,
+      "FPGAInvocationPipeliningAttributesINTEL");
+  add(CapabilityRuntimeAlignedAttributeINTEL, "RuntimeAlignedAttributeINTEL");
+  add(CapabilityMax, "Max");
+  add(CapabilityFPGAArgumentInterfacesINTEL, "FPGAArgumentInterfacesINTEL");
+  add(CapabilityFPGALatencyControlINTEL, "FPGALatencyControlINTEL");
+  // From spirv_internal.hpp
+  add(internal::CapabilityFastCompositeINTEL, "FastCompositeINTEL");
+  add(internal::CapabilityOptNoneINTEL, "OptNoneINTEL");
+  add(internal::CapabilityTokenTypeINTEL, "TokenTypeINTEL");
+  add(internal::CapabilityFPArithmeticFenceINTEL, "FPArithmeticFenceINTEL");
+  add(internal::CapabilityBfloat16ConversionINTEL, "Bfloat16ConversionINTEL");
+  add(internal::CapabilityJointMatrixINTEL, "JointMatrixINTEL");
+  add(internal::CapabilityHWThreadQueryINTEL, "HWThreadQueryINTEL");
+  add(internal::CapabilityGlobalVariableDecorationsINTEL,
+      "GlobalVariableDecorationsINTEL");
+  add(internal::CapabilityComplexFloatMulDivINTEL, "ComplexFloatMulDivINTEL");
+  add(internal::CapabilityMaskedGatherScatterINTEL, "MaskedGatherScatterINTEL");
+  add(internal::CapabilityTensorFloat32RoundingINTEL,
+      "TensorFloat32RoundingINTEL");
+  add(internal::CapabilityJointMatrixWIInstructionsINTEL,
+      "JointMatrixWIInstructionsINTEL");
+  add(internal::CapabilityJointMatrixTF32ComponentTypeINTEL,
+      "JointMatrixTF32ComponentTypeINTEL");
+  add(internal::CapabilityJointMatrixBF16ComponentTypeINTEL,
+      "JointMatrixBF16ComponentTypeINTEL");
+  add(internal::CapabilityJointMatrixPackedInt2ComponentTypeINTEL,
+      "JointMatrixPackedInt2ComponentTypeINTEL");
+  add(internal::CapabilityJointMatrixPackedInt4ComponentTypeINTEL,
+      "JointMatrixPackedInt4ComponentTypeINTEL");
 }
 SPIRV_DEF_NAMEMAP(Capability, SPIRVCapabilityNameMap)
 

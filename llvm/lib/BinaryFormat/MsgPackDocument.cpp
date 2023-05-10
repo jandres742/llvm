@@ -80,6 +80,10 @@ DocNode &DocNode::operator=(StringRef Val) {
   *this = getDocument()->getNode(Val);
   return *this;
 }
+DocNode &DocNode::operator=(MemoryBufferRef Val) {
+  *this = getDocument()->getNode(Val);
+  return *this;
+}
 DocNode &DocNode::operator=(bool Val) {
   *this = getDocument()->getNode(Val);
   return *this;
@@ -166,6 +170,9 @@ bool Document::readFromBlob(
       break;
     case Type::String:
       Node = getNode(Obj.Raw);
+      break;
+    case Type::Binary:
+      Node = getNode(MemoryBufferRef(Obj.Raw, ""));
       break;
     case Type::Map:
       Node = getMapNode();
@@ -277,6 +284,11 @@ void Document::writeToBlob(std::string &Blob) {
     case Type::String:
       MPWriter.write(Node.getString());
       break;
+    case Type::Binary:
+      MPWriter.write(Node.getBinary());
+      break;
+    case Type::Empty:
+      llvm_unreachable("unhandled empty msgpack node");
     default:
       llvm_unreachable("unhandled msgpack object kind");
     }
@@ -310,4 +322,3 @@ void Document::writeToBlob(std::string &Blob) {
     }
   }
 }
-

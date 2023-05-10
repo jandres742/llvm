@@ -18,9 +18,11 @@ class MessageFixedText;
 struct ChangeTeamStmt;
 struct CoarrayAssociation;
 struct FormTeamStmt;
-struct ImageSelectorSpec;
+struct ImageSelector;
+struct SyncAllStmt;
+struct SyncImagesStmt;
+struct SyncMemoryStmt;
 struct SyncTeamStmt;
-struct TeamValue;
 } // namespace Fortran::parser
 
 namespace Fortran::semantics {
@@ -29,14 +31,20 @@ class CoarrayChecker : public virtual BaseChecker {
 public:
   CoarrayChecker(SemanticsContext &context) : context_{context} {}
   void Leave(const parser::ChangeTeamStmt &);
+  void Leave(const parser::SyncAllStmt &);
+  void Leave(const parser::SyncImagesStmt &);
+  void Leave(const parser::SyncMemoryStmt &);
   void Leave(const parser::SyncTeamStmt &);
-  void Leave(const parser::ImageSelectorSpec &);
+  void Leave(const parser::ImageSelector &);
   void Leave(const parser::FormTeamStmt &);
 
   void Enter(const parser::CriticalConstruct &);
 
 private:
   SemanticsContext &context_;
+  bool haveStat_;
+  bool haveTeam_;
+  bool haveTeamNumber_;
 
   void CheckNamesAreDistinct(const std::list<parser::CoarrayAssociation> &);
   void Say2(const parser::CharBlock &, parser::MessageFixedText &&,

@@ -7,23 +7,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-// UNSUPPORTED: c++98, c++03, c++11, c++14
+// UNSUPPORTED: c++03, c++11, c++14
 
 #include <execution>
 #include <numeric>
 
 struct CustomPolicy
 {
-    constexpr std::false_type
-    __allow_vector()
-    {
-        return std::false_type{};
-    }
-    constexpr std::false_type
-    __allow_parallel()
-    {
-        return std::false_type{};
-    }
 } policy;
 
 int32_t

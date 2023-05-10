@@ -15,6 +15,7 @@
 #define LLVM_CLANG_LIB_CODEGEN_CGLOOPINFO_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Value.h"
@@ -58,6 +59,9 @@ struct LoopAttributes {
 
   /// Value for llvm.loop.vectorize.width metadata.
   unsigned VectorizeWidth;
+
+  // Value for llvm.loop.vectorize.scalable.enable
+  LVEnableState VectorizeScalable;
 
   /// Value for llvm.loop.interleave.count metadata.
   unsigned InterleaveCount;
@@ -108,11 +112,12 @@ struct LoopAttributes {
   /// Value for llvm.loop.ii.count metadata.
   unsigned SYCLIInterval;
 
-  /// Flag for llvm.loop.max_concurrency.count metadata.
-  bool SYCLMaxConcurrencyEnable;
-
   /// Value for llvm.loop.max_concurrency.count metadata.
-  unsigned SYCLMaxConcurrencyNThreads;
+  llvm::Optional<unsigned> SYCLMaxConcurrencyNThreads;
+
+  /// Value for count variant (min/max/avg) and count metadata.
+  llvm::SmallVector<std::pair<const char *, unsigned int>, 2>
+      SYCLIntelFPGAVariantCount;
 
   /// Flag for llvm.loop.coalesce metadata.
   bool SYCLLoopCoalesceEnable;
@@ -123,17 +128,17 @@ struct LoopAttributes {
   /// Flag for llvm.loop.intel.pipelining.enable, i32 0 metadata.
   bool SYCLLoopPipeliningDisable;
 
-  /// Flag for llvm.loop.max_interleaving.count metadata.
-  bool SYCLMaxInterleavingEnable;
-
   /// Value for llvm.loop.max_interleaving.count metadata.
-  unsigned SYCLMaxInterleavingNInvocations;
-
-  /// Flag for llvm.loop.intel.speculated.iterations.count metadata.
-  bool SYCLSpeculatedIterationsEnable;
+  llvm::Optional<unsigned> SYCLMaxInterleavingNInvocations;
 
   /// Value for llvm.loop.intel.speculated.iterations.count metadata.
-  unsigned SYCLSpeculatedIterationsNIterations;
+  llvm::Optional<unsigned> SYCLSpeculatedIterationsNIterations;
+
+  // Value for llvm.loop.intel.max_reinvocation_delay metadata.
+  llvm::Optional<unsigned> SYCLMaxReinvocationDelayNCycles;
+
+  /// Flag for llvm.loop.intel.pipelining.enable, i32 1 metadata.
+  bool SYCLLoopPipeliningEnable;
 
   /// llvm.unroll.
   unsigned UnrollCount;
@@ -149,6 +154,12 @@ struct LoopAttributes {
 
   /// Value for llvm.loop.pipeline.iicount metadata.
   unsigned PipelineInitiationInterval;
+
+  /// Flag for llvm.loop.fusion.disable metatdata.
+  bool SYCLNofusionEnable;
+
+  /// Value for whether the loop is required to make progress.
+  bool MustProgress;
 };
 
 /// Information used when generating a structured loop.
@@ -284,7 +295,7 @@ public:
   void push(llvm::BasicBlock *Header, clang::ASTContext &Ctx,
             const clang::CodeGenOptions &CGOpts,
             llvm::ArrayRef<const Attr *> Attrs, const llvm::DebugLoc &StartLoc,
-            const llvm::DebugLoc &EndLoc);
+            const llvm::DebugLoc &EndLoc, bool MustProgress = false);
 
   /// End the current loop.
   void pop();
@@ -334,6 +345,10 @@ public:
   /// Set the vectorize width for the next loop pushed.
   void setVectorizeWidth(unsigned W) { StagedAttrs.VectorizeWidth = W; }
 
+  void setVectorizeScalable(const LoopAttributes::LVEnableState &State) {
+    StagedAttrs.VectorizeScalable = State;
+  }
+
   /// Set the interleave count for the next loop pushed.
   void setInterleaveCount(unsigned C) { StagedAttrs.InterleaveCount = C; }
 
@@ -346,12 +361,7 @@ public:
   /// Set value of an initiation interval for the next loop pushed.
   void setSYCLIInterval(unsigned C) { StagedAttrs.SYCLIInterval = C; }
 
-  /// Set flag of max_concurrency for the next loop pushed.
-  void setSYCLMaxConcurrencyEnable() {
-    StagedAttrs.SYCLMaxConcurrencyEnable = true;
-  }
-
-  /// Set value of threads for the next loop pushed.
+  /// Set value of max_concurrency for the next loop pushed.
   void setSYCLMaxConcurrencyNThreads(unsigned C) {
     StagedAttrs.SYCLMaxConcurrencyNThreads = C;
   }
@@ -371,24 +381,19 @@ public:
     StagedAttrs.SYCLLoopPipeliningDisable = true;
   }
 
-  /// Set flag of max_interleaving for the next loop pushed.
-  void setSYCLMaxInterleavingEnable() {
-    StagedAttrs.SYCLMaxInterleavingEnable = true;
-  }
-
   /// Set value of max interleaved invocations for the next loop pushed.
   void setSYCLMaxInterleavingNInvocations(unsigned C) {
     StagedAttrs.SYCLMaxInterleavingNInvocations = C;
   }
 
-  /// Set flag of speculated_iterations for the next loop pushed.
-  void setSYCLSpeculatedIterationsEnable() {
-    StagedAttrs.SYCLSpeculatedIterationsEnable = true;
-  }
-
-  /// Set value of concurrent speculated iterations for the next loop pushed.
+  /// Set value of speculated iterations for the next loop pushed.
   void setSYCLSpeculatedIterationsNIterations(unsigned C) {
     StagedAttrs.SYCLSpeculatedIterationsNIterations = C;
+  }
+
+  /// Set value of variant and loop count for the next loop pushed.
+  void setSYCLIntelFPGAVariantCount(const char *Var, unsigned int Count) {
+    StagedAttrs.SYCLIntelFPGAVariantCount.push_back({Var, Count});
   }
 
   /// Set the unroll count for the next loop pushed.
@@ -403,6 +408,22 @@ public:
   /// Set the pipeline initiation interval.
   void setPipelineInitiationInterval(unsigned C) {
     StagedAttrs.PipelineInitiationInterval = C;
+  }
+
+  /// Set flag of nofusion for the next loop pushed.
+  void setSYCLNofusionEnable() { StagedAttrs.SYCLNofusionEnable = true; }
+
+  /// Set no progress for the next loop pushed.
+  void setMustProgress(bool P) { StagedAttrs.MustProgress = P; }
+
+  /// Set value of max reinvocation delay for the next loop pushed.
+  void setSYCLMaxReinvocationDelayNCycles(unsigned C) {
+    StagedAttrs.SYCLMaxReinvocationDelayNCycles = C;
+  }
+
+  /// Set flag of enable_loop_pipelining for the next loop pushed.
+  void setSYCLLoopPipeliningEnable() {
+    StagedAttrs.SYCLLoopPipeliningEnable = true;
   }
 
 private:

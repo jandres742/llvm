@@ -14,16 +14,16 @@
 #ifndef LLVM_IR_ABSTRACTCALLSITE_H
 #define LLVM_IR_ABSTRACTCALLSITE_H
 
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
-#include "llvm/IR/Instruction.h"
-#include "llvm/IR/Use.h"
-#include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
-#include "llvm/Support/Casting.h"
 #include <cassert>
 
 namespace llvm {
+
+class Argument;
+class Use;
 
 /// AbstractCallSite
 ///
@@ -153,7 +153,7 @@ public:
   /// Return the number of parameters of the callee.
   unsigned getNumArgOperands() const {
     if (isDirectCall())
-      return CB->getNumArgOperands();
+      return CB->arg_size();
     // Subtract 1 for the callee encoding.
     return CI.ParameterEncoding.size() - 1;
   }
@@ -220,6 +220,27 @@ public:
     return V ? dyn_cast<Function>(V->stripPointerCasts()) : nullptr;
   }
 };
+
+/// Apply function Func to each CB's callback call site.
+template <typename UnaryFunction>
+void forEachCallbackCallSite(const CallBase &CB, UnaryFunction Func) {
+  SmallVector<const Use *, 4u> CallbackUses;
+  AbstractCallSite::getCallbackUses(CB, CallbackUses);
+  for (const Use *U : CallbackUses) {
+    AbstractCallSite ACS(U);
+    assert(ACS && ACS.isCallbackCall() && "must be a callback call");
+    Func(ACS);
+  }
+}
+
+/// Apply function Func to each CB's callback function.
+template <typename UnaryFunction>
+void forEachCallbackFunction(const CallBase &CB, UnaryFunction Func) {
+  forEachCallbackCallSite(CB, [&Func](AbstractCallSite &ACS) {
+    if (Function *Callback = ACS.getCalledFunction())
+      Func(Callback);
+  });
+}
 
 } // end namespace llvm
 

@@ -10,10 +10,7 @@ from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbutil
 
 
-@skipUnlessDarwin
 class MethodReturningBOOLTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -46,4 +43,4 @@ class MethodReturningBOOLTestCase(TestBase):
             ])
 
         # rdar://problem/9691614
-        self.runCmd('p (int)[my isValid]')
+        self.runCmd('expression (int)[my isValid]')

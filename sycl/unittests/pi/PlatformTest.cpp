@@ -7,15 +7,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "TestGetPlugin.hpp"
-#include <CL/sycl.hpp>
-#include <CL/sycl/detail/pi.hpp>
 #include <detail/plugin.hpp>
 #include <gtest/gtest.h>
+#include <sycl/detail/pi.hpp>
+#include <sycl/sycl.hpp>
 #include <vector>
 
 namespace {
 
-using namespace cl::sycl;
+using namespace sycl;
 
 class PlatformTest : public testing::TestWithParam<detail::plugin> {
 protected:
@@ -62,12 +62,11 @@ protected:
   }
 };
 
-static std::vector<detail::plugin> Plugins = pi::initializeAndRemoveInvalid();
-
-INSTANTIATE_TEST_CASE_P(
-    PlatformTestImpl, PlatformTest, testing::ValuesIn(Plugins),
+INSTANTIATE_TEST_SUITE_P(
+    PlatformTestImpl, PlatformTest,
+    testing::ValuesIn(pi::initializeAndRemoveInvalid()),
     [](const testing::TestParamInfo<PlatformTest::ParamType> &info) {
-      return pi::GetBackendString(info.param.getBackend());
+      return pi::GetBackendString(info.param);
     });
 
 TEST_P(PlatformTest, piPlatformsGet) {
@@ -108,6 +107,7 @@ TEST_P(PlatformTest, piPlatformGetInfo) {
     get_info_test(platform, PI_PLATFORM_INFO_PROFILE);
     get_info_test(platform, PI_PLATFORM_INFO_VERSION);
     get_info_test(platform, PI_PLATFORM_INFO_EXTENSIONS);
+    get_info_test(platform, PI_EXT_PLATFORM_INFO_BACKEND);
   }
 }
 } // namespace

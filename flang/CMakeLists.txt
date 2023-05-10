@@ -1,27 +1,25 @@
-cmake_minimum_required(VERSION 3.9.0)
+cmake_minimum_required(VERSION 3.13.4)
 
-# RPATH settings on macOS do not affect INSTALL_NAME.
-if (POLICY CMP0068)
-  cmake_policy(SET CMP0068 NEW)
-  set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
+if(NOT DEFINED LLVM_COMMON_CMAKE_UTILS)
+  set(LLVM_COMMON_CMAKE_UTILS ${CMAKE_CURRENT_SOURCE_DIR}/../cmake)
 endif()
+include(${LLVM_COMMON_CMAKE_UTILS}/Modules/CMakePolicy.cmake
+  NO_POLICY_SCOPE)
 
-# Include file check macros honor CMAKE_REQUIRED_LIBRARIES.
-if(POLICY CMP0075)
-  cmake_policy(SET CMP0075 NEW)
-endif()
-
-# option() honors normal variables.
-if (POLICY CMP0077)
-  cmake_policy(SET CMP0077 NEW)
-endif()
-
-option(LINK_WITH_FIR "Link driver with FIR and LLVM" ON)
+set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 
 # Flang requires C++17.
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if (LLVM_ENABLE_EH)
+  # To match with the flang guidelines we currently disable
+  # building with exception support in core LLVM.
+  message(FATAL_ERROR "Flang does not currently support building with \
+          LLVM exceptions enabled.  Please disable LLVM_ENABLE_EH when building \
+          flang.")
+endif()
 
 set(FLANG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -33,16 +31,43 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR AND NOT MSVC_IDE)
           `CMakeFiles'. Please delete them.")
 endif()
 
-# Add Flang-centric modules to cmake path.
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
-include(AddFlang)
+option(FLANG_ENABLE_WERROR "Fail and stop building flang if a warning is triggered." OFF)
 
 # Check for a standalone build and configure as appropriate from
 # there.
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-message("Building Flang as a standalone project.")
-project(Flang)
+  message("Building Flang as a standalone project.")
+  project(Flang)
+  set(FLANG_STANDALONE_BUILD ON)
+  if ("${CMAKE_VERSION}" VERSION_LESS "3.20.0")
+    message(WARNING
+      "Your CMake version is ${CMAKE_VERSION}. Starting with LLVM 17.0.0, the "
+      "minimum version of CMake required to build LLVM will become 3.20.0, and "
+      "using an older CMake will become an error. Please upgrade your CMake to "
+      "at least 3.20.0 now to avoid issues in the future!")
+  endif()
+else()
+  set(FLANG_STANDALONE_BUILD OFF)
+endif()
 
+# Must go below project(..)
+include(GNUInstallDirs)
+
+# MSVC + clang-cl build requires clang_rt.builtin.${target} library
+if (MSVC AND CMAKE_CXX_COMPILER_ID MATCHES Clang)
+  include(HandleCompilerRT)
+  find_compiler_rt_library(builtins CLANG_RT_BUILTINS_LIBRARY)
+  get_filename_component(LIBDIR "${CLANG_RT_BUILTINS_LIBRARY}" DIRECTORY)
+  if (IS_DIRECTORY "${LIBDIR}")
+    link_libraries(${CLANG_RT_BUILTINS_LIBRARY})
+  endif()
+endif()
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  message(FATAL_ERROR "flang isn't supported on 32 bit CPUs")
+endif()
+
+if (FLANG_STANDALONE_BUILD)
   set(FLANG_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
   if (NOT MSVC_IDE)
     set(LLVM_ENABLE_ASSERTIONS ${ENABLE_ASSERTIONS}
@@ -52,31 +77,59 @@ project(Flang)
   endif()
 
   # We need a pre-built/installed version of LLVM.
-  find_package(LLVM REQUIRED HINTS "${LLVM_CMAKE_PATH}")
-  list(APPEND CMAKE_MODULE_PATH ${LLVM_DIR})
+  find_package(LLVM REQUIRED HINTS "${LLVM_CMAKE_DIR}")
+  # If the user specifies a relative path to LLVM_DIR, the calls to include
+  # LLVM modules fail. Append the absolute path to LLVM_DIR instead.
+  get_filename_component(LLVM_DIR_ABSOLUTE ${LLVM_DIR} REALPATH)
+  list(APPEND CMAKE_MODULE_PATH ${LLVM_DIR_ABSOLUTE})
+
+  # Users might specify a path to CLANG_DIR that's:
+  #   * a full path, or
+  #   * a path relative to the path of this script.
+  # Append the absolute path to CLANG_DIR so that find_package works in both
+  # cases.
+  get_filename_component(
+    CLANG_DIR_ABSOLUTE
+    ${CLANG_DIR}
+    REALPATH
+    ${CMAKE_CURRENT_SOURCE_DIR})
+  list(APPEND CMAKE_MODULE_PATH ${CLANG_DIR_ABSOLUTE})
+
+  # TODO: Remove when libclangDriver is lifted out of Clang
+  find_package(Clang REQUIRED PATHS "${CLANG_DIR_ABSOLUTE}" NO_DEFAULT_PATH)
+  if (NOT Clang_FOUND)
+    message(FATAL_ERROR "Failed to find Clang")
+  endif()
 
   # If LLVM links to zlib we need the imported targets so we can too.
   if(LLVM_ENABLE_ZLIB)
     find_package(ZLIB REQUIRED)
+  endif()
+  option(LLVM_ENABLE_PEDANTIC "Compile with pedantic enabled." ON)
+  if(CMAKE_COMPILER_IS_GNUCXX)
+    set(USE_NO_MAYBE_UNINITIALIZED 1)
   endif()
 
   include(CMakeParseArguments)
   include(AddLLVM)
   include(HandleLLVMOptions)
   include(VersionFromVCS)
+  include(GetErrcMessages)
 
-  if(LINK_WITH_FIR)
-    include(TableGen)
-    find_package(MLIR REQUIRED CONFIG)
-    # Use SYSTEM for the same reasons as for LLVM includes
-    include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
-    list(APPEND CMAKE_MODULE_PATH ${MLIR_DIR})
-    include(AddMLIR)
-    find_program(MLIR_TABLEGEN_EXE "mlir-tblgen" ${LLVM_TOOLS_BINARY_DIR}
-      NO_DEFAULT_PATH)
-  endif()
+  include(AddClang)
 
-  option(LLVM_ENABLE_WARNINGS "Enable compiler warnings." ON)
+  include(TableGen)
+  find_package(MLIR REQUIRED CONFIG)
+  # Use SYSTEM for the same reasons as for LLVM includes
+  include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
+  # If the user specifies a relative path to MLIR_DIR, the calls to include
+  # MLIR modules fail. Append the absolute path to MLIR_DIR instead.
+  get_filename_component(MLIR_DIR_ABSOLUTE ${MLIR_DIR} REALPATH)
+  list(APPEND CMAKE_MODULE_PATH ${MLIR_DIR_ABSOLUTE})
+  include(AddMLIR)
+  find_program(MLIR_TABLEGEN_EXE "mlir-tblgen" ${LLVM_TOOLS_BINARY_DIR}
+    NO_DEFAULT_PATH)
+
   option(LLVM_INSTALL_TOOLCHAIN_ONLY
     "Only include toolchain files in the 'install' target." OFF)
   option(LLVM_FORCE_USE_OLD_HOST_TOOLCHAIN
@@ -115,13 +168,34 @@ project(Flang)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY
     ${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX})
 
-  set(BACKEND_PACKAGE_STRING "LLVM ${LLVM_PACKAGE_VERSION}")
   set(LLVM_EXTERNAL_LIT "${LLVM_TOOLS_BINARY_DIR}/llvm-lit" CACHE STRING "Command used to spawn lit")
 
   option(FLANG_INCLUDE_TESTS
          "Generate build targets for the Flang unit tests."
          ON)
-  add_custom_target(check-all DEPENDS check-flang)
+
+  get_errc_messages(LLVM_LIT_ERRC_MESSAGES)
+
+#Handle unittests when out-of-tree
+  set(FLANG_GTEST_AVAIL 0)
+  if (FLANG_INCLUDE_TESTS)
+    set(UNITTEST_DIR ${LLVM_THIRD_PARTY_DIR}/unittest)
+    if(EXISTS ${UNITTEST_DIR}/googletest/include/gtest/gtest.h)
+      if (NOT TARGET llvm_gtest)
+        add_subdirectory(${UNITTEST_DIR} third-party/unittest)
+      endif()
+      set(FLANG_GTEST_AVAIL 1)
+    else()
+      message(WARNING
+      "Unit-tests will be skipped as LLVM install does not include google-test related headers and libraries.")
+      set(FLANG_GTEST_AVAIL 0)
+    endif()
+  endif()
+  if (FLANG_GTEST_AVAIL)
+    add_custom_target(check-all DEPENDS check-flang FlangUnitTests)
+  else()
+    add_custom_target(check-all DEPENDS check-flang )
+  endif()
   if (LLVM_BUILD_DOCS)
     add_custom_target(doxygen ALL)
   endif()
@@ -130,35 +204,59 @@ else()
   option(FLANG_INCLUDE_TESTS
          "Generate build targets for the Flang unit tests."
          ${LLVM_INCLUDE_TESTS})
-  set(FLANG_BINARY_DIR ${CMAKE_BINARY_DIR}/tools/flang)
-  set(BACKEND_PACKAGE_STRING "${PACKAGE_STRING}")
-  if (LINK_WITH_FIR)
-    set(MLIR_MAIN_SRC_DIR ${LLVM_MAIN_SRC_DIR}/../mlir/include ) # --src-root
-    set(MLIR_INCLUDE_DIR ${LLVM_MAIN_SRC_DIR}/../mlir/include ) # --includedir
-    set(MLIR_TABLEGEN_OUTPUT_DIR ${CMAKE_BINARY_DIR}/tools/mlir/include)
-    set(MLIR_TABLEGEN_EXE $<TARGET_FILE:mlir-tblgen>)
-    include_directories(SYSTEM ${MLIR_INCLUDE_DIR})
-    include_directories(SYSTEM ${MLIR_TABLEGEN_OUTPUT_DIR})
+  set(FLANG_GTEST_AVAIL 1)
+
+  if(FLANG_STANDALONE_BUILD)
+    set(FLANG_BINARY_DIR ${CMAKE_BINARY_DIR}/tools/flang)
+  else()
+    set(FLANG_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
   endif()
+
+  set(MLIR_MAIN_SRC_DIR ${LLVM_MAIN_SRC_DIR}/../mlir ) # --src-root
+  set(MLIR_INCLUDE_DIR ${MLIR_MAIN_SRC_DIR}/include ) # --includedir
+  set(MLIR_TABLEGEN_OUTPUT_DIR ${CMAKE_BINARY_DIR}/tools/mlir/include)
+  include_directories(SYSTEM ${MLIR_INCLUDE_DIR})
+  include_directories(SYSTEM ${MLIR_TABLEGEN_OUTPUT_DIR})
 endif()
 
-if(LINK_WITH_FIR)
-  # tco tool and FIR lib output directories
+set(FLANG_TOOLS_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}" CACHE PATH
+    "Path for binary subdirectory (defaults to '${CMAKE_INSTALL_BINDIR}')")
+mark_as_advanced(FLANG_TOOLS_INSTALL_DIR)
+
+set(FLANG_INTRINSIC_MODULES_DIR ${CMAKE_BINARY_DIR}/include/flang)
+set(FLANG_INCLUDE_DIR ${FLANG_BINARY_DIR}/include)
+
+# TODO: Remove when libclangDriver is lifted out of Clang
+if(FLANG_STANDALONE_BUILD)
+  set(CLANG_INCLUDE_DIR ${CLANG_INCLUDE_DIRS} )
+  # No need to specify TableGen output dir as that's embedded in CLANG_DIR
+else()
+  set(CLANG_INCLUDE_DIR ${LLVM_MAIN_SRC_DIR}/../clang/include )
+  # Specify TableGen output dir for things like DiagnosticCommonKinds.inc,
+  # DiagnosticDriverKinds.inc (required for reporting diagnostics)
+  set(CLANG_TABLEGEN_OUTPUT_DIR ${CMAKE_BINARY_DIR}/tools/clang/include)
+  include_directories(SYSTEM ${CLANG_TABLEGEN_OUTPUT_DIR})
+endif()
+include_directories(SYSTEM ${CLANG_INCLUDE_DIR})
+
+# tco tool and FIR lib output directories
+if(FLANG_STANDALONE_BUILD)
   set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
   set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
-  # Always build tco tool
-  set(LLVM_BUILD_TOOLS ON)
-  message(STATUS "Linking driver with FIR and LLVM")
-  llvm_map_components_to_libnames(LLVM_COMMON_LIBS support)
-  message(STATUS "LLVM libraries: ${LLVM_COMMON_LIBS}")
 endif()
+# Always build tco tool
+set(LLVM_BUILD_TOOLS ON)
 
-# Add Flang-centric modules to cmake path.
 include_directories(BEFORE
   ${FLANG_BINARY_DIR}/include
   ${FLANG_SOURCE_DIR}/include)
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+# Add Flang-centric modules to cmake path.
+list(INSERT CMAKE_MODULE_PATH 0
+  "${FLANG_SOURCE_DIR}/cmake/modules"
+  "${LLVM_COMMON_CMAKE_UTILS}/Modules"
+  )
+include(AddFlang)
 
 if (NOT DEFAULT_SYSROOT)
   set(DEFAULT_SYSROOT "" CACHE PATH
@@ -184,10 +282,6 @@ endif()
 
 
 set(PACKAGE_VERSION "${LLVM_PACKAGE_VERSION}")
-# Override LLVM versioning for now...
-set(FLANG_VERSION_MAJOR      "0")
-set(FLANG_VERSION_MINOR      "1")
-set(FLANG_VERSION_PATCHLEVEL "0")
 
 
 if (NOT DEFINED FLANG_VERSION_MAJOR)
@@ -230,6 +324,14 @@ if (FLANG_REPOSITORY_STRING)
   add_definitions(-DFLANG_REPOSITORY_STRING="${FLANG_REPOSITORY_STRING}")
 endif()
 
+include(TestBigEndian)
+test_big_endian(IS_BIGENDIAN)
+if (IS_BIGENDIAN)
+  add_compile_definitions(FLANG_BIG_ENDIAN=1)
+else ()
+  add_compile_definitions(FLANG_LITTLE_ENDIAN=1)
+endif ()
+
 # Configure Flang's Version.inc file.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/include/flang/Version.inc.in
@@ -239,8 +341,17 @@ configure_file(
   ${FLANG_SOURCE_DIR}/include/flang/Config/config.h.cmake
   ${FLANG_BINARY_DIR}/include/flang/Config/config.h)
 
-# Add global F18 flags.
-set(CMAKE_CXX_FLAGS "-fno-rtti -fno-exceptions -pedantic -Wall -Wextra -Werror -Wcast-qual -Wimplicit-fallthrough -Wdelete-non-virtual-dtor ${CMAKE_CXX_FLAGS}")
+if (FLANG_ENABLE_WERROR)
+  # The following is taken from llvm/cmake/modules/HandleLLVMOptions.cmake
+  # Keep this up-to-date with that file
+  if( MSVC )
+    append("/WX" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+  endif()
+  if ( LLVM_COMPILER_IS_GCC_COMPATIBLE )
+    append("-Werror" CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    append("-Wno-error" CMAKE_REQUIRED_FLAGS)
+  endif( LLVM_COMPILER_IS_GCC_COMPATIBLE )
+endif()
 
 # Builtin check_cxx_compiler_flag doesn't seem to work correctly
 macro(check_compiler_flag flag resultVar)
@@ -250,11 +361,15 @@ endmacro()
 
 check_compiler_flag("-Werror -Wno-deprecated-copy" CXX_SUPPORTS_NO_DEPRECATED_COPY_FLAG)
 if (CXX_SUPPORTS_NO_DEPRECATED_COPY_FLAG)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-copy")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-copy")
 endif()
 check_compiler_flag("-Wstring-conversion" CXX_SUPPORTS_NO_STRING_CONVERSION_FLAG)
 if (CXX_SUPPORTS_NO_STRING_CONVERSION_FLAG)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-string-conversion")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-string-conversion")
+endif()
+check_compiler_flag("-Wno-ctad-maybe-unsupported" CXX_SUPPORTS_NO_CTAD_MAYBE_UNSUPPORTED_FLAG)
+if (CXX_SUPPORTS_NO_CTAD_MAYBE_UNSUPPORTED_FLAG)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-ctad-maybe-unsupported")
 endif()
 
 # Add appropriate flags for GCC
@@ -308,6 +423,9 @@ endif()
 include(CMakeParseArguments)
 include(AddFlang)
 
+if (FLANG_INCLUDE_TESTS)
+  add_compile_definitions(FLANG_INCLUDE_TESTS=1)
+endif()
 
 add_subdirectory(include)
 add_subdirectory(lib)
@@ -320,10 +438,15 @@ if (FLANG_BUILD_TOOLS)
 endif()
 add_subdirectory(runtime)
 
+if (LLVM_INCLUDE_EXAMPLES)
+  add_subdirectory(examples)
+endif()
+
 if (FLANG_INCLUDE_TESTS)
-  enable_testing()
   add_subdirectory(test)
-  add_subdirectory(unittests)
+  if (FLANG_GTEST_AVAIL)
+    add_subdirectory(unittests)
+  endif ()
 endif()
 
 option(FLANG_INCLUDE_DOCS "Generate build targets for the Flang docs."
@@ -355,7 +478,7 @@ endif()
 
 if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
   install(DIRECTORY include/flang
-    DESTINATION include
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     COMPONENT flang-headers
     FILES_MATCHING
     PATTERN "*.def"
@@ -365,4 +488,11 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
     PATTERN "config.h" EXCLUDE
     PATTERN ".git"     EXCLUDE
     PATTERN "CMakeFiles" EXCLUDE)
+
+  install(DIRECTORY ${FLANG_INCLUDE_DIR}/flang
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT flang-headers
+    FILES_MATCHING
+    PATTERN "*.inc"
+    )
 endif()

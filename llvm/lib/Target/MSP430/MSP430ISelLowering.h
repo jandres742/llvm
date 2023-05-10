@@ -23,11 +23,11 @@ namespace llvm {
     enum NodeType : unsigned {
       FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
-      /// Return with a flag operand. Operand 0 is the chain operand.
-      RET_FLAG,
+      /// Return with a glue operand. Operand 0 is the chain operand.
+      RET_GLUE,
 
-      /// Same as RET_FLAG, but used for returning from ISRs.
-      RETI_FLAG,
+      /// Same as RET_GLUE, but used for returning from ISRs.
+      RETI_GLUE,
 
       /// Y = R{R,L}A X, rotate right (left) arithmetically
       RRA, RLA,
@@ -79,6 +79,10 @@ namespace llvm {
       return MVT::i8;
     }
 
+    MVT::SimpleValueType getCmpLibcallReturnType() const override {
+      return MVT::i16;
+    }
+
     /// LowerOperation - Provide custom lowering hooks for some operations.
     SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
 
@@ -122,7 +126,6 @@ namespace llvm {
     /// out to 16 bits.
     bool isZExtFree(Type *Ty1, Type *Ty2) const override;
     bool isZExtFree(EVT VT1, EVT VT2) const override;
-    bool isZExtFree(SDValue Val, EVT VT2) const override;
 
     bool isLegalICmpImmediate(int64_t) const override;
     bool shouldAvoidTransformToShift(EVT VT, unsigned Amount) const override;
@@ -149,7 +152,7 @@ namespace llvm {
                               const SDLoc &dl, SelectionDAG &DAG,
                               SmallVectorImpl<SDValue> &InVals) const;
 
-    SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
+    SDValue LowerCallResult(SDValue Chain, SDValue InGlue,
                             CallingConv::ID CallConv, bool isVarArg,
                             const SmallVectorImpl<ISD::InputArg> &Ins,
                             const SDLoc &dl, SelectionDAG &DAG,

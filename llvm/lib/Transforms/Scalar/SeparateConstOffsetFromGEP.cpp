@@ -155,6 +155,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Scalar/SeparateConstOffsetFromGEP.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
@@ -177,6 +178,7 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/User.h"
@@ -187,7 +189,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <cassert>
@@ -342,13 +343,14 @@ private:
 /// A pass that tries to split every GEP in the function into a variadic
 /// base and a constant offset. It is a FunctionPass because searching for the
 /// constant offset may inspect other basic blocks.
-class SeparateConstOffsetFromGEP : public FunctionPass {
+class SeparateConstOffsetFromGEPLegacyPass : public FunctionPass {
 public:
   static char ID;
 
-  SeparateConstOffsetFromGEP(bool LowerGEP = false)
+  SeparateConstOffsetFromGEPLegacyPass(bool LowerGEP = false)
       : FunctionPass(ID), LowerGEP(LowerGEP) {
-    initializeSeparateConstOffsetFromGEPPass(*PassRegistry::getPassRegistry());
+    initializeSeparateConstOffsetFromGEPLegacyPassPass(
+        *PassRegistry::getPassRegistry());
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -360,12 +362,24 @@ public:
     AU.addRequired<TargetLibraryInfoWrapperPass>();
   }
 
-  bool doInitialization(Module &M) override {
-    DL = &M.getDataLayout();
-    return false;
-  }
-
   bool runOnFunction(Function &F) override;
+
+private:
+  bool LowerGEP;
+};
+
+/// A pass that tries to split every GEP in the function into a variadic
+/// base and a constant offset. It is a FunctionPass because searching for the
+/// constant offset may inspect other basic blocks.
+class SeparateConstOffsetFromGEP {
+public:
+  SeparateConstOffsetFromGEP(
+      DominatorTree *DT, ScalarEvolution *SE, LoopInfo *LI,
+      TargetLibraryInfo *TLI,
+      function_ref<TargetTransformInfo &(Function &)> GetTTI, bool LowerGEP)
+      : DT(DT), SE(SE), LI(LI), TLI(TLI), GetTTI(GetTTI), LowerGEP(LowerGEP) {}
+
+  bool run(Function &F);
 
 private:
   /// Tries to split the given GEP into a variadic base and a constant offset,
@@ -414,7 +428,7 @@ private:
   /// Returns true if the module changes.
   ///
   /// Verified in @i32_add in split-gep.ll
-  bool canonicalizeArrayIndicesToPointerSize(GetElementPtrInst *GEP);
+  bool canonicalizeArrayIndicesToIndexSize(GetElementPtrInst *GEP);
 
   /// Optimize sext(a)+sext(b) to sext(a+b) when a+b can't sign overflow.
   /// SeparateConstOffsetFromGEP distributes a sext to leaves before extracting
@@ -450,9 +464,10 @@ private:
   const DataLayout *DL = nullptr;
   DominatorTree *DT = nullptr;
   ScalarEvolution *SE;
-
   LoopInfo *LI;
   TargetLibraryInfo *TLI;
+  // Retrieved lazily since not always used.
+  function_ref<TargetTransformInfo &(Function &)> GetTTI;
 
   /// Whether to lower a GEP with multiple indices into arithmetic operations or
   /// multiple GEPs with a single index.
@@ -464,10 +479,10 @@ private:
 
 } // end anonymous namespace
 
-char SeparateConstOffsetFromGEP::ID = 0;
+char SeparateConstOffsetFromGEPLegacyPass::ID = 0;
 
 INITIALIZE_PASS_BEGIN(
-    SeparateConstOffsetFromGEP, "separate-const-offset-from-gep",
+    SeparateConstOffsetFromGEPLegacyPass, "separate-const-offset-from-gep",
     "Split GEPs to a variadic base and a constant offset for better CSE", false,
     false)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
@@ -476,12 +491,12 @@ INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_END(
-    SeparateConstOffsetFromGEP, "separate-const-offset-from-gep",
+    SeparateConstOffsetFromGEPLegacyPass, "separate-const-offset-from-gep",
     "Split GEPs to a variadic base and a constant offset for better CSE", false,
     false)
 
 FunctionPass *llvm::createSeparateConstOffsetFromGEPPass(bool LowerGEP) {
-  return new SeparateConstOffsetFromGEP(LowerGEP);
+  return new SeparateConstOffsetFromGEPLegacyPass(LowerGEP);
 }
 
 bool ConstantOffsetExtractor::CanTraceInto(bool SignExtended,
@@ -632,13 +647,13 @@ Value *ConstantOffsetExtractor::applyExts(Value *V) {
   Value *Current = V;
   // ExtInsts is built in the use-def order. Therefore, we apply them to V
   // in the reversed order.
-  for (auto I = ExtInsts.rbegin(), E = ExtInsts.rend(); I != E; ++I) {
+  for (CastInst *I : llvm::reverse(ExtInsts)) {
     if (Constant *C = dyn_cast<Constant>(Current)) {
       // If Current is a constant, apply s/zext using ConstantExpr::getCast.
       // ConstantExpr::getCast emits a ConstantInt if C is a ConstantInt.
-      Current = ConstantExpr::getCast((*I)->getOpcode(), C, (*I)->getType());
+      Current = ConstantExpr::getCast(I->getOpcode(), C, I->getType());
     } else {
-      Instruction *Ext = (*I)->clone();
+      Instruction *Ext = I->clone();
       Ext->setOperand(0, Current);
       Ext->insertBefore(IP);
       Current = Ext;
@@ -776,17 +791,17 @@ int64_t ConstantOffsetExtractor::Find(Value *Idx, GetElementPtrInst *GEP,
       .getSExtValue();
 }
 
-bool SeparateConstOffsetFromGEP::canonicalizeArrayIndicesToPointerSize(
+bool SeparateConstOffsetFromGEP::canonicalizeArrayIndicesToIndexSize(
     GetElementPtrInst *GEP) {
   bool Changed = false;
-  Type *IntPtrTy = DL->getIntPtrType(GEP->getType());
+  Type *PtrIdxTy = DL->getIndexType(GEP->getType());
   gep_type_iterator GTI = gep_type_begin(*GEP);
   for (User::op_iterator I = GEP->op_begin() + 1, E = GEP->op_end();
        I != E; ++I, ++GTI) {
     // Skip struct member indices which must be i32.
     if (GTI.isSequential()) {
-      if ((*I)->getType() != IntPtrTy) {
-        *I = CastInst::CreateIntegerCast(*I, IntPtrTy, true, "idxprom", GEP);
+      if ((*I)->getType() != PtrIdxTy) {
+        *I = CastInst::CreateIntegerCast(*I, PtrIdxTy, true, "idxprom", GEP);
         Changed = true;
       }
     }
@@ -802,6 +817,10 @@ SeparateConstOffsetFromGEP::accumulateByteOffset(GetElementPtrInst *GEP,
   gep_type_iterator GTI = gep_type_begin(*GEP);
   for (unsigned I = 1, E = GEP->getNumOperands(); I != E; ++I, ++GTI) {
     if (GTI.isSequential()) {
+      // Constant offsets of scalable types are not really constant.
+      if (isa<ScalableVectorType>(GTI.getIndexedType()))
+        continue;
+
       // Tries to extract a constant offset from this GEP index.
       int64_t ConstantOffset =
           ConstantOffsetExtractor::Find(GEP->getOperand(I), GEP, DT);
@@ -830,7 +849,7 @@ SeparateConstOffsetFromGEP::accumulateByteOffset(GetElementPtrInst *GEP,
 void SeparateConstOffsetFromGEP::lowerToSingleIndexGEPs(
     GetElementPtrInst *Variadic, int64_t AccumulativeByteOffset) {
   IRBuilder<> Builder(Variadic);
-  Type *IntPtrTy = DL->getIntPtrType(Variadic->getType());
+  Type *PtrIndexTy = DL->getIndexType(Variadic->getType());
 
   Type *I8PtrTy =
       Builder.getInt8PtrTy(Variadic->getType()->getPointerAddressSpace());
@@ -856,15 +875,16 @@ void SeparateConstOffsetFromGEP::lowerToSingleIndexGEPs(
         if (CI->isZero())
           continue;
 
-      APInt ElementSize = APInt(IntPtrTy->getIntegerBitWidth(),
+      APInt ElementSize = APInt(PtrIndexTy->getIntegerBitWidth(),
                                 DL->getTypeAllocSize(GTI.getIndexedType()));
       // Scale the index by element size.
       if (ElementSize != 1) {
         if (ElementSize.isPowerOf2()) {
           Idx = Builder.CreateShl(
-              Idx, ConstantInt::get(IntPtrTy, ElementSize.logBase2()));
+              Idx, ConstantInt::get(PtrIndexTy, ElementSize.logBase2()));
         } else {
-          Idx = Builder.CreateMul(Idx, ConstantInt::get(IntPtrTy, ElementSize));
+          Idx =
+              Builder.CreateMul(Idx, ConstantInt::get(PtrIndexTy, ElementSize));
         }
       }
       // Create an ugly GEP with a single index for each index.
@@ -877,7 +897,7 @@ void SeparateConstOffsetFromGEP::lowerToSingleIndexGEPs(
 
   // Create a GEP with the constant offset index.
   if (AccumulativeByteOffset != 0) {
-    Value *Offset = ConstantInt::get(IntPtrTy, AccumulativeByteOffset);
+    Value *Offset = ConstantInt::get(PtrIndexTy, AccumulativeByteOffset);
     ResultPtr =
         Builder.CreateGEP(Builder.getInt8Ty(), ResultPtr, Offset, "uglygep");
   } else
@@ -886,8 +906,8 @@ void SeparateConstOffsetFromGEP::lowerToSingleIndexGEPs(
   // If we created a GEP with constant index, and the base is loop invariant,
   // then we swap the first one with it, so LICM can move constant GEP out
   // later.
-  GetElementPtrInst *FirstGEP = dyn_cast_or_null<GetElementPtrInst>(FirstResult);
-  GetElementPtrInst *SecondGEP = dyn_cast_or_null<GetElementPtrInst>(ResultPtr);
+  auto *FirstGEP = dyn_cast_or_null<GetElementPtrInst>(FirstResult);
+  auto *SecondGEP = dyn_cast<GetElementPtrInst>(ResultPtr);
   if (isSwapCandidate && isLegalToSwapOperand(FirstGEP, SecondGEP, L))
     swapGEPOperand(FirstGEP, SecondGEP);
 
@@ -903,6 +923,9 @@ SeparateConstOffsetFromGEP::lowerToArithmetics(GetElementPtrInst *Variadic,
                                                int64_t AccumulativeByteOffset) {
   IRBuilder<> Builder(Variadic);
   Type *IntPtrTy = DL->getIntPtrType(Variadic->getType());
+  assert(IntPtrTy == DL->getIndexType(Variadic->getType()) &&
+         "Pointer type must match index type for arithmetic-based lowering of "
+         "split GEPs");
 
   Value *ResultPtr = Builder.CreatePtrToInt(Variadic->getOperand(0), IntPtrTy);
   gep_type_iterator GTI = gep_type_begin(*Variadic);
@@ -954,7 +977,7 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
   if (GEP->hasAllConstantIndices())
     return false;
 
-  bool Changed = canonicalizeArrayIndicesToPointerSize(GEP);
+  bool Changed = canonicalizeArrayIndicesToIndexSize(GEP);
 
   bool NeedsExtraction;
   int64_t AccumulativeByteOffset = accumulateByteOffset(GEP, NeedsExtraction);
@@ -962,8 +985,7 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
   if (!NeedsExtraction)
     return Changed;
 
-  TargetTransformInfo &TTI =
-      getAnalysis<TargetTransformInfoWrapperPass>().getTTI(*GEP->getFunction());
+  TargetTransformInfo &TTI = GetTTI(*GEP->getFunction());
 
   // If LowerGEP is disabled, before really splitting the GEP, check whether the
   // backend supports the addressing mode we are about to produce. If no, this
@@ -992,6 +1014,10 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
   gep_type_iterator GTI = gep_type_begin(*GEP);
   for (unsigned I = 1, E = GEP->getNumOperands(); I != E; ++I, ++GTI) {
     if (GTI.isSequential()) {
+      // Constant offsets of scalable types are not really constant.
+      if (isa<ScalableVectorType>(GTI.getIndexedType()))
+        continue;
+
       // Splits this GEP index into a variadic part and a constant offset, and
       // uses the variadic part as the new index.
       Value *OldIdx = GEP->getOperand(I);
@@ -1035,7 +1061,15 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
   if (LowerGEP) {
     // As currently BasicAA does not analyze ptrtoint/inttoptr, do not lower to
     // arithmetic operations if the target uses alias analysis in codegen.
-    if (TTI.useAA())
+    // Additionally, pointers that aren't integral (and so can't be safely
+    // converted to integers) or those whose offset size is different from their
+    // pointer size (which means that doing integer arithmetic on them could
+    // affect that data) can't be lowered in this way.
+    unsigned AddrSpace = GEP->getPointerAddressSpace();
+    bool PointerHasExtraData = DL->getPointerSizeInBits(AddrSpace) !=
+                               DL->getIndexSizeInBits(AddrSpace);
+    if (TTI.useAA() || DL->isNonIntegralAddressSpace(AddrSpace) ||
+        PointerHasExtraData)
       lowerToSingleIndexGEPs(GEP, AccumulativeByteOffset);
     else
       lowerToArithmetics(GEP, AccumulativeByteOffset);
@@ -1082,13 +1116,13 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
   // used with unsigned integers later.
   int64_t ElementTypeSizeOfGEP = static_cast<int64_t>(
       DL->getTypeAllocSize(GEP->getResultElementType()));
-  Type *IntPtrTy = DL->getIntPtrType(GEP->getType());
+  Type *PtrIdxTy = DL->getIndexType(GEP->getType());
   if (AccumulativeByteOffset % ElementTypeSizeOfGEP == 0) {
     // Very likely. As long as %gep is naturally aligned, the byte offset we
     // extracted should be a multiple of sizeof(*%gep).
     int64_t Index = AccumulativeByteOffset / ElementTypeSizeOfGEP;
     NewGEP = GetElementPtrInst::Create(GEP->getResultElementType(), NewGEP,
-                                       ConstantInt::get(IntPtrTy, Index, true),
+                                       ConstantInt::get(PtrIdxTy, Index, true),
                                        GEP->getName(), GEP);
     NewGEP->copyMetadata(*GEP);
     // Inherit the inbounds attribute of the original GEP.
@@ -1108,18 +1142,17 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
     // sizeof(int64).
     //
     // Emit an uglygep in this case.
-    Type *I8PtrTy = Type::getInt8PtrTy(GEP->getContext(),
-                                       GEP->getPointerAddressSpace());
-    NewGEP = new BitCastInst(NewGEP, I8PtrTy, "", GEP);
-    NewGEP = GetElementPtrInst::Create(
-        Type::getInt8Ty(GEP->getContext()), NewGEP,
-        ConstantInt::get(IntPtrTy, AccumulativeByteOffset, true), "uglygep",
-        GEP);
+    IRBuilder<> Builder(GEP);
+    Type *I8PtrTy =
+        Builder.getInt8Ty()->getPointerTo(GEP->getPointerAddressSpace());
+
+    NewGEP = cast<Instruction>(Builder.CreateGEP(
+        Builder.getInt8Ty(), Builder.CreateBitCast(NewGEP, I8PtrTy),
+        {ConstantInt::get(PtrIdxTy, AccumulativeByteOffset, true)}, "uglygep",
+        GEPWasInBounds));
+
     NewGEP->copyMetadata(*GEP);
-    // Inherit the inbounds attribute of the original GEP.
-    cast<GetElementPtrInst>(NewGEP)->setIsInBounds(GEPWasInBounds);
-    if (GEP->getType() != I8PtrTy)
-      NewGEP = new BitCastInst(NewGEP, GEP->getType(), GEP->getName(), GEP);
+    NewGEP = cast<Instruction>(Builder.CreateBitCast(NewGEP, GEP->getType()));
   }
 
   GEP->replaceAllUsesWith(NewGEP);
@@ -1128,21 +1161,32 @@ bool SeparateConstOffsetFromGEP::splitGEP(GetElementPtrInst *GEP) {
   return true;
 }
 
-bool SeparateConstOffsetFromGEP::runOnFunction(Function &F) {
+bool SeparateConstOffsetFromGEPLegacyPass::runOnFunction(Function &F) {
   if (skipFunction(F))
     return false;
+  auto *DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
+  auto *SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
+  auto *LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
+  auto *TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
+  auto GetTTI = [this](Function &F) -> TargetTransformInfo & {
+    return this->getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
+  };
+  SeparateConstOffsetFromGEP Impl(DT, SE, LI, TLI, GetTTI, LowerGEP);
+  return Impl.run(F);
+}
 
+bool SeparateConstOffsetFromGEP::run(Function &F) {
   if (DisableSeparateConstOffsetFromGEP)
     return false;
 
-  DT = &getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-  SE = &getAnalysis<ScalarEvolutionWrapperPass>().getSE();
-  LI = &getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
-  TLI = &getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
+  DL = &F.getParent()->getDataLayout();
   bool Changed = false;
   for (BasicBlock &B : F) {
-    for (BasicBlock::iterator I = B.begin(), IE = B.end(); I != IE;)
-      if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(I++))
+    if (!DT->isReachableFromEntry(&B))
+      continue;
+
+    for (Instruction &I : llvm::make_early_inc_range(B))
+      if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(&I))
         Changed |= splitGEP(GEP);
     // No need to split GEP ConstantExprs because all its indices are constant
     // already.
@@ -1200,8 +1244,8 @@ bool SeparateConstOffsetFromGEP::reuniteExts(Instruction *I) {
     }
   } else if (match(I, m_Sub(m_SExt(m_Value(LHS)), m_SExt(m_Value(RHS))))) {
     if (LHS->getType() == RHS->getType()) {
-      const SCEV *Key =
-          SE->getAddExpr(SE->getUnknown(LHS), SE->getUnknown(RHS));
+      const SCEV *Key = SE->getAddExpr(
+          SE->getUnknown(LHS), SE->getNegativeSCEV(SE->getUnknown(RHS)));
       if (auto *Dom = findClosestMatchingDominator(Key, I, DominatingSubs)) {
         Instruction *NewSExt = new SExtInst(Dom, I->getType(), "", I);
         NewSExt->takeName(I);
@@ -1221,8 +1265,8 @@ bool SeparateConstOffsetFromGEP::reuniteExts(Instruction *I) {
     }
   } else if (match(I, m_NSWSub(m_Value(LHS), m_Value(RHS)))) {
     if (programUndefinedIfPoison(I)) {
-      const SCEV *Key =
-          SE->getAddExpr(SE->getUnknown(LHS), SE->getUnknown(RHS));
+      const SCEV *Key = SE->getAddExpr(
+          SE->getUnknown(LHS), SE->getNegativeSCEV(SE->getUnknown(RHS)));
       DominatingSubs[Key].push_back(I);
     }
   }
@@ -1235,10 +1279,8 @@ bool SeparateConstOffsetFromGEP::reuniteExts(Function &F) {
   DominatingSubs.clear();
   for (const auto Node : depth_first(DT)) {
     BasicBlock *BB = Node->getBlock();
-    for (auto I = BB->begin(); I != BB->end(); ) {
-      Instruction *Cur = &*I++;
-      Changed |= reuniteExts(Cur);
-    }
+    for (Instruction &I : llvm::make_early_inc_range(*BB))
+      Changed |= reuniteExts(&I);
   }
   return Changed;
 }
@@ -1344,4 +1386,31 @@ void SeparateConstOffsetFromGEP::swapGEPOperand(GetElementPtrInst *First,
     Second->setIsInBounds(false);
   } else
     First->setIsInBounds(true);
+}
+
+void SeparateConstOffsetFromGEPPass::printPipeline(
+    raw_ostream &OS, function_ref<StringRef(StringRef)> MapClassName2PassName) {
+  static_cast<PassInfoMixin<SeparateConstOffsetFromGEPPass> *>(this)
+      ->printPipeline(OS, MapClassName2PassName);
+  OS << '<';
+  if (LowerGEP)
+    OS << "lower-gep";
+  OS << '>';
+}
+
+PreservedAnalyses
+SeparateConstOffsetFromGEPPass::run(Function &F, FunctionAnalysisManager &AM) {
+  auto *DT = &AM.getResult<DominatorTreeAnalysis>(F);
+  auto *SE = &AM.getResult<ScalarEvolutionAnalysis>(F);
+  auto *LI = &AM.getResult<LoopAnalysis>(F);
+  auto *TLI = &AM.getResult<TargetLibraryAnalysis>(F);
+  auto GetTTI = [&AM](Function &F) -> TargetTransformInfo & {
+    return AM.getResult<TargetIRAnalysis>(F);
+  };
+  SeparateConstOffsetFromGEP Impl(DT, SE, LI, TLI, GetTTI, LowerGEP);
+  if (!Impl.run(F))
+    return PreservedAnalyses::all();
+  PreservedAnalyses PA;
+  PA.preserveSet<CFGAnalyses>();
+  return PA;
 }

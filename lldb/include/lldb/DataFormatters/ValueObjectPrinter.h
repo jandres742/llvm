@@ -27,7 +27,7 @@ public:
   ValueObjectPrinter(ValueObject *valobj, Stream *s,
                      const DumpValueObjectOptions &options);
 
-  ~ValueObjectPrinter() {}
+  ~ValueObjectPrinter() = default;
 
   bool PrintValueObject();
 
@@ -57,7 +57,7 @@ protected:
 
   const char *GetDescriptionForDisplay();
 
-  const char *GetRootNameForDisplay(const char *if_fail = nullptr);
+  const char *GetRootNameForDisplay();
 
   bool ShouldPrintValueObject();
 
@@ -98,7 +98,7 @@ protected:
 
   ValueObject *GetValueObjectForChildrenGeneration();
 
-  void PrintChildrenPreamble();
+  void PrintChildrenPreamble(bool value_printed, bool summary_printed);
 
   void PrintChildrenPostamble(bool print_dotdotdot);
 
@@ -117,7 +117,11 @@ protected:
 
   bool PrintChildrenOneLiner(bool hide_names);
 
+  bool HasReachedMaximumDepth();
+
 private:
+  bool ShouldShowName() const;
+
   ValueObject *m_orig_valobj;
   ValueObject *m_valobj;
   Stream *m_stream;

@@ -44,6 +44,7 @@
 #include "SPIRVDecorate.h"
 #include "SPIRVFunction.h"
 #include "SPIRVInstruction.h"
+#include "SPIRVMemAliasingINTEL.h"
 #include "SPIRVStream.h"
 #include "SPIRVType.h"
 
@@ -72,13 +73,20 @@ SPIRVEntry *SPIRVEntry::create(Op OpCode) {
 
   static TableEntry Table[] = {
 #define _SPIRV_OP(x, ...) {Op##x, &SPIRV::create<SPIRV##x>},
+#define _SPIRV_OP_INTERNAL(x, ...) {internal::Op##x, &SPIRV::create<SPIRV##x>},
 #include "SPIRVOpCodeEnum.h"
+#include "SPIRVOpCodeEnumInternal.h"
+#undef _SPIRV_OP_INTERNAL
 #undef _SPIRV_OP
   };
 
   typedef std::map<Op, SPIRVFactoryTy> OpToFactoryMapTy;
   static const OpToFactoryMapTy OpToFactoryMap(std::begin(Table),
                                                std::end(Table));
+
+  // TODO: To remove this when we make a switch to new version
+  if (OpCode == internal::OpTypeJointMatrixINTELv2)
+    OpCode = internal::OpTypeJointMatrixINTEL;
 
   OpToFactoryMapTy::const_iterator Loc = OpToFactoryMap.find(OpCode);
   if (Loc != OpToFactoryMap.end())
@@ -195,7 +203,9 @@ void SPIRVEntry::encodeWordCountOpCode(spv_ostream &O) const {
     return;
   }
 #endif
-  getEncoder(O) << mkWord(WordCount, OpCode);
+  assert(WordCount < 65536 && "WordCount must fit into 16-bit value");
+  SPIRVWord WordCountOpCode = (WordCount << WordCountShift) | OpCode;
+  getEncoder(O) << WordCountOpCode;
 }
 // Read words from SPIRV binary and create members for SPIRVEntry.
 // The word count and op code has already been read before calling this
@@ -248,7 +258,7 @@ void SPIRVEntry::validateBuiltin(SPIRVWord TheSet, SPIRVWord Index) const {
 
 void SPIRVEntry::addDecorate(SPIRVDecorate *Dec) {
   auto Kind = Dec->getDecorateKind();
-  Decorates.insert(std::make_pair(Dec->getDecorateKind(), Dec));
+  Decorates.insert(std::make_pair(Kind, Dec));
   Module->addDecorate(Dec);
   if (Kind == spv::DecorationLinkageAttributes) {
     auto *LinkageAttr = static_cast<const SPIRVDecorateLinkageAttr *>(Dec);
@@ -257,12 +267,25 @@ void SPIRVEntry::addDecorate(SPIRVDecorate *Dec) {
   SPIRVDBG(spvdbgs() << "[addDecorate] " << *Dec << '\n';)
 }
 
+void SPIRVEntry::addDecorate(SPIRVDecorateId *Dec) {
+  DecorateIds.insert(std::make_pair(Dec->getDecorateKind(), Dec));
+  Module->addDecorate(Dec);
+  SPIRVDBG(spvdbgs() << "[addDecorateId] " << *Dec << '\n';)
+}
+
 void SPIRVEntry::addDecorate(Decoration Kind) {
   addDecorate(new SPIRVDecorate(Kind, this));
 }
 
 void SPIRVEntry::addDecorate(Decoration Kind, SPIRVWord Literal) {
-  addDecorate(new SPIRVDecorate(Kind, this, Literal));
+  switch (static_cast<int>(Kind)) {
+  case DecorationAliasScopeINTEL:
+  case DecorationNoAliasINTEL:
+    addDecorate(new SPIRVDecorateId(Kind, this, Literal));
+    return;
+  default:
+    addDecorate(new SPIRVDecorate(Kind, this, Literal));
+  }
 }
 
 void SPIRVEntry::eraseDecorate(Decoration Dec) { Decorates.erase(Dec); }
@@ -272,15 +295,20 @@ void SPIRVEntry::takeDecorates(SPIRVEntry *E) {
   SPIRVDBG(spvdbgs() << "[takeDecorates] " << Id << '\n';)
 }
 
+void SPIRVEntry::takeDecorateIds(SPIRVEntry *E) {
+  DecorateIds = std::move(E->DecorateIds);
+  SPIRVDBG(spvdbgs() << "[takeDecorateIds] " << Id << '\n';)
+}
+
 void SPIRVEntry::setLine(const std::shared_ptr<const SPIRVLine> &L) {
   Line = L;
   SPIRVDBG(if (L) spvdbgs() << "[setLine] " << *L << '\n';)
 }
 
 void SPIRVEntry::addMemberDecorate(SPIRVMemberDecorate *Dec) {
-  assert(canHaveMemberDecorates() &&
-         MemberDecorates.find(Dec->getPair()) == MemberDecorates.end());
-  MemberDecorates[Dec->getPair()] = Dec;
+  assert(canHaveMemberDecorates());
+  MemberDecorates.insert(std::make_pair(
+      std::make_pair(Dec->getMemberNumber(), Dec->getDecorateKind()), Dec));
   Module->addDecorate(Dec);
   SPIRVDBG(spvdbgs() << "[addMemberDecorate] " << *Dec << '\n';)
 }
@@ -306,6 +334,7 @@ void SPIRVEntry::takeMemberDecorates(SPIRVEntry *E) {
 void SPIRVEntry::takeAnnotations(SPIRVForward *E) {
   Module->setName(this, E->getName());
   takeDecorates(E);
+  takeDecorateIds(E);
   takeMemberDecorates(E);
   if (OpCode == OpFunction)
     static_cast<SPIRVFunction *>(this)->takeExecutionModes(E);
@@ -315,8 +344,18 @@ void SPIRVEntry::takeAnnotations(SPIRVForward *E) {
 // first decoration of such kind at Index.
 bool SPIRVEntry::hasDecorate(Decoration Kind, size_t Index,
                              SPIRVWord *Result) const {
-  DecorateMapType::const_iterator Loc = Decorates.find(Kind);
+  auto Loc = Decorates.find(Kind);
   if (Loc == Decorates.end())
+    return false;
+  if (Result)
+    *Result = Loc->second->getLiteral(Index);
+  return true;
+}
+
+bool SPIRVEntry::hasDecorateId(Decoration Kind, size_t Index,
+                               SPIRVId *Result) const {
+  auto Loc = DecorateIds.find(Kind);
+  if (Loc == DecorateIds.end())
     return false;
   if (Result)
     *Result = Loc->second->getLiteral(Index);
@@ -355,10 +394,46 @@ SPIRVEntry::getMemberDecorationStringLiteral(Decoration Kind,
   return getVecString(Loc->second->getVecLiteral());
 }
 
+std::vector<std::vector<std::string>>
+SPIRVEntry::getAllDecorationStringLiterals(Decoration Kind) const {
+  auto Loc = Decorates.find(Kind);
+  if (Loc == Decorates.end())
+    return {};
+
+  std::vector<std::vector<std::string>> Literals;
+  auto It = Decorates.equal_range(Kind);
+  for (auto Itr = It.first; Itr != It.second; ++Itr)
+    Literals.push_back(getVecString(Itr->second->getVecLiteral()));
+  return Literals;
+}
+
+std::vector<std::vector<std::string>>
+SPIRVEntry::getAllMemberDecorationStringLiterals(Decoration Kind,
+                                                 SPIRVWord MemberNumber) const {
+  auto Loc = MemberDecorates.find({MemberNumber, Kind});
+  if (Loc == MemberDecorates.end())
+    return {};
+
+  std::vector<std::vector<std::string>> Literals;
+  auto It = MemberDecorates.equal_range({MemberNumber, Kind});
+  for (auto Itr = It.first; Itr != It.second; ++Itr)
+    Literals.push_back(getVecString(Itr->second->getVecLiteral()));
+  return Literals;
+}
+
 std::vector<SPIRVWord>
 SPIRVEntry::getDecorationLiterals(Decoration Kind) const {
   auto Loc = Decorates.find(Kind);
   if (Loc == Decorates.end())
+    return {};
+
+  return (Loc->second->getVecLiteral());
+}
+
+std::vector<SPIRVId>
+SPIRVEntry::getDecorationIdLiterals(Decoration Kind) const {
+  auto Loc = DecorateIds.find(Kind);
+  if (Loc == DecorateIds.end())
     return {};
 
   return (Loc->second->getVecLiteral());
@@ -384,6 +459,47 @@ std::set<SPIRVWord> SPIRVEntry::getDecorate(Decoration Kind,
     Value.insert(I->second->getLiteral(Index));
   }
   return Value;
+}
+
+std::vector<SPIRVDecorate const *>
+SPIRVEntry::getDecorations(Decoration Kind) const {
+  auto Range = Decorates.equal_range(Kind);
+  std::vector<SPIRVDecorate const *> Decors;
+  Decors.reserve(Decorates.count(Kind));
+  for (auto I = Range.first, E = Range.second; I != E; ++I) {
+    Decors.push_back(I->second);
+  }
+  return Decors;
+}
+
+std::vector<SPIRVDecorate const *> SPIRVEntry::getDecorations() const {
+  std::vector<SPIRVDecorate const *> Decors;
+  Decors.reserve(Decorates.size());
+  for (auto &DecoPair : Decorates)
+    Decors.push_back(DecoPair.second);
+  return Decors;
+}
+
+std::set<SPIRVId> SPIRVEntry::getDecorateId(Decoration Kind,
+                                            size_t Index) const {
+  auto Range = DecorateIds.equal_range(Kind);
+  std::set<SPIRVId> Value;
+  for (auto I = Range.first, E = Range.second; I != E; ++I) {
+    assert(Index < I->second->getLiteralCount() && "Invalid index");
+    Value.insert(I->second->getLiteral(Index));
+  }
+  return Value;
+}
+
+std::vector<SPIRVDecorateId const *>
+SPIRVEntry::getDecorationIds(Decoration Kind) const {
+  auto Range = DecorateIds.equal_range(Kind);
+  std::vector<SPIRVDecorateId const *> Decors;
+  Decors.reserve(DecorateIds.count(Kind));
+  for (auto I = Range.first, E = Range.second; I != E; ++I) {
+    Decors.push_back(I->second);
+  }
+  return Decors;
 }
 
 bool SPIRVEntry::hasLinkageType() const {
@@ -412,6 +528,8 @@ bool SPIRVEntry::isExtInst(const SPIRVExtInstSetKind InstSet,
 void SPIRVEntry::encodeDecorate(spv_ostream &O) const {
   for (auto &I : Decorates)
     O << *I.second;
+  for (auto &I : DecorateIds)
+    O << *I.second;
 }
 
 SPIRVLinkageTypeKind SPIRVEntry::getLinkageType() const {
@@ -419,7 +537,7 @@ SPIRVLinkageTypeKind SPIRVEntry::getLinkageType() const {
   DecorateMapType::const_iterator Loc =
       Decorates.find(DecorationLinkageAttributes);
   if (Loc == Decorates.end())
-    return LinkageTypeInternal;
+    return internal::LinkageTypeInternal;
   return static_cast<const SPIRVDecorateLinkageAttr *>(Loc->second)
       ->getLinkageType();
 }
@@ -434,7 +552,8 @@ void SPIRVEntry::updateModuleVersion() const {
   if (!Module)
     return;
 
-  Module->setMinSPIRVVersion(getRequiredSPIRVVersion());
+  Module->setMinSPIRVVersion(
+      static_cast<VersionNumber>(getRequiredSPIRVVersion()));
 }
 
 spv_ostream &operator<<(spv_ostream &O, const SPIRVEntry &E) {
@@ -473,7 +592,7 @@ void SPIRVExecutionMode::encode(spv_ostream &O) const {
 
 void SPIRVExecutionMode::decode(std::istream &I) {
   getDecoder(I) >> Target >> ExecMode;
-  switch (ExecMode) {
+  switch (static_cast<uint32_t>(ExecMode)) {
   case ExecutionModeLocalSize:
   case ExecutionModeLocalSizeHint:
   case ExecutionModeMaxWorkgroupSizeINTEL:
@@ -487,9 +606,18 @@ void SPIRVExecutionMode::decode(std::istream &I) {
   case ExecutionModeSignedZeroInfNanPreserve:
   case ExecutionModeRoundingModeRTE:
   case ExecutionModeRoundingModeRTZ:
+  case ExecutionModeRoundingModeRTPINTEL:
+  case ExecutionModeRoundingModeRTNINTEL:
+  case ExecutionModeFloatingPointModeALTINTEL:
+  case ExecutionModeFloatingPointModeIEEEINTEL:
+  case ExecutionModeSharedLocalMemorySizeINTEL:
+  case ExecutionModeNamedBarrierCountINTEL:
   case ExecutionModeSubgroupSize:
   case ExecutionModeMaxWorkDimINTEL:
   case ExecutionModeNumSIMDWorkitemsINTEL:
+  case ExecutionModeSchedulerTargetFmaxMhzINTEL:
+  case ExecutionModeRegisterMapInterfaceINTEL:
+  case ExecutionModeStreamingInterfaceINTEL:
     WordLiterals.resize(1);
     break;
   default:
@@ -503,7 +631,7 @@ void SPIRVExecutionMode::decode(std::istream &I) {
 SPIRVForward *SPIRVAnnotationGeneric::getOrCreateTarget() const {
   SPIRVEntry *Entry = nullptr;
   bool Found = Module->exist(Target, &Entry);
-  assert((!Found || Entry->getOpCode() == OpForward) &&
+  assert((!Found || Entry->getOpCode() == internal::OpForward) &&
          "Annotations only allowed on forward");
   if (!Found)
     Entry = Module->addForward(Target, nullptr);
@@ -639,5 +767,38 @@ void SPIRVCapability::decode(std::istream &I) {
   getDecoder(I) >> Kind;
   Module->addCapability(Kind);
 }
+
+template <spv::Op OC> void SPIRVContinuedInstINTELBase<OC>::validate() const {
+  SPIRVEntry::validate();
+}
+
+template <spv::Op OC>
+void SPIRVContinuedInstINTELBase<OC>::encode(spv_ostream &O) const {
+  SPIRVEntry::getEncoder(O) << (Elements);
+}
+template <spv::Op OC>
+void SPIRVContinuedInstINTELBase<OC>::decode(std::istream &I) {
+  SPIRVEntry::getDecoder(I) >> (Elements);
+}
+
+SPIRVType *SPIRVTypeStructContinuedINTEL::getMemberType(size_t I) const {
+  return static_cast<SPIRVType *>(SPIRVEntry::getEntry(Elements[I]));
+}
+
+void SPIRVModuleProcessed::validate() const {
+  assert(WordCount == FixedWC + getSizeInWords(ProcessStr) &&
+         "Incorrect word count in OpModuleProcessed");
+}
+
+void SPIRVModuleProcessed::encode(spv_ostream &O) const {
+  getEncoder(O) << ProcessStr;
+}
+
+void SPIRVModuleProcessed::decode(std::istream &I) {
+  getDecoder(I) >> ProcessStr;
+  Module->addModuleProcessed(ProcessStr);
+}
+
+std::string SPIRVModuleProcessed::getProcessStr() { return ProcessStr; }
 
 } // namespace SPIRV

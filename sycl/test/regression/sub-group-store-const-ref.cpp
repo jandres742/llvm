@@ -1,4 +1,4 @@
-// RUN: %clangxx -fsyntax-only -Xclang -verify %s -I %sycl_include -Xclang -verify-ignore-unexpected=note,warning
+// RUN: %clangxx -fsycl -fsyntax-only -Xclang -verify %s -Xclang -verify-ignore-unexpected=note,warning
 // expected-no-diagnostics
 //
 //==-- sub-group-store-const-ref.cpp ---------------------------------------==//
@@ -10,7 +10,7 @@
 //===----------------------------------------------------------------------===//
 // This test checks that sub_group::store supports const reference.
 //===----------------------------------------------------------------------===//
-#include <CL/sycl.hpp>
+#include <sycl/sycl.hpp>
 using namespace sycl;
 
-void test(intel::sub_group sg, global_ptr<int> ptr) { sg.store(ptr, 1); }
+void test(ext::oneapi::sub_group sg, global_ptr<int> ptr) { sg.store(ptr, 1); }

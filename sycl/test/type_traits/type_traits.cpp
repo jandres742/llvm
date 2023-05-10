@@ -1,4 +1,4 @@
-// RUN: %clangxx -fsycl %s -o %t.out
+// RUN: %clangxx -fsycl -fsyntax-only %s
 //==-------------- type_traits.cpp - SYCL type_traits test -----------------==//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -7,14 +7,14 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <CL/sycl.hpp>
+#include <sycl/sycl.hpp>
 
 #include <type_traits>
 
 using namespace std;
 
-namespace s = cl::sycl;
-namespace d = cl::sycl::detail;
+namespace s = sycl;
+namespace d = sycl::detail;
 
 template <typename T, bool Expected = true> void test_is_integral() {
   static_assert(d::is_integral<T>::value == Expected, "");
@@ -51,11 +51,9 @@ void test_vector_element_t() {
                 "");
 }
 
-template <typename T, typename CheckedT, bool Expected = true>
-void test_nan_types() {
-  static_assert((sizeof(d::vector_element_t<d::nan_return_t<T>>) ==
-                 sizeof(d::nan_argument_base_t<T>)) == Expected,
-                "");
+template <typename T> void test_nan_types() {
+  static_assert(sizeof(d::vector_element_t<d::nan_return_t<T>>) ==
+                sizeof(d::nan_argument_base_t<T>));
 }
 
 template <typename T, typename CheckedT, bool Expected = true>
@@ -133,29 +131,33 @@ int main() {
   test_is_integral<s::int2>();
   test_is_integral<float, false>();
   test_is_integral<s::float2, false>();
-  test_is_integral<half, false>();
+  test_is_integral<s::half, false>();
   test_is_integral<s::half2, false>();
 
   test_is_floating_point<int, false>();
   test_is_floating_point<s::int2, false>();
   test_is_floating_point<float>();
   test_is_floating_point<s::float2>();
-  test_is_floating_point<half>();
+  test_is_floating_point<s::half>();
   test_is_floating_point<s::half2>();
 
   test_is_arithmetic<int>();
   test_is_arithmetic<s::int2>();
   test_is_arithmetic<float>();
   test_is_arithmetic<s::float2>();
-  test_is_arithmetic<half>();
+  test_is_arithmetic<s::half>();
   test_is_arithmetic<s::half2>();
 
   test_make_type_t<int, d::gtl::scalar_unsigned_int_list, unsigned int>();
-  test_make_type_t<s::cl_int, d::gtl::scalar_float_list, s::cl_float>();
-  test_make_type_t<s::cl_int3, d::gtl::scalar_unsigned_int_list, s::cl_uint3>();
-  test_make_type_t<s::cl_int3, d::gtl::scalar_float_list, s::cl_float3>();
+  test_make_type_t<s::opencl::cl_int, d::gtl::scalar_float_list,
+                   s::opencl::cl_float>();
+  test_make_type_t<s::vec<s::opencl::cl_int, 3>,
+                   d::gtl::scalar_unsigned_int_list,
+                   s::vec<s::opencl::cl_uint, 3>>();
+  test_make_type_t<s::vec<s::opencl::cl_int, 3>, d::gtl::scalar_float_list,
+                   s::vec<s::opencl::cl_float, 3>>();
 
-  test_make_larger_t<half, float>();
+  test_make_larger_t<s::half, float>();
   test_make_larger_t<s::half3, s::float3>();
   test_make_larger_t<float, double>();
   test_make_larger_t<s::float3, s::double3>();
@@ -180,14 +182,13 @@ int main() {
   test_vector_element_t<volatile s::int2, volatile int>();
   test_vector_element_t<const volatile s::int2, const volatile int>();
 
-  test_nan_types<s::ushort, s::ushort>();
-  test_nan_types<s::uint, s::uint>();
-  test_nan_types<s::ulong, s::ulong>();
-  test_nan_types<s::ulonglong, s::ulonglong>();
-  test_nan_types<s::ushort2, s::ushort2>();
-  test_nan_types<s::uint2, s::uint2>();
-  test_nan_types<s::ulong2, s::ulong2>();
-  test_nan_types<s::ulonglong2, s::ulonglong2>();
+  test_nan_types<unsigned short>();
+  test_nan_types<unsigned int>();
+  test_nan_types<unsigned long>();
+  test_nan_types<unsigned long long>();
+  test_nan_types<s::ushort2>();
+  test_nan_types<s::uint2>();
+  test_nan_types<s::ulong2>();
 
   test_make_signed_t<int, int>();
   test_make_signed_t<const int, const int>();

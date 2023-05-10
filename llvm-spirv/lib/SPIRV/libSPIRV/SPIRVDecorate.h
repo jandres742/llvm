@@ -57,6 +57,14 @@ public:
   // Complete constructor for decorations with one word literal
   SPIRVDecorateGeneric(Op OC, SPIRVWord WC, Decoration TheDec,
                        SPIRVEntry *TheTarget, SPIRVWord V);
+  // Complete constructor for decorations with two word literals
+  SPIRVDecorateGeneric(Op OC, SPIRVWord WC, Decoration TheDec,
+                       SPIRVEntry *TheTarget, SPIRVWord V1, SPIRVWord V2);
+  // Complete constructor for decorations with three word literals
+  SPIRVDecorateGeneric(Op OC, SPIRVWord WC, Decoration TheDec,
+                       SPIRVEntry *TheTarget, SPIRVWord V1, SPIRVWord V2,
+                       SPIRVWord V3);
+
   // Incomplete constructor
   SPIRVDecorateGeneric(Op OC);
 
@@ -64,21 +72,21 @@ public:
   std::vector<SPIRVWord> getVecLiteral() const;
   Decoration getDecorateKind() const;
   size_t getLiteralCount() const;
-  /// Compare for kind and literal only.
-  struct Comparator {
-    bool operator()(const SPIRVDecorateGeneric *A,
-                    const SPIRVDecorateGeneric *B) const;
-  };
-  /// Compare kind, literals and target.
-  friend bool operator==(const SPIRVDecorateGeneric &A,
-                         const SPIRVDecorateGeneric &B);
-
   SPIRVDecorationGroup *getOwner() const { return Owner; }
 
   void setOwner(SPIRVDecorationGroup *Owner) { this->Owner = Owner; }
 
   SPIRVCapVec getRequiredCapability() const override {
-    return getCapability(Dec);
+    switch (Dec) {
+    case DecorationBuiltIn: {
+      // Return the BuiltIn's capabilities.
+      BuiltIn BI = static_cast<BuiltIn>(Literals.back());
+      return getCapability(BI);
+    }
+
+    default:
+      return getCapability(Dec);
+    }
   }
 
   SPIRVWord getRequiredSPIRVVersion() const override {
@@ -91,6 +99,8 @@ public:
 
     case DecorationMaxByteOffset:
       return static_cast<SPIRVWord>(VersionNumber::SPIRV_1_1);
+    case DecorationUserSemantic:
+      return static_cast<SPIRVWord>(VersionNumber::SPIRV_1_4);
 
     default:
       return static_cast<SPIRVWord>(VersionNumber::SPIRV_1_0);
@@ -103,26 +113,7 @@ protected:
   SPIRVDecorationGroup *Owner; // Owning decorate group
 };
 
-class SPIRVDecorateSet
-    : public std::multiset<SPIRVDecorateGeneric *,
-                           SPIRVDecorateGeneric::Comparator> {
-public:
-  typedef std::multiset<SPIRVDecorateGeneric *,
-                        SPIRVDecorateGeneric::Comparator>
-      BaseType;
-  iterator insert(value_type &Dec) {
-    auto ER = BaseType::equal_range(Dec);
-    for (auto I = ER.first, E = ER.second; I != E; ++I) {
-      SPIRVDBG(spvdbgs() << "[compare decorate] " << *Dec << " vs " << **I
-                         << " : ");
-      if (**I == *Dec)
-        return I;
-      SPIRVDBG(spvdbgs() << " diff\n");
-    }
-    SPIRVDBG(spvdbgs() << "[add decorate] " << *Dec << '\n');
-    return BaseType::insert(Dec);
-  }
-};
+typedef std::vector<SPIRVDecorateGeneric *> SPIRVDecorateVec;
 
 class SPIRVDecorate : public SPIRVDecorateGeneric {
 public:
@@ -134,14 +125,20 @@ public:
   // Complete constructor for decorations with one word literal
   SPIRVDecorate(Decoration TheDec, SPIRVEntry *TheTarget, SPIRVWord V)
       : SPIRVDecorateGeneric(OC, 4, TheDec, TheTarget, V) {}
+  // Complete constructor for decorations with two word literals
+  SPIRVDecorate(Decoration TheDec, SPIRVEntry *TheTarget, SPIRVWord V1,
+                SPIRVWord V2)
+      : SPIRVDecorateGeneric(OC, 5, TheDec, TheTarget, V1, V2) {}
+  // Complete constructor for decorations with three word literals
+  SPIRVDecorate(Decoration TheDec, SPIRVEntry *TheTarget, SPIRVWord V1,
+                SPIRVWord V2, SPIRVWord V3)
+      : SPIRVDecorateGeneric(OC, 6, TheDec, TheTarget, V1, V2, V3) {}
+
   // Incomplete constructor
   SPIRVDecorate() : SPIRVDecorateGeneric(OC) {}
 
-  SPIRVExtSet getRequiredExtensions() const override {
-    switch (Dec) {
-    case DecorationNoSignedWrap:
-    case DecorationNoUnsignedWrap:
-      return getSet(ExtensionID::SPV_KHR_no_integer_wrap_decoration);
+  std::optional<ExtensionID> getRequiredExtension() const override {
+    switch (static_cast<size_t>(Dec)) {
     case DecorationRegisterINTEL:
     case DecorationMemoryINTEL:
     case DecorationNumbanksINTEL:
@@ -154,13 +151,86 @@ public:
     case DecorationMergeINTEL:
     case DecorationBankBitsINTEL:
     case DecorationForcePow2DepthINTEL:
-      return getSet(ExtensionID::SPV_INTEL_fpga_memory_attributes);
+      return ExtensionID::SPV_INTEL_fpga_memory_attributes;
+    case DecorationBurstCoalesceINTEL:
+    case DecorationCacheSizeINTEL:
+    case DecorationDontStaticallyCoalesceINTEL:
+    case DecorationPrefetchINTEL:
+      return ExtensionID::SPV_INTEL_fpga_memory_accesses;
     case DecorationReferencedIndirectlyINTEL:
-      return getSet(ExtensionID::SPV_INTEL_function_pointers);
+    case internal::DecorationArgumentAttributeINTEL:
+      return ExtensionID::SPV_INTEL_function_pointers;
     case DecorationIOPipeStorageINTEL:
-      return getSet(ExtensionID::SPV_INTEL_io_pipes);
+      return ExtensionID::SPV_INTEL_io_pipes;
+    case DecorationBufferLocationINTEL:
+      return ExtensionID::SPV_INTEL_fpga_buffer_location;
+    case DecorationFunctionFloatingPointModeINTEL:
+    case DecorationFunctionRoundingModeINTEL:
+    case DecorationFunctionDenormModeINTEL:
+      return ExtensionID::SPV_INTEL_float_controls2;
+    case DecorationStallEnableINTEL:
+      return ExtensionID::SPV_INTEL_fpga_cluster_attributes;
+    case DecorationFuseLoopsInFunctionINTEL:
+      return ExtensionID::SPV_INTEL_loop_fuse;
+    case internal::DecorationCallableFunctionINTEL:
+      return ExtensionID::SPV_INTEL_fast_composite;
+    case DecorationMathOpDSPModeINTEL:
+      return ExtensionID::SPV_INTEL_fpga_dsp_control;
+    case DecorationInitiationIntervalINTEL:
+      return ExtensionID::SPV_INTEL_fpga_invocation_pipelining_attributes;
+    case DecorationMaxConcurrencyINTEL:
+      return ExtensionID::SPV_INTEL_fpga_invocation_pipelining_attributes;
+    case DecorationPipelineEnableINTEL:
+      return ExtensionID::SPV_INTEL_fpga_invocation_pipelining_attributes;
+    case internal::DecorationRuntimeAlignedINTEL:
+      return ExtensionID::SPV_INTEL_runtime_aligned;
+    case internal::DecorationHostAccessINTEL:
+    case internal::DecorationInitModeINTEL:
+    case internal::DecorationImplementInCSRINTEL:
+      return ExtensionID::SPV_INTEL_global_variable_decorations;
+    case DecorationConduitKernelArgumentINTEL:
+    case DecorationRegisterMapKernelArgumentINTEL:
+    case DecorationStableKernelArgumentINTEL:
+    case DecorationMMHostInterfaceReadWriteModeINTEL:
+    case DecorationMMHostInterfaceAddressWidthINTEL:
+    case DecorationMMHostInterfaceDataWidthINTEL:
+    case DecorationMMHostInterfaceLatencyINTEL:
+    case DecorationMMHostInterfaceMaxBurstINTEL:
+    case DecorationMMHostInterfaceWaitRequestINTEL:
+      return ExtensionID::SPV_INTEL_fpga_argument_interfaces;
+    case DecorationLatencyControlLabelINTEL:
+    case DecorationLatencyControlConstraintINTEL:
+      return ExtensionID::SPV_INTEL_fpga_latency_control;
     default:
-      return SPIRVExtSet();
+      return {};
+    }
+  }
+
+  _SPIRV_DCL_ENCDEC
+  void setWordCount(SPIRVWord) override;
+  void validate() const override {
+    SPIRVDecorateGeneric::validate();
+    assert(WordCount == Literals.size() + FixedWC);
+  }
+};
+
+class SPIRVDecorateId : public SPIRVDecorateGeneric {
+public:
+  static const Op OC = OpDecorateId;
+  static const SPIRVWord FixedWC = 3;
+  // Complete constructor for decorations with one id operand
+  SPIRVDecorateId(Decoration TheDec, SPIRVEntry *TheTarget, SPIRVId V)
+      : SPIRVDecorateGeneric(OC, 4, TheDec, TheTarget, V) {}
+  // Incomplete constructor
+  SPIRVDecorateId() : SPIRVDecorateGeneric(OC) {}
+
+  std::optional<ExtensionID> getRequiredExtension() const override {
+    switch (static_cast<int>(Dec)) {
+    case DecorationAliasScopeINTEL:
+    case DecorationNoAliasINTEL:
+      return ExtensionID::SPV_INTEL_memory_access_aliasing;
+    default:
+      return {};
     }
   }
 
@@ -219,6 +289,12 @@ public:
 #endif
       Decoder >> Literals;
   }
+
+  std::optional<ExtensionID> getRequiredExtension() const override {
+    if (getLinkageType() == SPIRVLinkageTypeKind::LinkageTypeLinkOnceODR)
+      return ExtensionID::SPV_KHR_linkonce_odr;
+    return {};
+  }
 };
 
 class SPIRVMemberDecorate : public SPIRVDecorateGeneric {
@@ -240,8 +316,8 @@ public:
   SPIRVMemberDecorate()
       : SPIRVDecorateGeneric(OC), MemberNumber(SPIRVWORD_MAX) {}
 
-  SPIRVExtSet getRequiredExtensions() const override {
-    switch (Dec) {
+  std::optional<ExtensionID> getRequiredExtension() const override {
+    switch (static_cast<size_t>(Dec)) {
     case DecorationRegisterINTEL:
     case DecorationMemoryINTEL:
     case DecorationNumbanksINTEL:
@@ -254,11 +330,20 @@ public:
     case DecorationMergeINTEL:
     case DecorationBankBitsINTEL:
     case DecorationForcePow2DepthINTEL:
-      return getSet(ExtensionID::SPV_INTEL_fpga_memory_attributes);
+      return ExtensionID::SPV_INTEL_fpga_memory_attributes;
+    case DecorationBurstCoalesceINTEL:
+    case DecorationCacheSizeINTEL:
+    case DecorationDontStaticallyCoalesceINTEL:
+    case DecorationPrefetchINTEL:
+      return ExtensionID::SPV_INTEL_fpga_memory_accesses;
     case DecorationIOPipeStorageINTEL:
-      return getSet(ExtensionID::SPV_INTEL_io_pipes);
+      return ExtensionID::SPV_INTEL_io_pipes;
+    case DecorationBufferLocationINTEL:
+      return ExtensionID::SPV_INTEL_fpga_buffer_location;
+    case internal::DecorationRuntimeAlignedINTEL:
+      return ExtensionID::SPV_INTEL_runtime_aligned;
     default:
-      return SPIRVExtSet();
+      return {};
     }
   }
 
@@ -293,17 +378,17 @@ public:
   void encodeAll(spv_ostream &O) const override;
   _SPIRV_DCL_ENCDEC
   // Move the given decorates to the decoration group
-  void takeDecorates(SPIRVDecorateSet &Decs) {
+  void takeDecorates(SPIRVDecorateVec &Decs) {
     Decorations = std::move(Decs);
     for (auto &I : Decorations)
       const_cast<SPIRVDecorateGeneric *>(I)->setOwner(this);
     Decs.clear();
   }
 
-  SPIRVDecorateSet &getDecorations() { return Decorations; }
+  SPIRVDecorateVec &getDecorations() { return Decorations; }
 
 protected:
-  SPIRVDecorateSet Decorations;
+  SPIRVDecorateVec Decorations;
   void validate() const override {
     assert(OpCode == OC);
     assert(WordCount == WC);
@@ -410,6 +495,15 @@ public:
   //  Complete constructor for UserSemantic decoration
   SPIRVDecorateUserSemanticAttr(SPIRVEntry *TheTarget,
                                 const std::string &AnnotateString)
+      : SPIRVDecorateStrAttrBase(TheTarget, AnnotateString) {}
+};
+
+class SPIRVDecorateFuncParamDescAttr
+    : public SPIRVDecorateStrAttrBase<internal::DecorationFuncParamDescINTEL> {
+public:
+  //  Complete constructor for UserSemantic decoration
+  SPIRVDecorateFuncParamDescAttr(SPIRVEntry *TheTarget,
+                                 const std::string &AnnotateString)
       : SPIRVDecorateStrAttrBase(TheTarget, AnnotateString) {}
 };
 
@@ -529,6 +623,176 @@ public:
     Literals = TheBits;
     WordCount += Literals.size();
   }
+};
+
+class SPIRVDecorateFunctionRoundingModeINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateFunctionRoundingModeINTEL
+  SPIRVDecorateFunctionRoundingModeINTEL(SPIRVEntry *TheTarget,
+                                         SPIRVWord TargetWidth,
+                                         spv::FPRoundingMode FloatControl)
+      : SPIRVDecorate(spv::DecorationFunctionRoundingModeINTEL, TheTarget,
+                      TargetWidth, static_cast<SPIRVWord>(FloatControl)){};
+
+  SPIRVWord getTargetWidth() const { return Literals.at(0); };
+  spv::FPRoundingMode getRoundingMode() const {
+    return static_cast<spv::FPRoundingMode>(Literals.at(1));
+  };
+};
+
+class SPIRVDecorateFunctionDenormModeINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateFunctionDenormModeINTEL
+  SPIRVDecorateFunctionDenormModeINTEL(SPIRVEntry *TheTarget,
+                                       SPIRVWord TargetWidth,
+                                       spv::FPDenormMode FloatControl)
+      : SPIRVDecorate(spv::DecorationFunctionDenormModeINTEL, TheTarget,
+                      TargetWidth, static_cast<SPIRVWord>(FloatControl)){};
+
+  SPIRVWord getTargetWidth() const { return Literals.at(0); };
+  spv::FPDenormMode getDenormMode() const {
+    return static_cast<spv::FPDenormMode>(Literals.at(1));
+  };
+};
+
+class SPIRVDecorateFunctionFloatingPointModeINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateFunctionOperationModeINTEL
+  SPIRVDecorateFunctionFloatingPointModeINTEL(SPIRVEntry *TheTarget,
+                                              SPIRVWord TargetWidth,
+                                              spv::FPOperationMode FloatControl)
+      : SPIRVDecorate(spv::DecorationFunctionFloatingPointModeINTEL, TheTarget,
+                      TargetWidth, static_cast<SPIRVWord>(FloatControl)){};
+
+  SPIRVWord getTargetWidth() const { return Literals.at(0); };
+  spv::FPOperationMode getOperationMode() const {
+    return static_cast<spv::FPOperationMode>(Literals.at(1));
+  };
+};
+
+class SPIRVDecorateStallEnableINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateStallEnableINTEL
+  SPIRVDecorateStallEnableINTEL(SPIRVEntry *TheTarget)
+      : SPIRVDecorate(spv::DecorationStallEnableINTEL, TheTarget){};
+};
+
+class SPIRVDecorateFuseLoopsInFunctionINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateFuseLoopsInFunctionINTEL
+  SPIRVDecorateFuseLoopsInFunctionINTEL(SPIRVEntry *TheTarget, SPIRVWord Depth,
+                                        SPIRVWord Independent)
+      : SPIRVDecorate(spv::DecorationFuseLoopsInFunctionINTEL, TheTarget, Depth,
+                      Independent){};
+};
+
+class SPIRVDecorateMathOpDSPModeINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateMathOpDSPModeINTEL
+  SPIRVDecorateMathOpDSPModeINTEL(SPIRVEntry *TheTarget, SPIRVWord Mode,
+                                  SPIRVWord Propagate)
+      : SPIRVDecorate(spv::DecorationMathOpDSPModeINTEL, TheTarget, Mode,
+                      Propagate){};
+};
+
+class SPIRVDecorateAliasScopeINTEL : public SPIRVDecorateId {
+public:
+  // Complete constructor for SPIRVDecorateAliasScopeINTEL
+  SPIRVDecorateAliasScopeINTEL(SPIRVEntry *TheTarget, SPIRVId AliasList)
+      : SPIRVDecorateId(spv::DecorationAliasScopeINTEL, TheTarget, AliasList){};
+};
+
+class SPIRVDecorateNoAliasINTEL : public SPIRVDecorateId {
+public:
+  // Complete constructor for SPIRVDecorateNoAliasINTEL
+  SPIRVDecorateNoAliasINTEL(SPIRVEntry *TheTarget, SPIRVId AliasList)
+      : SPIRVDecorateId(spv::DecorationNoAliasINTEL, TheTarget, AliasList){};
+};
+
+class SPIRVDecorateInitiationIntervalINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateInitiationIntervalINTEL
+  SPIRVDecorateInitiationIntervalINTEL(SPIRVEntry *TheTarget, SPIRVWord Cycles)
+      : SPIRVDecorate(spv::DecorationInitiationIntervalINTEL, TheTarget,
+                      Cycles){};
+};
+
+class SPIRVDecorateMaxConcurrencyINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecorateMaxConcurrencyINTEL
+  SPIRVDecorateMaxConcurrencyINTEL(SPIRVEntry *TheTarget, SPIRVWord Invocations)
+      : SPIRVDecorate(spv::DecorationMaxConcurrencyINTEL, TheTarget,
+                      Invocations){};
+};
+
+class SPIRVDecoratePipelineEnableINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVDecoratePipelineEnableINTEL
+  SPIRVDecoratePipelineEnableINTEL(SPIRVEntry *TheTarget, SPIRVWord Enable)
+      : SPIRVDecorate(spv::DecorationPipelineEnableINTEL, TheTarget, Enable){};
+};
+
+class SPIRVDecorateHostAccessINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVHostAccessINTEL
+  SPIRVDecorateHostAccessINTEL(SPIRVEntry *TheTarget, SPIRVWord AccessMode,
+                               const std::string &VarName)
+      : SPIRVDecorate(spv::internal::DecorationHostAccessINTEL, TheTarget) {
+    Literals.push_back(AccessMode);
+    for (auto &I : getVec(VarName))
+      Literals.push_back(I);
+    WordCount += Literals.size();
+  };
+
+  SPIRVWord getAccessMode() const { return Literals.front(); }
+  std::string getVarName() const {
+    return getString(Literals.cbegin() + 1, Literals.cend());
+  }
+
+  static void encodeLiterals(SPIRVEncoder &Encoder,
+                             const std::vector<SPIRVWord> &Literals) {
+#ifdef _SPIRV_SUPPORT_TEXT_FMT
+    if (SPIRVUseTextFormat) {
+      Encoder << Literals.front();
+      std::string Name = getString(Literals.cbegin() + 1, Literals.cend());
+      Encoder << Name;
+    } else
+#endif
+      Encoder << Literals;
+  }
+
+  static void decodeLiterals(SPIRVDecoder &Decoder,
+                             std::vector<SPIRVWord> &Literals) {
+#ifdef _SPIRV_SUPPORT_TEXT_FMT
+    if (SPIRVUseTextFormat) {
+      SPIRVWord Mode;
+      Decoder >> Mode;
+      std::string Name;
+      Decoder >> Name;
+      Literals.front() = Mode;
+      std::copy_n(getVec(Name).begin(), Literals.size() - 1,
+                  Literals.begin() + 1);
+
+    } else
+#endif
+      Decoder >> Literals;
+  }
+};
+
+class SPIRVDecorateInitModeINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVInitModeINTEL
+  SPIRVDecorateInitModeINTEL(SPIRVEntry *TheTarget, SPIRVWord Trigger)
+      : SPIRVDecorate(spv::internal::DecorationInitModeINTEL, TheTarget,
+                      Trigger){};
+};
+
+class SPIRVDecorateImplementInCSRINTEL : public SPIRVDecorate {
+public:
+  // Complete constructor for SPIRVImplementInCSRINTEL
+  SPIRVDecorateImplementInCSRINTEL(SPIRVEntry *TheTarget, SPIRVWord Value)
+      : SPIRVDecorate(spv::internal::DecorationImplementInCSRINTEL, TheTarget,
+                      Value){};
 };
 
 } // namespace SPIRV

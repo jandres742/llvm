@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "gtest/gtest.h"
 using namespace llvm;
 
@@ -34,7 +35,7 @@ TEST_F(StringSetTest, InsertAndCountStringMapEntry) {
   // which are required for set_difference(StringSet, StringSet).
   StringSet<> Set;
   StringMapEntry<StringRef> *Element =
-      StringMapEntry<StringRef>::Create("A", Set.getAllocator());
+      StringMapEntry<StringRef>::create("A", Set.getAllocator());
   Set.insert(*Element);
   size_t Count = Set.count(*Element);
   size_t Expected = 1;
@@ -51,6 +52,25 @@ TEST_F(StringSetTest, EmptyString) {
   Set.insert("");
   Count = Set.count("");
   EXPECT_EQ(Count, 1UL);
+}
+
+TEST_F(StringSetTest, Contains) {
+  StringSet<> Set;
+  EXPECT_FALSE(Set.contains(""));
+  EXPECT_FALSE(Set.contains("test"));
+
+  Set.insert("");
+  Set.insert("test");
+  EXPECT_TRUE(Set.contains(""));
+  EXPECT_TRUE(Set.contains("test"));
+
+  Set.insert("test");
+  EXPECT_TRUE(Set.contains(""));
+  EXPECT_TRUE(Set.contains("test"));
+
+  Set.erase("test");
+  EXPECT_TRUE(Set.contains(""));
+  EXPECT_FALSE(Set.contains("test"));
 }
 
 } // end anonymous namespace

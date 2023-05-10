@@ -1,4 +1,4 @@
-import("//llvm/utils/unittest/unittest.gni")
+import("//third-party/unittest/unittest.gni")
 
 unittest("ProfileDataTests") {
   deps = [
@@ -9,7 +9,11 @@ unittest("ProfileDataTests") {
   ]
   sources = [
     "CoverageMappingTest.cpp",
+    "InstrProfDataTest.cpp",
     "InstrProfTest.cpp",
+    "ItaniumManglingCanonicalizerTest.cpp",
+    "MemProfTest.cpp",
     "SampleProfTest.cpp",
+    "SymbolRemappingReaderTest.cpp",
   ]
 }

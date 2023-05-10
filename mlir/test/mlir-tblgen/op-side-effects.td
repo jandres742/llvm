@@ -5,13 +5,18 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 def TEST_Dialect : Dialect {
   let name = "test";
 }
-class TEST_Op<string mnemonic, list<OpTrait> traits = []> :
+class TEST_Op<string mnemonic, list<Trait> traits = []> :
     Op<TEST_Dialect, mnemonic, traits>;
 
 def CustomResource : Resource<"CustomResource">;
 
 def SideEffectOpA : TEST_Op<"side_effect_op_a"> {
-  let arguments = (ins Arg<Variadic<AnyMemRef>, "", [MemRead]>);
+  let arguments = (ins
+    Arg<Variadic<AnyMemRef>, "", [MemRead]>,
+    Arg<SymbolRefAttr, "", [MemRead]>:$symbol,
+    Arg<FlatSymbolRefAttr, "", [MemWrite]>:$flat_symbol,
+    Arg<OptionalAttr<SymbolRefAttr>, "", [MemRead]>:$optional_symbol
+  );
   let results = (outs Res<AnyMemRef, "", [MemAlloc<CustomResource>]>);
 }
 
@@ -19,10 +24,14 @@ def SideEffectOpB : TEST_Op<"side_effect_op_b",
     [MemoryEffects<[MemWrite<CustomResource>]>]>;
 
 // CHECK: void SideEffectOpA::getEffects
-// CHECK:   for (Value value : getODSOperands(0))
-// CHECK:     effects.emplace_back(MemoryEffects::Read::get(), value, ::mlir::SideEffects::DefaultResource::get());
-// CHECK:   for (Value value : getODSResults(0))
-// CHECK:     effects.emplace_back(MemoryEffects::Allocate::get(), value, CustomResource::get());
+// CHECK:   for (::mlir::Value value : getODSOperands(0))
+// CHECK:     effects.emplace_back(::mlir::MemoryEffects::Read::get(), value, ::mlir::SideEffects::DefaultResource::get());
+// CHECK:   effects.emplace_back(::mlir::MemoryEffects::Read::get(), getSymbolAttr(), ::mlir::SideEffects::DefaultResource::get());
+// CHECK:   effects.emplace_back(::mlir::MemoryEffects::Write::get(), getFlatSymbolAttr(), ::mlir::SideEffects::DefaultResource::get());
+// CHECK:   if (auto symbolRef = getOptionalSymbolAttr())
+// CHECK:     effects.emplace_back(::mlir::MemoryEffects::Read::get(), symbolRef, ::mlir::SideEffects::DefaultResource::get());
+// CHECK:   for (::mlir::Value value : getODSResults(0))
+// CHECK:     effects.emplace_back(::mlir::MemoryEffects::Allocate::get(), value, CustomResource::get());
 
 // CHECK: void SideEffectOpB::getEffects
-// CHECK:   effects.emplace_back(MemoryEffects::Write::get(), CustomResource::get());
+// CHECK:   effects.emplace_back(::mlir::MemoryEffects::Write::get(), CustomResource::get());

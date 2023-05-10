@@ -4,16 +4,16 @@
 ; prevailing the %t1.bc copy as non-prevailing.
 ; RUN: llvm-lto -thinlto-action=thinlink -o %t.index.bc %t2.bc %t1.bc
 ; RUN: llvm-lto -thinlto-action=internalize -thinlto-index %t.index.bc %t1.bc -o - | llvm-dis -o - | FileCheck %s --check-prefix=REGULAR
-; RUN: llvm-lto -thinlto-action=internalize -thinlto-index %t.index.bc %t1.bc -o -  --exported-symbol=foo | llvm-dis -o - | FileCheck %s --check-prefix=INTERNALIZE
+; RUN: llvm-lto -thinlto-action=internalize -thinlto-index %t.index.bc %t1.bc -o -  --exported-symbol=_foo | llvm-dis -o - | FileCheck %s --check-prefix=INTERNALIZE
 
 ; Test the enable-lto-internalization option by setting it to false.
 ; This makes sure indices are not marked as internallinkage and therefore
 ; internalization does not happen.
 ; RUN: llvm-lto -thinlto-action=internalize -thinlto-index %t.index.bc %t1.bc \
-; RUN:          -enable-lto-internalization=false --exported-symbol=foo
+; RUN:          -enable-lto-internalization=false --exported-symbol=_foo
 ; RUN: llvm-dis < %t1.bc.thinlto.internalized.bc | FileCheck %s --check-prefix=INTERNALIZE-OPTION-DISABLE
 
-; RUN: llvm-lto2 run %t1.bc -o %t.o -save-temps \
+; RUN: llvm-lto2 run -opaque-pointers %t1.bc -o %t.o -save-temps \
 ; RUN:     -r=%t1.bc,_foo,pxl \
 ; RUN:     -r=%t1.bc,_bar,pl \
 ; RUN:     -r=%t1.bc,_linkonce_func,pl \
@@ -25,7 +25,7 @@
 ; Test the enable-lto-internalization option by setting it to false.
 ; This makes sure indices are not marked as internallinkage and therefore
 ; internalization does not happen.
-; RUN: llvm-lto2 run %t1.bc -o %t.o -save-temps -enable-lto-internalization=false \
+; RUN: llvm-lto2 run -opaque-pointers %t1.bc -o %t.o -save-temps -enable-lto-internalization=false \
 ; RUN:     -r=%t1.bc,_foo,pxl \
 ; RUN:     -r=%t1.bc,_bar,pl \
 ; RUN:     -r=%t1.bc,_linkonce_func,pl \
@@ -80,7 +80,7 @@ define weak void @weak_func_prevailing() {
 ; Make @weak_func_nonprevailing an aliasee to ensure it is still marked
 ; live and kept as a definition even when non-prevailing. We want to ensure
 ; this definition is not internalized.
-@alias1 = hidden alias void (), void ()* @weak_func_nonprevailing
+@alias1 = hidden alias void (), ptr @weak_func_nonprevailing
 define weak void @weak_func_nonprevailing() {
     ret void
 }

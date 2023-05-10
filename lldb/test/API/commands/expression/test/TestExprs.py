@@ -13,8 +13,6 @@ o test_expr_commands_can_handle_quotes:
 
 
 
-import unittest2
-
 import lldb
 from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
@@ -22,8 +20,6 @@ from lldbsuite.test import lldbutil
 
 
 class BasicExprCommandsTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -49,7 +45,7 @@ class BasicExprCommandsTestCase(TestBase):
 
         self.runCmd("run", RUN_SUCCEEDED)
 
-    @unittest2.expectedFailure(
+    @expectedFailure(
         "llvm.org/pr17135 <rdar://problem/14874559> APFloat::toString does not identify the correct (i.e. least) precision.")
     def test_floating_point_expr_commands(self):
         self.build_and_run()
@@ -80,11 +76,7 @@ class BasicExprCommandsTestCase(TestBase):
     def test_evaluate_expression_python(self):
         """Test SBFrame.EvaluateExpression() API for evaluating an expression."""
         self.build()
-
-        exe = self.getBuildArtifact("a.out")
-
-        target = self.dbg.CreateTarget(exe)
-        self.assertTrue(target, VALID_TARGET)
+        target = self.createTestTarget()
 
         # Create the breakpoint.
         filespec = lldb.SBFileSpec("main.cpp", False)
@@ -177,7 +169,6 @@ class BasicExprCommandsTestCase(TestBase):
     # rdar://problem/8686536
     # CommandInterpreter::HandleCommand is stripping \'s from input for
     # WantsRawCommand commands
-    @expectedFailureNetBSD
     def test_expr_commands_can_handle_quotes(self):
         """Throw some expression commands with quotes at lldb."""
         self.build()

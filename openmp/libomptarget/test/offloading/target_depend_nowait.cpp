@@ -1,7 +1,4 @@
-// RUN: %libomptarget-compilexx-run-and-check-aarch64-unknown-linux-gnu
-// RUN: %libomptarget-compilexx-run-and-check-powerpc64-ibm-linux-gnu
-// RUN: %libomptarget-compilexx-run-and-check-powerpc64le-ibm-linux-gnu
-// RUN: %libomptarget-compilexx-run-and-check-x86_64-pc-linux-gnu
+// RUN: %libomptarget-compilexx-run-and-check-generic
 
 #include <omp.h>
 #include <stdio.h>
@@ -43,10 +40,8 @@ int main() {
 #pragma omp target update from(A) depend(out : A[0]) nowait
 
 // B updated via exit, A just released
-#pragma omp target exit data map(release                                       \
-                                 : A) map(from                                 \
-                                          : B) depend(out                      \
-                                                      : A[0]) nowait
+#pragma omp target exit data map(release : A) map(from : B) depend(out : A[0]) \
+    nowait
     } // if
   }   // parallel
 
@@ -59,4 +54,3 @@ int main() {
 
   return Sum != 2 * N * (2 + N - 1 + 2) / 2;
 }
-

@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "../../clang-tidy/ClangTidyCheck.h"
 #include "../../clang-tidy/ClangTidyModule.h"
 #include "../../clang-tidy/ClangTidyModuleRegistry.h"
 #include "AST.h"
@@ -23,6 +24,7 @@
 #include "SourceCode.h"
 #include "TestFS.h"
 #include "TestTU.h"
+#include "TidyProvider.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
@@ -30,9 +32,8 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Token.h"
 #include "clang/Tooling/Syntax/Tokens.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/ScopedPrinter.h"
+#include "llvm/Testing/Support/Error.h"
 #include "gmock/gmock-matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -42,10 +43,13 @@ namespace clangd {
 namespace {
 
 using ::testing::AllOf;
+using ::testing::Contains;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
+using ::testing::IsEmpty;
+using ::testing::UnorderedElementsAreArray;
 
-MATCHER_P(DeclNamed, Name, "") {
+MATCHER_P(declNamed, Name, "") {
   if (NamedDecl *ND = dyn_cast<NamedDecl>(arg))
     if (ND->getName() == Name)
       return true;
@@ -56,9 +60,20 @@ MATCHER_P(DeclNamed, Name, "") {
   return false;
 }
 
+MATCHER_P(declKind, Kind, "") {
+  if (NamedDecl *ND = dyn_cast<NamedDecl>(arg))
+    if (ND->getDeclKindName() == llvm::StringRef(Kind))
+      return true;
+  if (auto *Stream = result_listener->stream()) {
+    llvm::raw_os_ostream OS(*Stream);
+    arg->dump(OS);
+  }
+  return false;
+}
+
 // Matches if the Decl has template args equal to ArgName. If the decl is a
 // NamedDecl and ArgName is an empty string it also matches.
-MATCHER_P(WithTemplateArgs, ArgName, "") {
+MATCHER_P(withTemplateArgs, ArgName, "") {
   if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(arg)) {
     if (const auto *Args = FD->getTemplateSpecializationArgs()) {
       std::string SpecializationArgs;
@@ -81,11 +96,13 @@ MATCHER_P(WithTemplateArgs, ArgName, "") {
   return false;
 }
 
-MATCHER_P(RangeIs, R, "") {
+MATCHER_P(rangeIs, R, "") {
   return arg.beginOffset() == R.Begin && arg.endOffset() == R.End;
 }
 
-MATCHER(EqInc, "") {
+MATCHER_P(pragmaTrivia, P, "") { return arg.Trivia == P; }
+
+MATCHER(eqInc, "") {
   Inclusion Actual = testing::get<0>(arg);
   Inclusion Expected = testing::get<1>(arg);
   return std::tie(Actual.HashLine, Actual.Written) ==
@@ -98,9 +115,15 @@ TEST(ParsedASTTest, TopLevelDecls) {
     int header1();
     int header2;
   )";
-  TU.Code = "int main();";
+  TU.Code = R"cpp(
+    int main();
+    template <typename> bool X = true;
+  )cpp";
   auto AST = TU.build();
-  EXPECT_THAT(AST.getLocalTopLevelDecls(), ElementsAre(DeclNamed("main")));
+  EXPECT_THAT(AST.getLocalTopLevelDecls(),
+              testing::UnorderedElementsAreArray(
+                  {AllOf(declNamed("main"), declKind("Function")),
+                   AllOf(declNamed("X"), declKind("VarTemplate"))}));
 }
 
 TEST(ParsedASTTest, DoesNotGetIncludedTopDecls) {
@@ -120,7 +143,7 @@ TEST(ParsedASTTest, DoesNotGetIncludedTopDecls) {
     }
   )cpp";
   auto AST = TU.build();
-  EXPECT_THAT(AST.getLocalTopLevelDecls(), ElementsAre(DeclNamed("main")));
+  EXPECT_THAT(AST.getLocalTopLevelDecls(), ElementsAre(declNamed("main")));
 }
 
 TEST(ParsedASTTest, DoesNotGetImplicitTemplateTopDecls) {
@@ -135,7 +158,7 @@ TEST(ParsedASTTest, DoesNotGetImplicitTemplateTopDecls) {
 
   auto AST = TU.build();
   EXPECT_THAT(AST.getLocalTopLevelDecls(),
-              ElementsAre(DeclNamed("f"), DeclNamed("s")));
+              ElementsAre(declNamed("f"), declNamed("s")));
 }
 
 TEST(ParsedASTTest,
@@ -165,24 +188,21 @@ TEST(ParsedASTTest,
     template <>
     int foo<bool> = 0;
   )cpp";
-  // FIXME: Auto-completion in a template requires disabling delayed template
-  // parsing.
-  TU.ExtraArgs.push_back("-fno-delayed-template-parsing");
 
   auto AST = TU.build();
   EXPECT_THAT(
       AST.getLocalTopLevelDecls(),
-      ElementsAreArray({AllOf(DeclNamed("f"), WithTemplateArgs("")),
-                        AllOf(DeclNamed("f"), WithTemplateArgs("<bool>")),
-                        AllOf(DeclNamed("f"), WithTemplateArgs("<double>")),
-                        AllOf(DeclNamed("V"), WithTemplateArgs("")),
-                        AllOf(DeclNamed("V"), WithTemplateArgs("<T *>")),
-                        AllOf(DeclNamed("V"), WithTemplateArgs("<bool>")),
-                        AllOf(DeclNamed("foo"), WithTemplateArgs("")),
-                        AllOf(DeclNamed("i"), WithTemplateArgs("")),
-                        AllOf(DeclNamed("d"), WithTemplateArgs("")),
-                        AllOf(DeclNamed("foo"), WithTemplateArgs("<T *>")),
-                        AllOf(DeclNamed("foo"), WithTemplateArgs("<bool>"))}));
+      ElementsAreArray({AllOf(declNamed("f"), withTemplateArgs("")),
+                        AllOf(declNamed("f"), withTemplateArgs("<bool>")),
+                        AllOf(declNamed("f"), withTemplateArgs("<double>")),
+                        AllOf(declNamed("V"), withTemplateArgs("")),
+                        AllOf(declNamed("V"), withTemplateArgs("<T *>")),
+                        AllOf(declNamed("V"), withTemplateArgs("<bool>")),
+                        AllOf(declNamed("foo"), withTemplateArgs("")),
+                        AllOf(declNamed("i"), withTemplateArgs("")),
+                        AllOf(declNamed("d"), withTemplateArgs("")),
+                        AllOf(declNamed("foo"), withTemplateArgs("<T *>")),
+                        AllOf(declNamed("foo"), withTemplateArgs("<bool>"))}));
 }
 
 TEST(ParsedASTTest, IgnoresDelayedTemplateParsing) {
@@ -232,7 +252,7 @@ TEST(ParsedASTTest, NoCrashOnTokensWithTidyCheck) {
   TestTU TU;
   // this check runs the preprocessor, we need to make sure it does not break
   // our recording logic.
-  TU.ClangTidyChecks = "modernize-use-trailing-return-type";
+  TU.ClangTidyProvider = addTidyChecks("modernize-use-trailing-return-type");
   TU.Code = "inline int foo() {}";
 
   auto AST = TU.build();
@@ -249,9 +269,11 @@ TEST(ParsedASTTest, NoCrashOnTokensWithTidyCheck) {
 }
 
 TEST(ParsedASTTest, CanBuildInvocationWithUnknownArgs) {
+  MockFS FS;
+  FS.Files = {{testPath("foo.cpp"), "void test() {}"}};
   // Unknown flags should not prevent a build of compiler invocation.
   ParseInputs Inputs;
-  Inputs.FS = buildTestFS({{testPath("foo.cpp"), "void test() {}"}});
+  Inputs.TFS = &FS;
   Inputs.CompileCommand.CommandLine = {"clang", "-fsome-unknown-flag",
                                        testPath("foo.cpp")};
   IgnoreDiagnostics IgnoreDiags;
@@ -320,15 +342,15 @@ TEST(ParsedASTTest, CollectsMainFileMacroExpansions) {
   std::vector<Position> MacroExpansionPositions;
   for (const auto &SIDToRefs : AST.getMacros().MacroRefs) {
     for (const auto &R : SIDToRefs.second)
-      MacroExpansionPositions.push_back(R.start);
+      MacroExpansionPositions.push_back(R.Rng.start);
   }
   for (const auto &R : AST.getMacros().UnknownMacros)
-    MacroExpansionPositions.push_back(R.start);
+    MacroExpansionPositions.push_back(R.Rng.start);
   EXPECT_THAT(MacroExpansionPositions,
               testing::UnorderedElementsAreArray(TestCase.points()));
 }
 
-MATCHER_P(WithFileName, Inc, "") { return arg.FileName == Inc; }
+MATCHER_P(withFileName, Inc, "") { return arg.FileName == Inc; }
 
 TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
   struct Inclusion {
@@ -338,7 +360,11 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
         : HashOffset(SM.getDecomposedLoc(HashLoc).second), IncTok(IncludeTok),
           IncDirective(IncludeTok.getIdentifierInfo()->getName()),
           FileNameOffset(SM.getDecomposedLoc(FilenameRange.getBegin()).second),
-          FileName(FileName), IsAngled(IsAngled) {}
+          FileName(FileName), IsAngled(IsAngled) {
+      EXPECT_EQ(
+          toSourceCode(SM, FilenameRange.getAsRange()).drop_back().drop_front(),
+          FileName);
+    }
     size_t HashOffset;
     syntax::Token IncTok;
     llvm::StringRef IncDirective;
@@ -354,8 +380,8 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
 
     void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                             StringRef FileName, bool IsAngled,
-                            CharSourceRange FilenameRange, const FileEntry *,
-                            StringRef, StringRef, const Module *,
+                            CharSourceRange FilenameRange, OptionalFileEntryRef,
+                            StringRef, StringRef, const clang::Module *,
                             SrcMgr::CharacteristicKind) override {
       Includes.emplace_back(SM, HashLoc, IncludeTok, FileName, IsAngled,
                             FilenameRange);
@@ -386,7 +412,7 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
       "replay-preamble-module", "");
   TestTU TU;
   // This check records inclusion directives replayed by clangd.
-  TU.ClangTidyChecks = "replay-preamble-check";
+  TU.ClangTidyProvider = addTidyChecks("replay-preamble-check");
   llvm::Annotations Test(R"cpp(
     $hash^#$include[[import]] $filebegin^"$filerange[[bar.h]]"
     $hash^#$include[[include_next]] $filebegin^"$filerange[[baz.h]]"
@@ -420,7 +446,7 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
     EXPECT_EQ(Inc.HashOffset, HashLocs[I]);
 
     auto IncRange = IncludeRanges[I];
-    EXPECT_THAT(Inc.IncTok.range(SM), RangeIs(IncRange));
+    EXPECT_THAT(Inc.IncTok.range(SM), rangeIs(IncRange));
     EXPECT_EQ(Inc.IncTok.kind(), tok::identifier);
     EXPECT_EQ(Inc.IncDirective,
               Code.substr(IncRange.Begin, IncRange.End - IncRange.Begin));
@@ -441,24 +467,6 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
         Code.substr(FileRange.Begin - 1, FileRange.End - FileRange.Begin + 2));
     EXPECT_EQ(SkippedFiles[I].kind(), tok::header_name);
   }
-
-  // Make sure replay logic works with patched preambles.
-  TU.Code = "";
-  StoreDiags Diags;
-  auto Inputs = TU.inputs();
-  auto CI = buildCompilerInvocation(Inputs, Diags);
-  auto EmptyPreamble =
-      buildPreamble(testPath(TU.Filename), *CI, Inputs, true, nullptr);
-  ASSERT_TRUE(EmptyPreamble);
-  TU.Code = "#include <a.h>";
-  Includes.clear();
-  auto PatchedAST = ParsedAST::build(testPath(TU.Filename), TU.inputs(),
-                                     std::move(CI), {}, EmptyPreamble);
-  ASSERT_TRUE(PatchedAST);
-  // Make sure includes were seen only once.
-  EXPECT_THAT(Includes,
-              ElementsAre(WithFileName(testPath("__preamble_patch__.h")),
-                          WithFileName("a.h")));
 }
 
 TEST(ParsedASTTest, PatchesAdditionalIncludes) {
@@ -484,37 +492,38 @@ TEST(ParsedASTTest, PatchesAdditionalIncludes) {
   // Build preamble with no includes.
   TU.Code = "";
   StoreDiags Diags;
-  auto Inputs = TU.inputs();
+  MockFS FS;
+  auto Inputs = TU.inputs(FS);
   auto CI = buildCompilerInvocation(Inputs, Diags);
   auto EmptyPreamble =
       buildPreamble(testPath("foo.cpp"), *CI, Inputs, true, nullptr);
   ASSERT_TRUE(EmptyPreamble);
-  EXPECT_THAT(EmptyPreamble->Includes.MainFileIncludes, testing::IsEmpty());
+  EXPECT_THAT(EmptyPreamble->Includes.MainFileIncludes, IsEmpty());
 
   // Now build an AST using empty preamble and ensure patched includes worked.
   TU.Code = ModifiedContents.str();
-  Inputs = TU.inputs();
+  Inputs = TU.inputs(FS);
   auto PatchedAST = ParsedAST::build(testPath("foo.cpp"), Inputs, std::move(CI),
                                      {}, EmptyPreamble);
   ASSERT_TRUE(PatchedAST);
-  ASSERT_TRUE(PatchedAST->getDiagnostics().empty());
+  ASSERT_FALSE(PatchedAST->getDiagnostics());
 
   // Ensure source location information is correct, including resolved paths.
   EXPECT_THAT(PatchedAST->getIncludeStructure().MainFileIncludes,
               testing::Pointwise(
-                  EqInc(), ExpectedAST.getIncludeStructure().MainFileIncludes));
-  auto StringMapToVector = [](const llvm::StringMap<unsigned> SM) {
-    std::vector<std::pair<std::string, unsigned>> Res;
-    for (const auto &E : SM)
-      Res.push_back({E.first().str(), E.second});
-    llvm::sort(Res);
-    return Res;
-  };
+                  eqInc(), ExpectedAST.getIncludeStructure().MainFileIncludes));
   // Ensure file proximity signals are correct.
-  EXPECT_EQ(StringMapToVector(PatchedAST->getIncludeStructure().includeDepth(
-                testPath("foo.cpp"))),
-            StringMapToVector(ExpectedAST.getIncludeStructure().includeDepth(
-                testPath("foo.cpp"))));
+  auto &SM = PatchedAST->getSourceManager();
+  auto &FM = SM.getFileManager();
+  // Copy so that we can use operator[] to get the children.
+  IncludeStructure Includes = PatchedAST->getIncludeStructure();
+  auto MainFE = FM.getFile(testPath("foo.cpp"));
+  ASSERT_TRUE(MainFE);
+  auto MainID = Includes.getID(*MainFE);
+  auto AuxFE = FM.getFile(testPath("sub/aux.h"));
+  ASSERT_TRUE(AuxFE);
+  auto AuxID = Includes.getID(*AuxFE);
+  EXPECT_THAT(Includes.IncludeChildren[*MainID], Contains(*AuxID));
 }
 
 TEST(ParsedASTTest, PatchesDeletedIncludes) {
@@ -526,7 +535,8 @@ TEST(ParsedASTTest, PatchesDeletedIncludes) {
   // Build preamble with no includes.
   TU.Code = R"cpp(#include <foo.h>)cpp";
   StoreDiags Diags;
-  auto Inputs = TU.inputs();
+  MockFS FS;
+  auto Inputs = TU.inputs(FS);
   auto CI = buildCompilerInvocation(Inputs, Diags);
   auto BaselinePreamble =
       buildPreamble(testPath("foo.cpp"), *CI, Inputs, true, nullptr);
@@ -537,7 +547,7 @@ TEST(ParsedASTTest, PatchesDeletedIncludes) {
   // Now build an AST using additional includes and check that locations are
   // correctly parsed.
   TU.Code = "";
-  Inputs = TU.inputs();
+  Inputs = TU.inputs(FS);
   auto PatchedAST = ParsedAST::build(testPath("foo.cpp"), Inputs, std::move(CI),
                                      {}, BaselinePreamble);
   ASSERT_TRUE(PatchedAST);
@@ -545,19 +555,295 @@ TEST(ParsedASTTest, PatchesDeletedIncludes) {
   // Ensure source location information is correct.
   EXPECT_THAT(PatchedAST->getIncludeStructure().MainFileIncludes,
               testing::Pointwise(
-                  EqInc(), ExpectedAST.getIncludeStructure().MainFileIncludes));
-  auto StringMapToVector = [](const llvm::StringMap<unsigned> SM) {
-    std::vector<std::pair<std::string, unsigned>> Res;
-    for (const auto &E : SM)
-      Res.push_back({E.first().str(), E.second});
-    llvm::sort(Res);
-    return Res;
-  };
+                  eqInc(), ExpectedAST.getIncludeStructure().MainFileIncludes));
   // Ensure file proximity signals are correct.
-  EXPECT_EQ(StringMapToVector(PatchedAST->getIncludeStructure().includeDepth(
-                testPath("foo.cpp"))),
-            StringMapToVector(ExpectedAST.getIncludeStructure().includeDepth(
-                testPath("foo.cpp"))));
+  auto &SM = ExpectedAST.getSourceManager();
+  auto &FM = SM.getFileManager();
+  // Copy so that we can getOrCreateID().
+  IncludeStructure Includes = ExpectedAST.getIncludeStructure();
+  auto MainFE = FM.getFileRef(testPath("foo.cpp"));
+  ASSERT_THAT_EXPECTED(MainFE, llvm::Succeeded());
+  auto MainID = Includes.getOrCreateID(*MainFE);
+  auto &PatchedFM = PatchedAST->getSourceManager().getFileManager();
+  IncludeStructure PatchedIncludes = PatchedAST->getIncludeStructure();
+  auto PatchedMainFE = PatchedFM.getFileRef(testPath("foo.cpp"));
+  ASSERT_THAT_EXPECTED(PatchedMainFE, llvm::Succeeded());
+  auto PatchedMainID = PatchedIncludes.getOrCreateID(*PatchedMainFE);
+  EXPECT_EQ(Includes.includeDepth(MainID)[MainID],
+            PatchedIncludes.includeDepth(PatchedMainID)[PatchedMainID]);
+}
+
+// Returns Code guarded by #ifndef guards
+std::string guard(llvm::StringRef Code) {
+  static int GuardID = 0;
+  std::string GuardName = ("GUARD_" + llvm::Twine(++GuardID)).str();
+  return llvm::formatv("#ifndef {0}\n#define {0}\n{1}\n#endif\n", GuardName,
+                       Code);
+}
+
+std::string once(llvm::StringRef Code) {
+  return llvm::formatv("#pragma once\n{0}\n", Code);
+}
+
+bool mainIsGuarded(const ParsedAST &AST) {
+  const auto &SM = AST.getSourceManager();
+  const FileEntry *MainFE = SM.getFileEntryForID(SM.getMainFileID());
+  return AST.getPreprocessor()
+      .getHeaderSearchInfo()
+      .isFileMultipleIncludeGuarded(MainFE);
+}
+
+MATCHER_P(diag, Desc, "") {
+  return llvm::StringRef(arg.Message).contains(Desc);
+}
+
+// Check our understanding of whether the main file is header guarded or not.
+TEST(ParsedASTTest, HeaderGuards) {
+  TestTU TU;
+  TU.ImplicitHeaderGuard = false;
+
+  TU.Code = ";";
+  EXPECT_FALSE(mainIsGuarded(TU.build()));
+
+  TU.Code = guard(";");
+  EXPECT_TRUE(mainIsGuarded(TU.build()));
+
+  TU.Code = once(";");
+  EXPECT_TRUE(mainIsGuarded(TU.build()));
+
+  TU.Code = R"cpp(
+    ;
+    #pragma once
+  )cpp";
+  EXPECT_FALSE(mainIsGuarded(TU.build())); // FIXME: true
+
+  TU.Code = R"cpp(
+    ;
+    #ifndef GUARD
+    #define GUARD
+    ;
+    #endif
+  )cpp";
+  EXPECT_FALSE(mainIsGuarded(TU.build()));
+}
+
+// Check our handling of files that include themselves.
+// Ideally we allow this if the file has header guards.
+//
+// Note: the semicolons (empty statements) are significant!
+// - they force the preamble to end and the body to begin. Directives can have
+//   different effects in the preamble vs main file (which we try to hide).
+// - if the preamble would otherwise cover the whole file, a trailing semicolon
+//   forces their sizes to be different. This is significant because the file
+//   size is part of the lookup key for HeaderFileInfo, and we don't want to
+//   rely on the preamble's HFI being looked up when parsing the main file.
+TEST(ParsedASTTest, HeaderGuardsSelfInclude) {
+  TestTU TU;
+  TU.ImplicitHeaderGuard = false;
+  TU.Filename = "self.h";
+
+  TU.Code = R"cpp(
+    #include "self.h" // error-ok
+    ;
+  )cpp";
+  auto AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("recursively when building a preamble")));
+  EXPECT_FALSE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    ;
+    #include "self.h" // error-ok
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), ElementsAre(diag("nested too deeply")));
+  EXPECT_FALSE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #pragma once
+    #include "self.h"
+    ;
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #pragma once
+    ;
+    #include "self.h"
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    ;
+    #pragma once
+    #include "self.h"
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #ifndef GUARD
+    #define GUARD
+    #include "self.h" // error-ok: FIXME, this would be nice to support
+    #endif
+    ;
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("recursively when building a preamble")));
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #ifndef GUARD
+    #define GUARD
+    ;
+    #include "self.h"
+    #endif
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  // Guarded too late...
+  TU.Code = R"cpp(
+    #include "self.h" // error-ok
+    #ifndef GUARD
+    #define GUARD
+    ;
+    #endif
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("recursively when building a preamble")));
+  EXPECT_FALSE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #include "self.h" // error-ok
+    ;
+    #ifndef GUARD
+    #define GUARD
+    #endif
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("recursively when building a preamble")));
+  EXPECT_FALSE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    ;
+    #ifndef GUARD
+    #define GUARD
+    #include "self.h"
+    #endif
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_FALSE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #include "self.h" // error-ok
+    #pragma once
+    ;
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("recursively when building a preamble")));
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  TU.Code = R"cpp(
+    #include "self.h" // error-ok
+    ;
+    #pragma once
+  )cpp";
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("recursively when building a preamble")));
+  EXPECT_TRUE(mainIsGuarded(AST));
+}
+
+// Tests how we handle common idioms for splitting a header-only library
+// into interface and implementation files (e.g. *.h vs *.inl).
+// These files mutually include each other, and need careful handling of include
+// guards (which interact with preambles).
+TEST(ParsedASTTest, HeaderGuardsImplIface) {
+  std::string Interface = R"cpp(
+    // error-ok: we assert on diagnostics explicitly
+    template <class T> struct Traits {
+      unsigned size();
+    };
+    #include "impl.h"
+  )cpp";
+  std::string Implementation = R"cpp(
+    // error-ok: we assert on diagnostics explicitly
+    #include "iface.h"
+    template <class T> unsigned Traits<T>::size() {
+      return sizeof(T);
+    }
+  )cpp";
+
+  TestTU TU;
+  TU.ImplicitHeaderGuard = false; // We're testing include guard handling!
+  TU.ExtraArgs.push_back("-xc++-header");
+
+  // Editing the interface file, which is include guarded (easy case).
+  // We mostly get this right via PP if we don't recognize the include guard.
+  TU.Filename = "iface.h";
+  TU.Code = guard(Interface);
+  TU.AdditionalFiles = {{"impl.h", Implementation}};
+  auto AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_TRUE(mainIsGuarded(AST));
+  // Slightly harder: the `#pragma once` is part of the preamble, and we
+  // need to transfer it to the main file's HeaderFileInfo.
+  TU.Code = once(Interface);
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(), IsEmpty());
+  EXPECT_TRUE(mainIsGuarded(AST));
+
+  // Editing the implementation file, which is not include guarded.
+  TU.Filename = "impl.h";
+  TU.Code = Implementation;
+  TU.AdditionalFiles = {{"iface.h", guard(Interface)}};
+  AST = TU.build();
+  // The diagnostic is unfortunate in this case, but correct per our model.
+  // Ultimately the include is skipped and the code is parsed correctly though.
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("in included file: main file cannot be included "
+                               "recursively when building a preamble")));
+  EXPECT_FALSE(mainIsGuarded(AST));
+  // Interface is pragma once guarded, same thing.
+  TU.AdditionalFiles = {{"iface.h", once(Interface)}};
+  AST = TU.build();
+  EXPECT_THAT(*AST.getDiagnostics(),
+              ElementsAre(diag("in included file: main file cannot be included "
+                               "recursively when building a preamble")));
+  EXPECT_FALSE(mainIsGuarded(AST));
+}
+
+TEST(ParsedASTTest, DiscoversPragmaMarks) {
+  TestTU TU;
+  TU.AdditionalFiles["Header.h"] = R"(
+    #pragma mark - Something API
+    int something();
+    #pragma mark Something else
+  )";
+  TU.Code = R"cpp(
+    #include "Header.h"
+    #pragma mark In Preamble
+    #pragma mark - Something Impl
+    int something() { return 1; }
+    #pragma mark End
+  )cpp";
+  auto AST = TU.build();
+
+  EXPECT_THAT(AST.getMarks(), ElementsAre(pragmaTrivia(" In Preamble"),
+                                          pragmaTrivia(" - Something Impl"),
+                                          pragmaTrivia(" End")));
 }
 
 } // namespace

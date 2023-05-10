@@ -1,7 +1,7 @@
 #ifndef FORTRAN_TEST_EVALUATE_FP_TESTING_H_
 #define FORTRAN_TEST_EVALUATE_FP_TESTING_H_
 
-#include "flang/Evaluate/common.h"
+#include "flang/Evaluate/target.h"
 #include <fenv.h>
 
 using Fortran::common::RoundingMode;
@@ -19,7 +19,9 @@ public:
 
 private:
   fenv_t originalFenv_;
-  fenv_t currentFenv_;
+#if __x86_64__
+  unsigned int originalMxcsr;
+#endif
 };
 
 #endif // FORTRAN_TEST_EVALUATE_FP_TESTING_H_

@@ -33,8 +33,18 @@ def ERegs : MyClass<32, [i32], (sequence "E%u", 0, 0)>;
 def SOP : RegisterOperand<SRegs>;
 def DOP : RegisterOperand<DRegs>;
 def SOME_INSN : I<(outs DRegs:$dst), (ins DOP:$src), []>;
+def SOME_INSN2 : I<(outs DRegs:$dst), (ins DOP:$src1, DOP:$src2), []>;
 def SUBSOME_INSN : I<(outs SRegs:$dst), (ins SOP:$src), []>;
 def SUBSOME_INSN2 : I<(outs SRegs:$dst), (ins SOP:$src), []>;
+
+// Adding this enables the tests below to check that we are not using this class
+// for constraining the operand register classes, since it is unallocatable.
+let isAllocatable = 0 in
+def SuperDRegs : MyClass<32, [i32], (add DRegs, ERegs)>;
+
+def complex : Operand<i32>, ComplexPattern<i32, 2, "SelectComplexOperand", []>;
+def gi_complex : GIComplexOperandMatcher<s32, "selectComplexOperand">,
+                 GIComplexPatternEquiv<complex>;
 
 // We should skip cases where we don't have a given register class for the
 // subregister source.
@@ -42,6 +52,31 @@ def SUBSOME_INSN2 : I<(outs SRegs:$dst), (ins SOP:$src), []>;
 // SKIPPED: def : Pat<(i32 (anyext i16:$src)), (SOME_INSN (INSERT_SUBREG (i32 (IMPLICIT_DEF)), i16:$src, sub0))>;
 def : Pat<(i32 (anyext i16:$src)), (INSERT_SUBREG (i32 (IMPLICIT_DEF)), i16:$src, sub0)>;
 def : Pat<(i32 (anyext i16:$src)), (SOME_INSN (INSERT_SUBREG (i32 (IMPLICIT_DEF)), i16:$src, sub0))>;
+
+// Test EXTRACT_SUBREG applied to suboperands of a ComplexPattern
+// operand.
+def : Pat<(sub (complex DOP:$src1, DOP:$src2), 77),
+          (SOME_INSN2 (EXTRACT_SUBREG DOP:$src1, sub0),
+                      (EXTRACT_SUBREG DOP:$src2, sub1))>;
+// CHECK-LABEL: // (sub:{ *:[i32] } (complex:{ *:[i32] } DOP:{ *:[i32] }:$src1, DOP:{ *:[i32] }:$src2), 77:{ *:[i32] })  =>  (SOME_INSN2:{ *:[i32] } (EXTRACT_SUBREG:{ *:[i32] } DOP:{ *:[i32] }:$src1, sub0:{ *:[i32] }), (EXTRACT_SUBREG:{ *:[i32] } DOP:{ *:[i32] }:$src2, sub1:{ *:[i32] }))
+// CHECK-NEXT: GIR_MakeTempReg, /*TempRegID*/0, /*TypeID*/GILLT_s32,
+// CHECK-NEXT: GIR_MakeTempReg, /*TempRegID*/1, /*TypeID*/GILLT_s32,
+// CHECK-NEXT: GIR_BuildMI, /*InsnID*/2, /*Opcode*/TargetOpcode::COPY,
+// CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/2, /*TempRegID*/1, /*TempRegFlags*/RegState::Define,
+// CHECK-NEXT: GIR_ComplexSubOperandSubRegRenderer, /*InsnID*/2, /*RendererID*/0, /*SubOperand*/1, /*SubRegIdx*/2, // src2
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/2, /*Op*/0, Test::SRegsRegClassID,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/2, /*Op*/1, Test::DRegsRegClassID,
+// CHECK-NEXT: GIR_BuildMI, /*InsnID*/1, /*Opcode*/TargetOpcode::COPY,
+// CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/1, /*TempRegID*/0, /*TempRegFlags*/RegState::Define,
+// CHECK-NEXT: GIR_ComplexSubOperandSubRegRenderer, /*InsnID*/1, /*RendererID*/0, /*SubOperand*/0, /*SubRegIdx*/1, // src1
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, Test::SRegsRegClassID,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, Test::DRegsRegClassID,
+// CHECK-NEXT: GIR_BuildMI, /*InsnID*/0, /*Opcode*/MyTarget::SOME_INSN2,
+// CHECK-NEXT: GIR_Copy, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/0, // dst
+// CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/0, /*TempRegID*/0, /*TempRegFlags*/0,
+// CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/0, /*TempRegID*/1, /*TempRegFlags*/0,
+// CHECK-NEXT: GIR_EraseFromParent, /*InsnID*/0,
+// CHECK-NEXT: GIR_ConstrainSelectedInstOperands, /*InsnID*/0,
 
 // Test that we import INSERT_SUBREG when its subregister source has a given
 // class.
@@ -57,9 +92,9 @@ def : Pat<(i32 (anyext i16:$src)), (INSERT_SUBREG (i32 (IMPLICIT_DEF)), SOP:$src
 // CHECK-NEXT:            GIR_Copy, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/1, // src
 // CHECK-NEXT:            GIR_AddImm, /*InsnID*/0, /*Imm*/1,
 // CHECK-NEXT:            GIR_EraseFromParent, /*InsnID*/0,
-// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, /*RC DRegs*/1,
-// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, /*RC DRegs*/1,
-// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, /*RC SRegs*/0,
+// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, Test::DRegsRegClassID,
+// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, Test::DRegsRegClassID
+// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, Test::SRegsRegClassID,
 
 
 // Test that we can import INSERT_SUBREG when it is a subinstruction of another
@@ -76,9 +111,9 @@ def : Pat<(i32 (anyext i16:$src)), (SOME_INSN (INSERT_SUBREG (i32 (IMPLICIT_DEF)
 // CHECK-NEXT:            GIR_AddTempRegister, /*InsnID*/1, /*TempRegID*/1, /*TempRegFlags*/0,
 // CHECK-NEXT:            GIR_Copy, /*NewInsnID*/1, /*OldInsnID*/0, /*OpIdx*/1, // src
 // CHECK-NEXT:            GIR_AddImm, /*InsnID*/1, /*Imm*/1,
-// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, /*RC DRegs*/1,
-// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, /*RC DRegs*/1,
-// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/2, /*RC SRegs*/0,
+// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, Test::DRegsRegClassID,
+// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, Test::DRegsRegClassID,
+// CHECK-NEXT:            GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/2, Test::SRegsRegClassID,
 // CHECK-NEXT:            GIR_BuildMI, /*InsnID*/0, /*Opcode*/MyTarget::SOME_INSN,
 // CHECK-NEXT:            GIR_Copy, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/0, // dst
 // CHECK-NEXT:            GIR_AddTempRegister, /*InsnID*/0, /*TempRegID*/0, /*TempRegFlags*/0,
@@ -92,9 +127,9 @@ def : Pat<(i32 (anyext i16:$src)), (SOME_INSN (INSERT_SUBREG (i32 (IMPLICIT_DEF)
 def : Pat<(i32 (anyext i16:$src)), (INSERT_SUBREG (i32 (COPY_TO_REGCLASS SOP:$src, ERegs)), SOP:$src, sub0)>;
 // CHECK-LABEL:  (anyext:{ *:[i32] } i16:{ *:[i16] }:$src)  =>  (INSERT_SUBREG:{ *:[i32] } (COPY_TO_REGCLASS:{ *:[i32] } SOP:{ *:[i16] }:$src, ERegs:{ *:[i32] }), SOP:{ *:[i16] }:$src, sub0:{ *:[i32] })
 // CHECK:                GIR_BuildMI, /*InsnID*/0, /*Opcode*/TargetOpcode::INSERT_SUBREG,
-// CHECK-DAG:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, /*RC ERegs*/2,
-// CHECK-NEXT:           GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, /*RC ERegs*/2,
-// CHECK-NEXT:           GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, /*RC SRegs*/0,
+// CHECK-DAG:            GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, Test::ERegsRegClassID,
+// CHECK-NEXT:           GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, Test::ERegsRegClassID,
+// CHECK-NEXT:           GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, Test::SRegsRegClassID,
 
 // Test that we can import INSERT_SUBREG when its subregister source is defined
 // by a subinstruction.
@@ -115,9 +150,9 @@ def : Pat<(i32 (anyext i16:$src)), (INSERT_SUBREG (i32 (IMPLICIT_DEF)), (SUBSOME
 // CHECK-NEXT:          GIR_AddTempRegister, /*InsnID*/0, /*TempRegID*/1, /*TempRegFlags*/0,
 // CHECK-NEXT:          GIR_AddImm, /*InsnID*/0, /*Imm*/1,
 // CHECK-NEXT:          GIR_EraseFromParent, /*InsnID*/0,
-// CHECK-NEXT:          GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, /*RC DRegs*/1,
-// CHECK-NEXT:          GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, /*RC DRegs*/1,
-// CHECK-NEXT:          GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, /*RC SRegs*/0,
+// CHECK-NEXT:          GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, Test::DRegsRegClassID,
+// CHECK-NEXT:          GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, Test::DRegsRegClassID,
+// CHECK-NEXT:          GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, Test::SRegsRegClassID,
 
 // Test an EXTRACT_SUBREG that is a sub instruction. The individual
 // operands should be constrained to specific register classes, and
@@ -129,8 +164,8 @@ def : Pat<(i16 (trunc (not DOP:$src))),
 // CHECK-NEXT: GIR_BuildMI, /*InsnID*/1, /*Opcode*/TargetOpcode::COPY,
 // CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/1, /*TempRegID*/0, /*TempRegFlags*/RegState::Define,
 // CHECK-NEXT: GIR_CopySubReg, /*NewInsnID*/1, /*OldInsnID*/1, /*OpIdx*/1, /*SubRegIdx*/1, // src
-// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, /*RC SRegs*/0,
-// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, /*RC DRegs*/1,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, Test::SRegsRegClassID,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, Test::DRegsRegClassID,
 // CHECK-NEXT: GIR_BuildMI, /*InsnID*/0, /*Opcode*/MyTarget::SUBSOME_INSN,
 
 // Test an extract from an output instruction result (nonleaf)
@@ -150,8 +185,8 @@ def : Pat<(i16 (trunc (bitreverse DOP:$src))),
 // CHECK-NEXT:  GIR_Copy, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/0, // dst
 // CHECK-NEXT:  GIR_AddTempSubRegister, /*InsnID*/0, /*TempRegID*/0, /*TempRegFlags*/0, sub0,
 // CHECK-NEXT:  GIR_EraseFromParent, /*InsnID*/0,
-// CHECK-NEXT:  GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, /*RC SRegs*/0,
-// CHECK-NEXT:  GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, /*RC DRegs*/1,
+// CHECK-NEXT:  GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, Test::SRegsRegClassID,
+// CHECK-NEXT:  GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, Test::DRegsRegClassID,
 
 // EXTRACT_SUBREG is subinstruction, but also doesn't have a leaf input
 
@@ -169,8 +204,8 @@ def : Pat<(i16 (trunc (bitreverse DOP:$src))),
 // CHECK-NEXT: GIR_BuildMI, /*InsnID*/1, /*Opcode*/TargetOpcode::COPY,
 // CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/1, /*TempRegID*/0, /*TempRegFlags*/RegState::Define,
 // CHECK-NEXT: GIR_AddTempSubRegister, /*InsnID*/1, /*TempRegID*/1, /*TempRegFlags*/0, sub0,
-// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, /*RC SRegs*/0,
-// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, /*RC DRegs*/1,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/0, Test::SRegsRegClassID,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/1, /*Op*/1, Test::DRegsRegClassID,
 // CHECK-NEXT: GIR_BuildMI, /*InsnID*/0, /*Opcode*/MyTarget::SUBSOME_INSN2,
 // CHECK-NEXT: GIR_Copy, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/0, // dst
 // CHECK-NEXT: GIR_AddTempRegister, /*InsnID*/0, /*TempRegID*/0, /*TempRegFlags*/0,
@@ -187,8 +222,8 @@ def : Pat<(i16 (trunc DOP:$src)),
 // CHECK-NEXT: GIR_Copy, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/0, // dst
 // CHECK-NEXT: GIR_CopySubReg, /*NewInsnID*/0, /*OldInsnID*/0, /*OpIdx*/1, /*SubRegIdx*/1, // src
 // CHECK-NEXT: GIR_EraseFromParent, /*InsnID*/0,
-// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, /*RC SRegs*/0,
-// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, /*RC DRegs*/1,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, Test::SRegsRegClassID,
+// CHECK-NEXT: GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/1, Test::DRegsRegClassID,
 
 
 // Test that we can import SUBREG_TO_REG
@@ -206,5 +241,5 @@ def : Pat<(i32 (zext SOP:$src)),
 // CHECK-NEXT:        GIR_AddTempRegister, /*InsnID*/0, /*TempRegID*/0, /*TempRegFlags*/0,
 // CHECK-NEXT:        GIR_AddImm, /*InsnID*/0, /*Imm*/1,
 // CHECK-NEXT:        GIR_EraseFromParent, /*InsnID*/0,
-// CHECK-NEXT:        GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, /*RC DRegs*/1,
-// CHECK-NEXT:        GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, /*RC SRegs*/0,
+// CHECK-NEXT:        GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/0, Test::DRegsRegClassID,
+// CHECK-NEXT:        GIR_ConstrainOperandRC, /*InsnID*/0, /*Op*/2, Test::SRegsRegClassID,

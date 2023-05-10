@@ -60,13 +60,9 @@ std::unique_ptr<BreakpointOptions::CommandData>
 BreakpointOptions::CommandData::CreateFromStructuredData(
     const StructuredData::Dictionary &options_dict, Status &error) {
   std::unique_ptr<CommandData> data_up(new CommandData());
-  bool found_something = false;
 
   bool success = options_dict.GetValueForKeyAsBoolean(
       GetKey(OptionNames::StopOnError), data_up->stop_on_error);
-
-  if (success)
-    found_something = true;
 
   llvm::StringRef interpreter_str;
   ScriptLanguage interp_language;
@@ -78,7 +74,6 @@ BreakpointOptions::CommandData::CreateFromStructuredData(
     return data_up;
   }
 
-  found_something = true;
   interp_language = ScriptInterpreter::StringToLanguage(interpreter_str);
   if (interp_language == eScriptLanguageUnknown) {
     error.SetErrorStringWithFormatv("Unknown breakpoint command language: {0}.",
@@ -91,7 +86,6 @@ BreakpointOptions::CommandData::CreateFromStructuredData(
   success = options_dict.GetValueForKeyAsArray(GetKey(OptionNames::UserSource),
                                                user_source);
   if (success) {
-    found_something = true;
     size_t num_elems = user_source->GetSize();
     for (size_t i = 0; i < num_elems; i++) {
       llvm::StringRef elem_string;
@@ -101,10 +95,7 @@ BreakpointOptions::CommandData::CreateFromStructuredData(
     }
   }
 
-  if (found_something)
-    return data_up;
-  else
-    return std::unique_ptr<BreakpointOptions::CommandData>();
+  return data_up;
 }
 
 const char *BreakpointOptions::g_option_names[(
@@ -121,11 +112,11 @@ bool BreakpointOptions::NullCallback(void *baton,
 
 // BreakpointOptions constructor
 BreakpointOptions::BreakpointOptions(bool all_flags_set)
-    : m_callback(BreakpointOptions::NullCallback), m_callback_baton_sp(),
+    : m_callback(BreakpointOptions::NullCallback),
       m_baton_is_command_baton(false), m_callback_is_synchronous(false),
-      m_enabled(true), m_one_shot(false), m_ignore_count(0), m_thread_spec_up(),
-      m_condition_text(), m_condition_text_hash(0), m_auto_continue(false),
-      m_set_flags(0) {
+      m_enabled(true), m_one_shot(false), m_ignore_count(0),
+      m_condition_text_hash(0), m_inject_condition(false),
+      m_auto_continue(false), m_set_flags(0) {
   if (all_flags_set)
     m_set_flags.Set(~((Flags::ValueType)0));
 }
@@ -135,11 +126,9 @@ BreakpointOptions::BreakpointOptions(const char *condition, bool enabled,
                                      bool auto_continue)
     : m_callback(nullptr), m_baton_is_command_baton(false),
       m_callback_is_synchronous(false), m_enabled(enabled),
-      m_one_shot(one_shot), m_ignore_count(ignore),
-      m_condition_text_hash(0), m_auto_continue(auto_continue)
-{
-    m_set_flags.Set(eEnabled | eIgnoreCount | eOneShot 
-                   | eAutoContinue);
+      m_one_shot(one_shot), m_ignore_count(ignore), m_condition_text_hash(0),
+      m_inject_condition(false), m_auto_continue(auto_continue) {
+  m_set_flags.Set(eEnabled | eIgnoreCount | eOneShot | eAutoContinue);
     if (condition && *condition != '\0') {
       SetCondition(condition);
     }
@@ -151,10 +140,10 @@ BreakpointOptions::BreakpointOptions(const BreakpointOptions &rhs)
       m_baton_is_command_baton(rhs.m_baton_is_command_baton),
       m_callback_is_synchronous(rhs.m_callback_is_synchronous),
       m_enabled(rhs.m_enabled), m_one_shot(rhs.m_one_shot),
-      m_ignore_count(rhs.m_ignore_count), m_thread_spec_up(),
+      m_ignore_count(rhs.m_ignore_count), m_inject_condition(false),
       m_auto_continue(rhs.m_auto_continue), m_set_flags(rhs.m_set_flags) {
   if (rhs.m_thread_spec_up != nullptr)
-    m_thread_spec_up.reset(new ThreadSpec(*rhs.m_thread_spec_up));
+    m_thread_spec_up = std::make_unique<ThreadSpec>(*rhs.m_thread_spec_up);
   m_condition_text = rhs.m_condition_text;
   m_condition_text_hash = rhs.m_condition_text_hash;
 }
@@ -170,9 +159,10 @@ operator=(const BreakpointOptions &rhs) {
   m_one_shot = rhs.m_one_shot;
   m_ignore_count = rhs.m_ignore_count;
   if (rhs.m_thread_spec_up != nullptr)
-    m_thread_spec_up.reset(new ThreadSpec(*rhs.m_thread_spec_up));
+    m_thread_spec_up = std::make_unique<ThreadSpec>(*rhs.m_thread_spec_up);
   m_condition_text = rhs.m_condition_text;
   m_condition_text_hash = rhs.m_condition_text_hash;
+  m_inject_condition = rhs.m_inject_condition;
   m_auto_continue = rhs.m_auto_continue;
   m_set_flags = rhs.m_set_flags;
   return *this;
@@ -223,7 +213,8 @@ void BreakpointOptions::CopyOverSetOptions(const BreakpointOptions &incoming)
   }
   if (incoming.m_set_flags.Test(eThreadSpec) && incoming.m_thread_spec_up) {
     if (!m_thread_spec_up)
-      m_thread_spec_up.reset(new ThreadSpec(*incoming.m_thread_spec_up));
+      m_thread_spec_up =
+          std::make_unique<ThreadSpec>(*incoming.m_thread_spec_up);
     else
       *m_thread_spec_up = *incoming.m_thread_spec_up;
     m_set_flags.Set(eThreadSpec);
@@ -318,7 +309,7 @@ std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
     else {
       ScriptInterpreter *interp = target.GetDebugger().GetScriptInterpreter();
       if (!interp) {
-        error.SetErrorStringWithFormat(
+        error.SetErrorString(
             "Can't set script commands - no script interpreter");
         return nullptr;
       }
@@ -331,7 +322,7 @@ std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
       }
       Status script_error;
       script_error =
-          interp->SetBreakpointCommandCallback(bp_options.get(), cmd_data_up);
+          interp->SetBreakpointCommandCallback(*bp_options, cmd_data_up);
       if (script_error.Fail()) {
         error.SetErrorStringWithFormat("Error generating script callback: %s.",
                                        error.AsCString());
@@ -452,8 +443,6 @@ bool BreakpointOptions::InvokeCallback(StoppointCallbackContext *context,
                                           : nullptr,
                       context, break_id, break_loc_id);
     } else if (IsCallbackSynchronous()) {
-      // If a synchronous callback is called at async time, it should not say
-      // to stop.
       return false;
     }
   }
@@ -509,7 +498,7 @@ const ThreadSpec *BreakpointOptions::GetThreadSpecNoCreate() const {
 ThreadSpec *BreakpointOptions::GetThreadSpec() {
   if (m_thread_spec_up == nullptr) {
     m_set_flags.Set(eThreadSpec);
-    m_thread_spec_up.reset(new ThreadSpec());
+    m_thread_spec_up = std::make_unique<ThreadSpec>();
   }
 
   return m_thread_spec_up.get();
@@ -630,11 +619,11 @@ bool BreakpointOptions::BreakpointOptionsCallbackFunction(
     ExecutionContext exe_ctx(context->exe_ctx_ref);
     Target *target = exe_ctx.GetTargetPtr();
     if (target) {
-      CommandReturnObject result;
       Debugger &debugger = target->GetDebugger();
+      CommandReturnObject result(debugger.GetUseColor());
+
       // Rig up the results secondary output stream to the debugger's, so the
       // output will come out synchronously if the debugger is set up that way.
-
       StreamSP output_stream(debugger.GetAsyncOutputStream());
       StreamSP error_stream(debugger.GetAsyncErrorStream());
       result.SetImmediateOutputStream(output_stream);
@@ -648,7 +637,7 @@ bool BreakpointOptions::BreakpointOptionsCallbackFunction(
       options.SetPrintErrors(true);
       options.SetAddToHistory(false);
 
-      debugger.GetCommandInterpreter().HandleCommands(commands, &exe_ctx,
+      debugger.GetCommandInterpreter().HandleCommands(commands, exe_ctx,
                                                       options, result);
       result.GetImmediateOutputStream()->Flush();
       result.GetImmediateErrorStream()->Flush();

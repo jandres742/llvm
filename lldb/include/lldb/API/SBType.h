@@ -106,6 +106,9 @@ public:
   SBType();
 
   SBType(const lldb::SBType &rhs);
+#ifndef SWIG
+  SBType(const lldb::TypeImplSP &);
+#endif
 
   ~SBType();
 
@@ -131,6 +134,10 @@ public:
 
   bool IsAnonymousType();
 
+  bool IsScopedEnumerationType();
+
+  bool IsAggregateType();
+
   lldb::SBType GetPointerType();
 
   lldb::SBType GetPointeeType();
@@ -150,6 +157,9 @@ public:
   lldb::SBType GetVectorElementType();
 
   lldb::SBType GetCanonicalType();
+
+  lldb::SBType GetEnumerationIntegerType();
+
   // Get the "lldb::BasicType" enumeration for a type. If a type is not a basic
   // type eBasicTypeInvalid will be returned
   lldb::BasicType GetBasicType();
@@ -175,6 +185,8 @@ public:
 
   lldb::SBType GetTemplateArgumentType(uint32_t idx);
 
+  /// Return the TemplateArgumentKind of the template argument at index idx.
+  /// Variadic argument packs are automatically expanded.
   lldb::TemplateArgumentKind GetTemplateArgumentKind(uint32_t idx);
 
   lldb::SBType GetFunctionReturnType();
@@ -184,6 +196,8 @@ public:
   uint32_t GetNumberOfMemberFunctions();
 
   lldb::SBTypeMemberFunction GetMemberFunctionAtIndex(uint32_t idx);
+
+  lldb::SBModule GetModule();
 
   const char *GetName();
 
@@ -225,10 +239,10 @@ protected:
   friend class SBTypeMemberFunction;
   friend class SBTypeList;
   friend class SBValue;
+  friend class SBWatchpoint;
 
   SBType(const lldb_private::CompilerType &);
   SBType(const lldb::TypeSP &);
-  SBType(const lldb::TypeImplSP &);
 };
 
 class SBTypeList {

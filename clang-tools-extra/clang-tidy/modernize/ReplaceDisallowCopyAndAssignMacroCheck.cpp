@@ -9,11 +9,12 @@
 #include "ReplaceDisallowCopyAndAssignMacroCheck.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/MacroArgs.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <optional>
 
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 
 namespace {
 
@@ -30,7 +31,7 @@ public:
       return;
     if (Info->getName() != Check.getMacroName())
       return;
-    // The first argument to the DISALLOW_COPY_AND_ASSIGN macro is exptected to
+    // The first argument to the DISALLOW_COPY_AND_ASSIGN macro is expected to
     // be the class name.
     const Token *ClassNameTok = Args->getUnexpArgument(0);
     if (Args->ArgNeedsPreexpansion(ClassNameTok, PP))
@@ -58,7 +59,7 @@ private:
   /// \returns \c true if the next token after the given \p MacroLoc is \b not a
   /// semicolon.
   bool shouldAppendSemi(SourceRange MacroLoc) {
-    llvm::Optional<Token> Next = Lexer::findNextToken(
+    std::optional<Token> Next = Lexer::findNextToken(
         MacroLoc.getEnd(), PP.getSourceManager(), PP.getLangOpts());
     return !(Next && Next->is(tok::semi));
   }
@@ -85,6 +86,4 @@ void ReplaceDisallowCopyAndAssignMacroCheck::storeOptions(
   Options.store(Opts, "MacroName", MacroName);
 }
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::modernize

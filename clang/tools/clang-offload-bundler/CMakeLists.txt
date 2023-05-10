@@ -1,21 +1,26 @@
-set(LLVM_LINK_COMPONENTS Object Support)
-
-if(NOT CLANG_BUILT_STANDALONE)
-  set(tablegen_deps intrinsics_gen)
-endif()
+set(LLVM_LINK_COMPONENTS
+  AllTargetsAsmParsers
+  AllTargetsDescs
+  AllTargetsInfos
+  BitWriter
+  Core
+  IRReader
+  Object
+  Support
+  TargetParser
+  )
 
 add_clang_tool(clang-offload-bundler
   ClangOffloadBundler.cpp
-  
+
   DEPENDS
-  ${tablegen_deps}
+  intrinsics_gen
   )
 
 set(CLANG_OFFLOAD_BUNDLER_LIB_DEPS
   clangBasic
+  clangDriver
   )
-  
-add_dependencies(clang clang-offload-bundler)
 
 # A standalone clang build uses a pre-installed llvm-objcopy
 if (NOT CLANG_BUILT_STANDALONE)

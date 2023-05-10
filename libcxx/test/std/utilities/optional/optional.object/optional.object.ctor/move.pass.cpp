@@ -8,7 +8,7 @@
 
 // UNSUPPORTED: c++03, c++11, c++14
 
-// XFAIL: dylib-has-no-bad_optional_access && !no-exceptions
+// XFAIL: availability-bad_optional_access-missing && !no-exceptions
 
 // <optional>
 

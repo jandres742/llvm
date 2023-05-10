@@ -1,22 +1,22 @@
 # RUN: llvm-mc -filetype=obj -triple riscv32 -mattr=+relax < %s \
-# RUN:     | llvm-readobj -r | FileCheck -check-prefix=RELAX-RELOC %s
+# RUN:     | llvm-readobj -r - | FileCheck -check-prefix=RELAX-RELOC %s
 # RUN: llvm-mc -filetype=obj -triple riscv32 -mattr=-relax < %s \
-# RUN:     | llvm-readobj -r | FileCheck -check-prefix=NORELAX-RELOC %s
+# RUN:     | llvm-readobj -r - | FileCheck -check-prefix=NORELAX-RELOC %s
 # RUN: llvm-mc -triple riscv32 -mattr=+relax < %s -show-encoding \
 # RUN:     | FileCheck -check-prefix=RELAX-FIXUP %s
 # RUN: llvm-mc -filetype=obj -triple riscv64 -mattr=+relax < %s \
-# RUN:     | llvm-readobj -r | FileCheck -check-prefix=RELAX-RELOC %s
+# RUN:     | llvm-readobj -r - | FileCheck -check-prefix=RELAX-RELOC %s
 # RUN: llvm-mc -filetype=obj -triple riscv64 -mattr=-relax < %s \
-# RUN:     | llvm-readobj -r | FileCheck -check-prefix=NORELAX-RELOC %s
+# RUN:     | llvm-readobj -r - | FileCheck -check-prefix=NORELAX-RELOC %s
 # RUN: llvm-mc -triple riscv64 -mattr=+relax < %s -show-encoding \
 # RUN:     | FileCheck -check-prefix=RELAX-FIXUP %s
 
 .long foo
 
 call foo
-# NORELAX-RELOC: R_RISCV_CALL foo 0x0
+# NORELAX-RELOC: R_RISCV_CALL_PLT foo 0x0
 # NORELAX-RELOC-NOT: R_RISCV_RELAX
-# RELAX-RELOC: R_RISCV_CALL foo 0x0
+# RELAX-RELOC: R_RISCV_CALL_PLT foo 0x0
 # RELAX-RELOC: R_RISCV_RELAX - 0x0
 # RELAX-FIXUP: fixup A - offset: 0, value: foo, kind: fixup_riscv_call
 # RELAX-FIXUP: fixup B - offset: 0, value: 0, kind: fixup_riscv_relax
@@ -83,7 +83,7 @@ beq s1, s1, bar
 call bar
 # NORELAX-RELOC-NOT: R_RISCV_CALL
 # NORELAX-RELOC-NOT: R_RISCV_RELAX
-# RELAX-RELOC: R_RISCV_CALL bar 0x0
+# RELAX-RELOC: R_RISCV_CALL_PLT bar 0x0
 # RELAX-RELOC: R_RISCV_RELAX - 0x0
 # RELAX-FIXUP: fixup A - offset: 0, value: bar, kind: fixup_riscv_call
 # RELAX-FIXUP: fixup B - offset: 0, value: 0, kind: fixup_riscv_relax

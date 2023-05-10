@@ -1,4 +1,5 @@
 ; RUN: llc -mtriple aarch64 -mattr=+sve -asm-verbose=0 < %s | FileCheck %s
+; RUN: llc -mtriple aarch64 -mattr=+sve -asm-verbose=0 -opaque-pointers < %s | FileCheck %s
 ; RUN: opt -mtriple=aarch64 -codegenprepare -S < %s | llc -mtriple=aarch64 -mattr=+sve -asm-verbose=0 | FileCheck %s
 
 ;
@@ -45,7 +46,10 @@ define i64 @rdvl_i64() nounwind {
 ; CHECK:       rdvl x0, #1
 ; CHECK-NEXT:  ret
 define i32 @rdvl_const() nounwind {
-  ret i32 mul nsw (i32 ptrtoint (<vscale x 1 x i8>* getelementptr (<vscale x 1 x i8>, <vscale x 1 x i8>* null, i64 1) to i32), i32 16)
+  %vscale.ptr = getelementptr <vscale x 1 x i8>, ptr null, i64 1
+  %vscale.int = ptrtoint ptr %vscale.ptr to i32
+  %vscale.scaled = mul nsw i32 %vscale.int, 16
+  ret i32 %vscale.scaled
 }
 
 define i32 @vscale_1() nounwind {
@@ -69,8 +73,8 @@ define i32 @vscale_neg1() nounwind {
 
 ; CHECK-LABEL: rdvl_3:
 ; CHECK:       rdvl [[VL_B:x[0-9]+]], #1
-; CHECK-NEXT:  lsr  [[VL_Q:x[0-9]+]], [[VL_B]], #4
 ; CHECK-NEXT:  mov  w[[MUL:[0-9]+]], #3
+; CHECK-NEXT:  lsr  [[VL_Q:x[0-9]+]], [[VL_B]], #4
 ; CHECK-NEXT:  mul  x0, [[VL_Q]], x[[MUL]]
 ; CHECK-NEXT:  ret
 define i32 @rdvl_3() nounwind {

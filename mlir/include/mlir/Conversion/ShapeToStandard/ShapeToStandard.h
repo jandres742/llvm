@@ -9,19 +9,28 @@
 #ifndef MLIR_CONVERSION_SHAPETOSTANDARD_SHAPETOSTANDARD_H_
 #define MLIR_CONVERSION_SHAPETOSTANDARD_SHAPETOSTANDARD_H_
 
-#include "mlir/Transforms/DialectConversion.h"
+#include <memory>
 
 namespace mlir {
 
-class MLIRContext;
 class ModuleOp;
+class Pass;
 template <typename T>
 class OperationPass;
+class RewritePatternSet;
 
-void populateShapeToStandardConversionPatterns(
-    OwningRewritePatternList &patterns, MLIRContext *ctx);
+#define GEN_PASS_DECL_CONVERTSHAPECONSTRAINTS
+#define GEN_PASS_DECL_CONVERTSHAPETOSTANDARD
+#include "mlir/Conversion/Passes.h.inc"
+
+void populateShapeToStandardConversionPatterns(RewritePatternSet &patterns);
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertShapeToStandardPass();
+
+void populateConvertShapeConstraintsConversionPatterns(
+    RewritePatternSet &patterns);
+
+std::unique_ptr<Pass> createConvertShapeConstraintsPass();
 
 } // namespace mlir
 

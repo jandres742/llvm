@@ -25,6 +25,7 @@ using namespace lldb_private;
 REPL::REPL(LLVMCastKind kind, Target &target) : m_target(target), m_kind(kind) {
   // Make sure all option values have sane defaults
   Debugger &debugger = m_target.GetDebugger();
+  debugger.SetShowProgress(false);
   auto exe_ctx = debugger.GetCommandInterpreter().GetExecutionContext();
   m_format_options.OptionParsingStarting(&exe_ctx);
   m_varobj_options.OptionParsingStarting(&exe_ctx);
@@ -39,7 +40,11 @@ lldb::REPLSP REPL::Create(Status &err, lldb::LanguageType language,
   lldb::REPLSP ret;
 
   while (REPLCreateInstance create_instance =
-             PluginManager::GetREPLCreateCallbackAtIndex(idx++)) {
+             PluginManager::GetREPLCreateCallbackAtIndex(idx)) {
+    LanguageSet supported_languages =
+        PluginManager::GetREPLSupportedLanguagesAtIndex(idx++);
+    if (!supported_languages[language])
+      continue;
     ret = (*create_instance)(err, language, debugger, target, repl_options);
     if (ret) {
       break;
@@ -53,7 +58,7 @@ std::string REPL::GetSourcePath() {
   ConstString file_basename = GetSourceFileBasename();
   FileSpec tmpdir_file_spec = HostInfo::GetProcessTempDir();
   if (tmpdir_file_spec) {
-    tmpdir_file_spec.GetFilename() = file_basename;
+    tmpdir_file_spec.SetFilename(file_basename);
     m_repl_source_path = tmpdir_file_spec.GetPath();
   } else {
     tmpdir_file_spec = FileSpec("/tmp");
@@ -74,7 +79,7 @@ lldb::IOHandlerSP REPL::GetIOHandler() {
         true,                  // Multi-line
         true,                  // The REPL prompt is always colored
         1,                     // Line number
-        *this, nullptr);
+        *this);
 
     // Don't exit if CTRL+C is pressed
     static_cast<IOHandlerEditline *>(m_io_handler_sp.get())
@@ -123,10 +128,11 @@ const char *REPL::IOHandlerGetHelpPrologue() {
          "Valid statements, expressions, and declarations are immediately "
          "compiled and executed.\n\n"
          "The complete set of LLDB debugging commands are also available as "
-         "described below.  Commands "
+         "described below.\n\nCommands "
          "must be prefixed with a colon at the REPL prompt (:quit for "
          "example.)  Typing just a colon "
-         "followed by return will switch to the LLDB prompt.\n\n";
+         "followed by return will switch to the LLDB prompt.\n\n"
+         "Type “< path” to read in code from a text file “path”.\n\n";
 }
 
 bool REPL::IOHandlerIsInputComplete(IOHandler &io_handler, StringList &lines) {
@@ -179,6 +185,36 @@ int REPL::IOHandlerFixIndentation(IOHandler &io_handler,
   return (int)desired_indent - actual_indent;
 }
 
+static bool ReadCode(const std::string &path, std::string &code,
+                     lldb::StreamFileSP &error_sp) {
+  auto &fs = FileSystem::Instance();
+  llvm::Twine pathTwine(path);
+  if (!fs.Exists(pathTwine)) {
+    error_sp->Printf("no such file at path '%s'\n", path.c_str());
+    return false;
+  }
+  if (!fs.Readable(pathTwine)) {
+    error_sp->Printf("could not read file at path '%s'\n", path.c_str());
+    return false;
+  }
+  const size_t file_size = fs.GetByteSize(pathTwine);
+  const size_t max_size = code.max_size();
+  if (file_size > max_size) {
+    error_sp->Printf("file at path '%s' too large: "
+                     "file_size = %zu, max_size = %zu\n",
+                     path.c_str(), file_size, max_size);
+    return false;
+  }
+  auto data_sp = fs.CreateDataBuffer(pathTwine);
+  if (data_sp == nullptr) {
+    error_sp->Printf("could not create buffer for file at path '%s'\n",
+                     path.c_str());
+    return false;
+  }
+  code.assign((const char *)data_sp->GetBytes(), data_sp->GetByteSize());
+  return true;
+}
+
 void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
   lldb::StreamFileSP output_sp(io_handler.GetOutputStreamFileSP());
   lldb::StreamFileSP error_sp(io_handler.GetErrorStreamFileSP());
@@ -197,7 +233,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
     ExecutionContext exe_ctx(m_target.GetProcessSP()
                                  ->GetThreadList()
                                  .GetSelectedThread()
-                                 ->GetSelectedFrame()
+                                 ->GetSelectedFrame(DoNoSelectMostRelevantFrame)
                                  .get());
 
     lldb::ProcessSP process_sp(exe_ctx.GetProcessSP());
@@ -216,7 +252,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
           ci.SetPromptOnQuit(false);
 
         // Execute the command
-        CommandReturnObject result;
+        CommandReturnObject result(debugger.GetUseColor());
         result.SetImmediateOutputStream(output_sp);
         result.SetImmediateErrorStream(error_sp);
         ci.HandleCommand(code.c_str(), eLazyBoolNo, result);
@@ -257,13 +293,23 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
         }
       }
     } else {
+      if (code[0] == '<') {
+        // User wants to read code from a file.
+        // Interpret rest of line as a literal path.
+        auto path = llvm::StringRef(code.substr(1)).trim().str();
+        if (!ReadCode(path, code, error_sp)) {
+          return;
+        }
+      }
+
       // Unwind any expression we might have been running in case our REPL
       // expression crashed and the user was looking around
       if (m_dedicated_repl_mode) {
         Thread *thread = exe_ctx.GetThreadPtr();
         if (thread && thread->UnwindInnermostExpression().Success()) {
           thread->SetSelectedFrameByIndex(0, false);
-          exe_ctx.SetFrameSP(thread->GetSelectedFrame());
+          exe_ctx.SetFrameSP(
+              thread->GetSelectedFrame(DoNoSelectMostRelevantFrame));
         }
       }
 
@@ -333,7 +379,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
           case lldb::eExpressionSetupError:
           case lldb::eExpressionParseError:
             add_to_code = false;
-            LLVM_FALLTHROUGH;
+            [[fallthrough]];
           case lldb::eExpressionDiscarded:
             error_sp->Printf("%s\n", error.AsCString());
             break;
@@ -405,7 +451,7 @@ void REPL::IOHandlerInputComplete(IOHandler &io_handler, std::string &code) {
           if (!m_repl_source_path.empty()) {
             auto file = FileSystem::Instance().Open(
                 FileSpec(m_repl_source_path),
-                File::eOpenOptionWrite | File::eOpenOptionTruncate |
+                File::eOpenOptionWriteOnly | File::eOpenOptionTruncate |
                     File::eOpenOptionCanCreate,
                 lldb::eFilePermissionsFileDefault);
             if (file) {
@@ -457,6 +503,10 @@ void REPL::IOHandlerComplete(IOHandler &io_handler,
     debugger.GetCommandInterpreter().HandleCompletion(sub_request);
     StringList matches, descriptions;
     sub_result.GetMatches(matches);
+    // Prepend command prefix that was excluded in the completion request.
+    if (request.GetCursorIndex() == 0)
+      for (auto &match : matches)
+        match.insert(0, 1, ':');
     sub_result.GetDescriptions(descriptions);
     request.AddCompletions(matches, descriptions);
     return;

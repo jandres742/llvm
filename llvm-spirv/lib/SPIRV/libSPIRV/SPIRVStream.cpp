@@ -121,6 +121,15 @@ template <class T> const SPIRVEncoder &encode(const SPIRVEncoder &O, T V) {
   return O << static_cast<SPIRVWord>(V);
 }
 
+template <>
+const SPIRVEncoder &operator<<(const SPIRVEncoder &O, SPIRVType *P) {
+  if (!P->hasId() && P->getOpCode() == OpTypeForwardPointer)
+    return O << static_cast<SPIRVTypeForwardPointer *>(
+                    static_cast<SPIRVEntry *>(P))
+                    ->getPointerId();
+  return O << P->getId();
+}
+
 #define SPIRV_DEF_ENCDEC(Type)                                                 \
   const SPIRVDecoder &operator>>(const SPIRVDecoder &I, Type &V) {             \
     return decode(I, V);                                                       \
@@ -134,6 +143,7 @@ SPIRV_DEF_ENCDEC(Capability)
 SPIRV_DEF_ENCDEC(Decoration)
 SPIRV_DEF_ENCDEC(OCLExtOpKind)
 SPIRV_DEF_ENCDEC(SPIRVDebugExtOpKind)
+SPIRV_DEF_ENCDEC(NonSemanticAuxDataOpKind)
 SPIRV_DEF_ENCDEC(LinkageType)
 
 // Read a string with padded 0's at the end so that they form a stream of
@@ -240,7 +250,7 @@ SPIRVEntry *SPIRVDecoder::getEntry() {
 
   if (OpExtension == OpCode) {
     auto *OpExt = static_cast<SPIRVExtension *>(Entry);
-    ExtensionID ExtID;
+    ExtensionID ExtID = {};
     bool ExtIsKnown = SPIRVMap<ExtensionID, std::string>::rfind(
         OpExt->getExtensionName(), &ExtID);
     if (!M.getErrorLog().checkError(
@@ -294,6 +304,31 @@ spv_ostream &operator<<(spv_ostream &O, const SPIRVNL &E) {
     O << '\n';
 #endif
   return O;
+}
+
+// Read the next word from the stream and if OpCode matches the argument,
+// decode the whole instruction. Multiple such instructions are possible. If
+// OpCode doesn't match the argument, set position of the next character to be
+// extracted from the stream to the beginning of the non-matching instruction.
+// Returns vector of extracted instructions.
+// Used to decode SPIRVTypeStructContinuedINTEL,
+// SPIRVConstantCompositeContinuedINTEL and
+// SPIRVSpecConstantCompositeContinuedINTEL.
+std::vector<SPIRVEntry *>
+SPIRVDecoder::getContinuedInstructions(const spv::Op ContinuedOpCode) {
+  std::vector<SPIRVEntry *> ContinuedInst;
+  std::streampos Pos = IS.tellg(); // remember position
+  getWordCountAndOpCode();
+  while (OpCode == ContinuedOpCode) {
+    SPIRVEntry *Entry = getEntry();
+    assert(Entry && "Failed to decode entry! Invalid instruction!");
+    M.add(Entry);
+    ContinuedInst.push_back(Entry);
+    Pos = IS.tellg();
+    getWordCountAndOpCode();
+  }
+  IS.seekg(Pos); // restore position
+  return ContinuedInst;
 }
 
 } // namespace SPIRV

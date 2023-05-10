@@ -6,21 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "include/errno.h"
 #include "include/signal.h"
 #include "src/signal/raise.h"
 #include "src/signal/sigfillset.h"
 #include "src/signal/sigprocmask.h"
 
-#include "utils/UnitTest/ErrnoSetterMatcher.h"
-#include "utils/UnitTest/Test.h"
+#include "test/ErrnoSetterMatcher.h"
+#include "test/UnitTest/Test.h"
 
-TEST(Sigfillset, Invalid) {
+#include <errno.h>
+
+TEST(LlvmLibcSigfillset, Invalid) {
   using __llvm_libc::testing::ErrnoSetterMatcher::Fails;
   EXPECT_THAT(__llvm_libc::sigfillset(nullptr), Fails(EINVAL));
 }
 
-TEST(Sigfillset, BlocksAll) {
+TEST(LlvmLibcSigfillset, BlocksAll) {
   using __llvm_libc::testing::ErrnoSetterMatcher::Succeeds;
   sigset_t set;
   EXPECT_THAT(__llvm_libc::sigfillset(&set), Succeeds());

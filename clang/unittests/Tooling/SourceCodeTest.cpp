@@ -9,7 +9,9 @@
 #include "clang/Tooling/Transformer/SourceCode.h"
 #include "TestVisitor.h"
 #include "clang/Basic/Diagnostic.h"
-#include "llvm/Testing/Support/Annotations.h"
+#include "clang/Basic/SourceLocation.h"
+#include "clang/Lex/Lexer.h"
+#include "llvm/Testing/Annotations/Annotations.h"
 #include "llvm/Testing/Support/Error.h"
 #include "llvm/Testing/Support/SupportHelpers.h"
 #include <gmock/gmock.h>
@@ -21,9 +23,11 @@ using llvm::Failed;
 using llvm::Succeeded;
 using llvm::ValueIs;
 using tooling::getAssociatedRange;
+using tooling::getExtendedRange;
 using tooling::getExtendedText;
-using tooling::getRangeForEdit;
+using tooling::getFileRangeForEdit;
 using tooling::getText;
+using tooling::maybeExtendRange;
 using tooling::validateEditRange;
 
 namespace {
@@ -52,7 +56,7 @@ MATCHER_P(EqualsRange, R, "") {
          arg.getBegin() == R.getBegin() && arg.getEnd() == R.getEnd();
 }
 
-MATCHER_P2(EqualsAnnotatedRange, SM, R, "") {
+MATCHER_P2(EqualsAnnotatedRange, Context, R, "") {
   if (arg.getBegin().isMacroID()) {
     *result_listener << "which starts in a macro";
     return false;
@@ -62,15 +66,13 @@ MATCHER_P2(EqualsAnnotatedRange, SM, R, "") {
     return false;
   }
 
-  unsigned Begin = SM->getFileOffset(arg.getBegin());
-  unsigned End = SM->getFileOffset(arg.getEnd());
+  CharSourceRange Range = Lexer::getAsCharRange(
+      arg, Context->getSourceManager(), Context->getLangOpts());
+  unsigned Begin = Context->getSourceManager().getFileOffset(Range.getBegin());
+  unsigned End = Context->getSourceManager().getFileOffset(Range.getEnd());
 
-  *result_listener << "which is [" << Begin << ",";
-  if (arg.isTokenRange()) {
-    *result_listener << End << "]";
-    return Begin == R.Begin && End + 1 == R.End;
-  }
-  *result_listener << End << ")";
+  *result_listener << "which is a " << (arg.isTokenRange() ? "Token" : "Char")
+                   << " range [" << Begin << "," << End << ")";
   return Begin == R.Begin && End == R.End;
 }
 
@@ -84,11 +86,13 @@ static ::testing::Matcher<CharSourceRange> AsRange(const SourceManager &SM,
 // Base class for visitors that expect a single match corresponding to a
 // specific annotated range.
 template <typename T> class AnnotatedCodeVisitor : public TestVisitor<T> {
-  llvm::Annotations Code;
+protected:
   int MatchCount = 0;
+  llvm::Annotations Code;
 
 public:
   AnnotatedCodeVisitor() : Code("$r[[]]") {}
+  // Helper for tests of `getAssociatedRange`.
   bool VisitDeclHelper(Decl *Decl) {
     // Only consider explicit declarations.
     if (Decl->isImplicit())
@@ -96,8 +100,7 @@ public:
 
     ++MatchCount;
     EXPECT_THAT(getAssociatedRange(*Decl, *this->Context),
-                EqualsAnnotatedRange(&this->Context->getSourceManager(),
-                                     Code.range("r")))
+                EqualsAnnotatedRange(this->Context, Code.range("r")))
         << Code.code();
     return true;
   }
@@ -183,6 +186,45 @@ TEST(SourceCodeTest, getExtendedText) {
   Visitor.runOver("int foo() { return foo() + 3; }");
 }
 
+TEST(SourceCodeTest, maybeExtendRange_TokenRange) {
+  struct ExtendTokenRangeVisitor
+      : AnnotatedCodeVisitor<ExtendTokenRangeVisitor> {
+    bool VisitCallExpr(CallExpr *CE) {
+      ++MatchCount;
+      EXPECT_THAT(getExtendedRange(*CE, tok::TokenKind::semi, *Context),
+                  EqualsAnnotatedRange(Context, Code.range("r")));
+      return true;
+    }
+  };
+
+  ExtendTokenRangeVisitor Visitor;
+  // Extends to include semicolon.
+  Visitor.runOverAnnotated("void f(int x, int y) { $r[[f(x, y);]] }");
+  // Does not extend to include semicolon.
+  Visitor.runOverAnnotated(
+      "int f(int x, int y) { if (0) return $r[[f(x, y)]] + 3; }");
+}
+
+TEST(SourceCodeTest, maybeExtendRange_CharRange) {
+  struct ExtendCharRangeVisitor : AnnotatedCodeVisitor<ExtendCharRangeVisitor> {
+    bool VisitCallExpr(CallExpr *CE) {
+      ++MatchCount;
+      CharSourceRange Call = Lexer::getAsCharRange(CE->getSourceRange(),
+                                                   Context->getSourceManager(),
+                                                   Context->getLangOpts());
+      EXPECT_THAT(maybeExtendRange(Call, tok::TokenKind::semi, *Context),
+                  EqualsAnnotatedRange(Context, Code.range("r")));
+      return true;
+    }
+  };
+  ExtendCharRangeVisitor Visitor;
+  // Extends to include semicolon.
+  Visitor.runOverAnnotated("void f(int x, int y) { $r[[f(x, y);]] }");
+  // Does not extend to include semicolon.
+  Visitor.runOverAnnotated(
+      "int f(int x, int y) { if (0) return $r[[f(x, y)]] + 3; }");
+}
+
 TEST(SourceCodeTest, getAssociatedRange) {
   struct VarDeclsVisitor : AnnotatedCodeVisitor<VarDeclsVisitor> {
     bool VisitVarDecl(VarDecl *Decl) { return VisitDeclHelper(Decl); }
@@ -205,15 +247,26 @@ TEST(SourceCodeTest, getAssociatedRange) {
 
   // Includes attributes.
   Visitor.runOverAnnotated(R"cpp(
-      #define ATTR __attribute__((deprecated("message")))
-      $r[[ATTR
+      $r[[__attribute__((deprecated("message")))
       int x;]])cpp");
 
   // Includes attributes and comments together.
   Visitor.runOverAnnotated(R"cpp(
-      #define ATTR __attribute__((deprecated("message")))
-      $r[[ATTR
-      // Commment.
+      $r[[__attribute__((deprecated("message")))
+      // Comment.
+      int x;]])cpp");
+
+  // Includes attributes through macro expansion.
+  Visitor.runOverAnnotated(R"cpp(
+      #define MACRO_EXPANSION __attribute__((deprecated("message")))
+      $r[[MACRO_EXPANSION
+      int x;]])cpp");
+
+  // Includes attributes through macro expansion with comments.
+  Visitor.runOverAnnotated(R"cpp(
+      #define MACRO_EXPANSION __attribute__((deprecated("message")))
+      $r[[MACRO_EXPANSION
+      // Comment.
       int x;]])cpp");
 }
 
@@ -360,15 +413,26 @@ TEST(SourceCodeTest, getAssociatedRangeWithComments) {
 
   // Includes attributes.
   Visit(R"cpp(
-      #define ATTR __attribute__((deprecated("message")))
-      $r[[ATTR
+      $r[[__attribute__((deprecated("message")))
       int x;]])cpp");
 
   // Includes attributes and comments together.
   Visit(R"cpp(
-      #define ATTR __attribute__((deprecated("message")))
-      $r[[ATTR
-      // Commment.
+      $r[[__attribute__((deprecated("message")))
+      // Comment.
+      int x;]])cpp");
+
+  // Includes attributes through macro expansion.
+  Visitor.runOverAnnotated(R"cpp(
+      #define MACRO_EXPANSION __attribute__((deprecated("message")))
+      $r[[MACRO_EXPANSION
+      int x;]])cpp");
+
+  // Includes attributes through macro expansion with comments.
+  Visitor.runOverAnnotated(R"cpp(
+      #define MACRO_EXPANSION __attribute__((deprecated("message")))
+      $r[[MACRO_EXPANSION
+      // Comment.
       int x;]])cpp");
 }
 
@@ -389,7 +453,11 @@ TEST(SourceCodeTest, getAssociatedRangeInvalidForPartialExpansions) {
   Visitor.runOver(Code);
 }
 
-TEST(SourceCodeTest, EditRangeWithMacroExpansionsShouldSucceed) {
+class GetFileRangeForEditTest : public testing::TestWithParam<bool> {};
+INSTANTIATE_TEST_SUITE_P(WithAndWithoutExpansions, GetFileRangeForEditTest,
+                         testing::Bool());
+
+TEST_P(GetFileRangeForEditTest, EditRangeWithMacroExpansionsShouldSucceed) {
   // The call expression, whose range we are extracting, includes two macro
   // expansions.
   llvm::Annotations Code(R"cpp(
@@ -399,10 +467,9 @@ int a = $r[[foo(M(1), M(2))]];
 )cpp");
 
   CallsVisitor Visitor;
-
   Visitor.OnCall = [&Code](CallExpr *CE, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(CE->getSourceRange());
-    EXPECT_THAT(getRangeForEdit(Range, *Context),
+    EXPECT_THAT(getFileRangeForEdit(Range, *Context, GetParam()),
                 ValueIs(AsRange(Context->getSourceManager(), Code.range("r"))));
   };
   Visitor.runOver(Code.code());
@@ -417,13 +484,35 @@ int a = $r[[FOO]];
   IntLitVisitor Visitor;
   Visitor.OnIntLit = [&Code](IntegerLiteral *Expr, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(Expr->getSourceRange());
-    EXPECT_THAT(getRangeForEdit(Range, *Context),
+    EXPECT_THAT(getFileRangeForEdit(Range, *Context),
                 ValueIs(AsRange(Context->getSourceManager(), Code.range("r"))));
   };
   Visitor.runOver(Code.code());
 }
 
-TEST(SourceCodeTest, EditPartialMacroExpansionShouldFail) {
+TEST(SourceCodeTest, EditInvolvingExpansionIgnoringExpansionShouldFail) {
+  // If we specify to ignore macro expansions, none of these call expressions
+  // should have an editable range.
+  llvm::Annotations Code(R"cpp(
+#define M1(x) x(1)
+#define M2(x, y) x ## y
+#define M3(x) foobar(x)
+int foobar(int);
+int a = M1(foobar);
+int b = M2(foo, bar(2));
+int c = M3(3);
+)cpp");
+
+  CallsVisitor Visitor;
+  Visitor.OnCall = [](CallExpr *CE, ASTContext *Context) {
+    auto Range = CharSourceRange::getTokenRange(CE->getSourceRange());
+    EXPECT_FALSE(
+        getFileRangeForEdit(Range, *Context, /*IncludeMacroExpansion=*/false));
+  };
+  Visitor.runOver(Code.code());
+}
+
+TEST_P(GetFileRangeForEditTest, EditPartialMacroExpansionShouldFail) {
   std::string Code = R"cpp(
 #define BAR 10+
 int c = BAR 3.0;
@@ -432,12 +521,12 @@ int c = BAR 3.0;
   IntLitVisitor Visitor;
   Visitor.OnIntLit = [](IntegerLiteral *Expr, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(Expr->getSourceRange());
-    EXPECT_FALSE(getRangeForEdit(Range, *Context).hasValue());
+    EXPECT_FALSE(getFileRangeForEdit(Range, *Context, GetParam()));
   };
   Visitor.runOver(Code);
 }
 
-TEST(SourceCodeTest, EditWholeMacroArgShouldSucceed) {
+TEST_P(GetFileRangeForEditTest, EditWholeMacroArgShouldSucceed) {
   llvm::Annotations Code(R"cpp(
 #define FOO(a) a + 7.0;
 int a = FOO($r[[10]]);
@@ -446,13 +535,13 @@ int a = FOO($r[[10]]);
   IntLitVisitor Visitor;
   Visitor.OnIntLit = [&Code](IntegerLiteral *Expr, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(Expr->getSourceRange());
-    EXPECT_THAT(getRangeForEdit(Range, *Context),
+    EXPECT_THAT(getFileRangeForEdit(Range, *Context, GetParam()),
                 ValueIs(AsRange(Context->getSourceManager(), Code.range("r"))));
   };
   Visitor.runOver(Code.code());
 }
 
-TEST(SourceCodeTest, EditPartialMacroArgShouldSucceed) {
+TEST_P(GetFileRangeForEditTest, EditPartialMacroArgShouldSucceed) {
   llvm::Annotations Code(R"cpp(
 #define FOO(a) a + 7.0;
 int a = FOO($r[[10]] + 10.0);
@@ -461,7 +550,7 @@ int a = FOO($r[[10]] + 10.0);
   IntLitVisitor Visitor;
   Visitor.OnIntLit = [&Code](IntegerLiteral *Expr, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(Expr->getSourceRange());
-    EXPECT_THAT(getRangeForEdit(Range, *Context),
+    EXPECT_THAT(getFileRangeForEdit(Range, *Context, GetParam()),
                 ValueIs(AsRange(Context->getSourceManager(), Code.range("r"))));
   };
   Visitor.runOver(Code.code());
@@ -477,7 +566,6 @@ int a = foo(M(1), M(2));
 )cpp";
 
   CallsVisitor Visitor;
-
   Visitor.OnCall = [](CallExpr *CE, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(CE->getSourceRange());
     EXPECT_THAT_ERROR(validateEditRange(Range, Context->getSourceManager()),
@@ -579,4 +667,71 @@ int c = BAR 3.0;
   };
   Visitor.runOver(Code);
 }
+
+TEST(SourceCodeTest, GetCallReturnType_Dependent) {
+  llvm::Annotations Code{R"cpp(
+template<class T, class F>
+void templ(const T& t, F f) {}
+
+template<class T, class F>
+void templ1(const T& t, F f) {
+  $test1[[f(t)]];
+}
+
+int f_overload(int) { return 1; }
+int f_overload(double) { return 2; }
+
+void f1() {
+  int i = 0;
+  templ(i, [](const auto &p) {
+    $test2[[f_overload(p)]];
+  });
+}
+
+struct A {
+  void f_overload(int);
+  void f_overload(double);
+};
+
+void f2() {
+ int i = 0;
+ templ(i, [](const auto &p) {
+   A a;
+   $test3[[a.f_overload(p)]];
+ });
+}
+)cpp"};
+
+  llvm::Annotations::Range R1 = Code.range("test1");
+  llvm::Annotations::Range R2 = Code.range("test2");
+  llvm::Annotations::Range R3 = Code.range("test3");
+
+  CallsVisitor Visitor;
+  Visitor.OnCall = [&R1, &R2, &R3](CallExpr *Expr, ASTContext *Context) {
+    unsigned Begin = Context->getSourceManager().getFileOffset(
+        Expr->getSourceRange().getBegin());
+    unsigned End = Context->getSourceManager().getFileOffset(
+        Expr->getSourceRange().getEnd());
+    llvm::Annotations::Range R{Begin, End + 1};
+
+    QualType CalleeType = Expr->getCallee()->getType();
+    if (R == R1) {
+      ASSERT_TRUE(CalleeType->isDependentType());
+      EXPECT_EQ(Expr->getCallReturnType(*Context), Context->DependentTy);
+    } else if (R == R2) {
+      ASSERT_FALSE(CalleeType->isDependentType());
+      ASSERT_TRUE(CalleeType->isSpecificPlaceholderType(BuiltinType::Overload));
+      ASSERT_TRUE(isa<UnresolvedLookupExpr>(Expr->getCallee()));
+      EXPECT_EQ(Expr->getCallReturnType(*Context), Context->DependentTy);
+    } else if (R == R3) {
+      ASSERT_FALSE(CalleeType->isDependentType());
+      ASSERT_TRUE(
+          CalleeType->isSpecificPlaceholderType(BuiltinType::BoundMember));
+      ASSERT_TRUE(isa<UnresolvedMemberExpr>(Expr->getCallee()));
+      EXPECT_EQ(Expr->getCallReturnType(*Context), Context->DependentTy);
+    }
+  };
+  Visitor.runOver(Code.code(), CallsVisitor::Lang_CXX14);
+}
+
 } // end anonymous namespace

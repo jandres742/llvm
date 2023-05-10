@@ -6,20 +6,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "include/errno.h"
 #include "include/signal.h"
-#include "src/errno/llvmlibc_errno.h"
+#include "src/errno/libc_errno.h"
 #include "src/signal/raise.h"
 #include "src/signal/signal.h"
 
-#include "utils/UnitTest/ErrnoSetterMatcher.h"
-#include "utils/UnitTest/Test.h"
+#include "test/ErrnoSetterMatcher.h"
+#include "test/UnitTest/Test.h"
 
 using __llvm_libc::testing::ErrnoSetterMatcher::Fails;
 using __llvm_libc::testing::ErrnoSetterMatcher::Succeeds;
 
-TEST(Signal, Invalid) {
-  llvmlibc_errno = 0;
+TEST(LlvmLibcSignal, Invalid) {
+  libc_errno = 0;
   __llvm_libc::sighandler_t valid = +[](int) {};
   EXPECT_THAT((void *)__llvm_libc::signal(0, valid),
               Fails(EINVAL, (void *)SIG_ERR));
@@ -28,7 +27,7 @@ TEST(Signal, Invalid) {
 }
 
 static int sum;
-TEST(Signal, Basic) {
+TEST(LlvmLibcSignal, Basic) {
   // In case test get run multiple times.
   sum = 0;
   ASSERT_NE(__llvm_libc::signal(SIGUSR1, +[](int) { sum++; }),

@@ -42,13 +42,11 @@ using namespace llvm;
 namespace llvm {
 
 MCCodeEmitter *createMipsMCCodeEmitterEB(const MCInstrInfo &MCII,
-                                         const MCRegisterInfo &MRI,
                                          MCContext &Ctx) {
   return new MipsMCCodeEmitter(MCII, Ctx, false);
 }
 
 MCCodeEmitter *createMipsMCCodeEmitterEL(const MCInstrInfo &MCII,
-                                         const MCRegisterInfo &MRI,
                                          MCContext &Ctx) {
   return new MipsMCCodeEmitter(MCII, Ctx, true);
 }
@@ -118,11 +116,11 @@ void MipsMCCodeEmitter::LowerCompactBranch(MCInst& Inst) const {
 }
 
 bool MipsMCCodeEmitter::isMicroMips(const MCSubtargetInfo &STI) const {
-  return STI.getFeatureBits()[Mips::FeatureMicroMips];
+  return STI.hasFeature(Mips::FeatureMicroMips);
 }
 
 bool MipsMCCodeEmitter::isMips32r6(const MCSubtargetInfo &STI) const {
-  return STI.getFeatureBits()[Mips::FeatureMips32r6];
+  return STI.hasFeature(Mips::FeatureMips32r6);
 }
 
 void MipsMCCodeEmitter::EmitByte(unsigned char C, raw_ostream &OS) const {
@@ -179,7 +177,7 @@ encodeInstruction(const MCInst &MI, raw_ostream &OS,
     LowerCompactBranch(TmpInst);
   }
 
-  unsigned long N = Fixups.size();
+  size_t N = Fixups.size();
   uint32_t Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
 
   // Check for unimplemented opcodes.
@@ -723,21 +721,8 @@ getExprOpValue(const MCExpr *Expr, SmallVectorImpl<MCFixup> &Fixups,
     return 0;
   }
 
-  if (Kind == MCExpr::SymbolRef) {
-    Mips::Fixups FixupKind = Mips::Fixups(0);
-
-    switch(cast<MCSymbolRefExpr>(Expr)->getKind()) {
-    default: llvm_unreachable("Unknown fixup kind!");
-      break;
-    case MCSymbolRefExpr::VK_None:
-      // FIXME: This is ok for O32/N32 but not N64.
-      FixupKind = Mips::fixup_Mips_32;
-      break;
-    } // switch
-
-    Fixups.push_back(MCFixup::create(0, Expr, MCFixupKind(FixupKind)));
-    return 0;
-  }
+  if (Kind == MCExpr::SymbolRef)
+    Ctx.reportError(Expr->getLoc(), "expected an immediate");
   return 0;
 }
 
@@ -753,9 +738,8 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
     return RegNo;
   } else if (MO.isImm()) {
     return static_cast<unsigned>(MO.getImm());
-  } else if (MO.isFPImm()) {
-    return static_cast<unsigned>(APFloat(MO.getFPImm())
-        .bitcastToAPInt().getHiBits(32).getLimitedValue());
+  } else if (MO.isDFPImm()) {
+    return static_cast<unsigned>(bit_cast<double>(MO.getDFPImm()));
   }
   // MO must be an Expr.
   assert(MO.isExpr());

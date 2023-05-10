@@ -34,6 +34,13 @@ We start by showing you how to construct a pass, everything from setting up the
 code, to compiling, loading, and executing it.  After the basics are down, more
 advanced features are discussed.
 
+.. warning::
+  This document deals with the legacy pass manager. LLVM uses the new pass
+  manager for the optimization pipeline (the codegen pipeline
+  still uses the legacy pass manager), which has its own way of defining
+  passes. For more details, see :doc:`WritingAnLLVMNewPMPass` and
+  :doc:`NewPassManager`.
+
 Quick Start --- Writing hello world
 ===================================
 
@@ -58,7 +65,7 @@ copy the following into ``CMakeLists.txt``:
 
   add_llvm_library( LLVMHello MODULE
     Hello.cpp
-  
+
     PLUGIN_TOOL
     opt
     )
@@ -177,18 +184,6 @@ without modifying it then the third argument is set to ``true``; if a pass is
 an analysis pass, for example dominator tree pass, then ``true`` is supplied as
 the fourth argument.
 
-If we want to register the pass as a step of an existing pipeline, some extension
-points are provided, e.g. ``PassManagerBuilder::EP_EarlyAsPossible`` to apply our
-pass before any optimization, or ``PassManagerBuilder::EP_FullLinkTimeOptimizationLast``
-to apply it after Link Time Optimizations.
-
-.. code-block:: c++
-
-    static llvm::RegisterStandardPasses Y(
-        llvm::PassManagerBuilder::EP_EarlyAsPossible,
-        [](const llvm::PassManagerBuilder &Builder,
-           llvm::legacy::PassManagerBase &PM) { PM.add(new Hello()); });
-
 As a whole, the ``.cpp`` file looks like:
 
 .. code-block:: c++
@@ -198,7 +193,6 @@ As a whole, the ``.cpp`` file looks like:
   #include "llvm/Support/raw_ostream.h"
 
   #include "llvm/IR/LegacyPassManager.h"
-  #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 
   using namespace llvm;
 
@@ -206,7 +200,7 @@ As a whole, the ``.cpp`` file looks like:
   struct Hello : public FunctionPass {
     static char ID;
     Hello() : FunctionPass(ID) {}
-  
+
     bool runOnFunction(Function &F) override {
       errs() << "Hello: ";
       errs().write_escaped(F.getName()) << '\n';
@@ -219,11 +213,6 @@ As a whole, the ``.cpp`` file looks like:
   static RegisterPass<Hello> X("hello", "Hello World Pass",
                                false /* Only looks at CFG */,
                                false /* Analysis Pass */);
-
-  static RegisterStandardPasses Y(
-      PassManagerBuilder::EP_EarlyAsPossible,
-      [](const PassManagerBuilder &Builder,
-         legacy::PassManagerBase &PM) { PM.add(new Hello()); });
 
 Now that it's all together, compile the file with a simple "``gmake``" command
 from the top level of your build directory and you should get a new file
@@ -299,7 +288,7 @@ you queue up.  For example:
                         ... Pass execution timing report ...
   ===-------------------------------------------------------------------------===
     Total Execution Time: 0.0007 seconds (0.0005 wall clock)
-  
+
      ---User Time---   --User+System--   ---Wall Time---  --- Name ---
      0.0004 ( 55.3%)   0.0004 ( 55.3%)   0.0004 ( 75.7%)  Bitcode Writer
      0.0003 ( 44.7%)   0.0003 ( 44.7%)   0.0001 ( 13.6%)  Hello World Pass
@@ -369,7 +358,7 @@ should only ask for the ``DominatorTree`` for function definitions, not
 declarations.
 
 To write a correct ``ModulePass`` subclass, derive from ``ModulePass`` and
-overload the ``runOnModule`` method with the following signature:
+override the ``runOnModule`` method with the following signature:
 
 The ``runOnModule`` method
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -477,7 +466,7 @@ To be explicit, ``FunctionPass`` subclasses are not allowed to:
 
 Implementing a ``FunctionPass`` is usually straightforward (See the :ref:`Hello
 World <writing-an-llvm-pass-basiccode>` pass for example).
-``FunctionPass``\ es may overload three virtual methods to do their work.  All
+``FunctionPass``\ es may override three virtual methods to do their work.  All
 of these methods should return ``true`` if they modified the program, or
 ``false`` if they didn't.
 
@@ -542,7 +531,7 @@ loops in loop nest order such that outer most loop is processed last.
 
 ``LoopPass`` subclasses are allowed to update loop nest using ``LPPassManager``
 interface.  Implementing a loop pass is usually straightforward.
-``LoopPass``\ es may overload three virtual methods to do their work.  All
+``LoopPass``\ es may override three virtual methods to do their work.  All
 these methods should return ``true`` if they modified the program, or ``false``
 if they didn't.
 
@@ -603,7 +592,7 @@ but executes on each single entry single exit region in the function.
 region is processed last.
 
 ``RegionPass`` subclasses are allowed to update the region tree by using the
-``RGPassManager`` interface.  You may overload three virtual methods of
+``RGPassManager`` interface.  You may override three virtual methods of
 ``RegionPass`` to implement your own region pass.  All these methods should
 return ``true`` if they modified the program, or ``false`` if they did not.
 
@@ -916,7 +905,7 @@ be registered with :ref:`RegisterAnalysisGroup
 As a concrete example of an Analysis Group in action, consider the
 `AliasAnalysis <https://llvm.org/doxygen/classllvm_1_1AliasAnalysis.html>`_
 analysis group.  The default implementation of the alias analysis interface
-(the `basicaa <https://llvm.org/doxygen/structBasicAliasAnalysis.html>`_ pass)
+(the `basic-aa <https://llvm.org/doxygen/structBasicAliasAnalysis.html>`_ pass)
 just does a few simple checks that don't require significant analysis to
 compute (such as: two different globals can never alias each other, etc).
 Passes that use the `AliasAnalysis
@@ -926,7 +915,7 @@ care which implementation of alias analysis is actually provided, they just use
 the designated interface.
 
 From the user's perspective, commands work just like normal.  Issuing the
-command ``opt -gvn ...`` will cause the ``basicaa`` class to be instantiated
+command ``opt -gvn ...`` will cause the ``basic-aa`` class to be instantiated
 and added to the pass sequence.  Issuing the command ``opt -somefancyaa -gvn
 ...`` will cause the ``gvn`` pass to use the ``somefancyaa`` alias analysis
 (which doesn't actually exist, it's just a hypothetical example) instead.
@@ -970,7 +959,7 @@ Every implementation of an analysis group should join using this macro.
 
   namespace {
     // Declare that we implement the AliasAnalysis interface
-    INITIALIZE_AG_PASS(BasicAA, AliasAnalysis, "basicaa",
+    INITIALIZE_AG_PASS(BasicAA, AliasAnalysis, "basic-aa",
         "Basic Alias Analysis (default AA impl)",
         false, // Is CFG Only?
         true,  // Is Analysis?
@@ -1175,51 +1164,6 @@ implement ``releaseMemory`` to, well, release the memory allocated to maintain
 this internal state.  This method is called after the ``run*`` method for the
 class, before the next call of ``run*`` in your pass.
 
-Building pass plugins
-=====================
-
-As an alternative to using ``PLUGIN_TOOL``, LLVM provides a mechanism to
-automatically register pass plugins within ``clang``, ``opt`` and ``bugpoint``.
-One first needs to create an independent project and add it to either ``tools/``
-or, using the MonoRepo layout, at the root of the repo alongside other projects.
-This project must contain the following minimal ``CMakeLists.txt``:
-
-.. code-block:: cmake
-
-    add_llvm_pass_plugin(Name source0.cpp)
-
-The pass must provide two entry points for the new pass manager, one for static
-registration and one for dynamically loaded plugins:
-
-- ``llvm::PassPluginLibraryInfo get##Name##PluginInfo();``
-- ``extern "C" ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() LLVM_ATTRIBUTE_WEAK;``
-
-Pass plugins are compiled and link dynamically by default, but it's
-possible to set the following variables to change this behavior:
-
-- ``LLVM_${NAME}_LINK_INTO_TOOLS``, when set to ``ON``, turns the project into
-  a statically linked extension
-
-
-When building a tool that uses the new pass manager, one can use the following snippet to
-include statically linked pass plugins:
-
-.. code-block:: c++
-
-    // fetch the declaration
-    #define HANDLE_EXTENSION(Ext) llvm::PassPluginLibraryInfo get##Ext##PluginInfo();
-    #include "llvm/Support/Extension.def"
-
-    [...]
-
-    // use them, PB is an llvm::PassBuilder instance
-    #define HANDLE_EXTENSION(Ext) get##Ext##PluginInfo().RegisterPassBuilderCallbacks(PB);
-    #include "llvm/Support/Extension.def"
-
-
-
-
-
 Registering dynamically loaded passes
 =====================================
 
@@ -1317,7 +1261,7 @@ Then you need to declare the registry.  Example: if your pass registry is
 
 .. code-block:: c++
 
-  MachinePassRegistry RegisterMyPasses::Registry;
+  MachinePassRegistry<RegisterMyPasses::FunctionPassCtor> RegisterMyPasses::Registry;
 
 And finally, declare the command line option for your passes.  Example:
 
@@ -1432,4 +1376,3 @@ multithreaded constructs, requiring only the LLVM core to have locking in a few
 places (for global resources).  Although this is a simple extension, we simply
 haven't had time (or multiprocessor machines, thus a reason) to implement this.
 Despite that, we have kept the LLVM passes SMP ready, and you should too.
-

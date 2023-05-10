@@ -5,14 +5,19 @@ set(LLVM_LINK_COMPONENTS
 
 add_clang_library(clangTidyReadabilityModule
   AvoidConstParamsInDecls.cpp
+  AvoidUnconditionalPreprocessorIfCheck.cpp
   BracesAroundStatementsCheck.cpp
   ConstReturnTypeCheck.cpp
+  ContainerContainsCheck.cpp
+  ContainerDataPointerCheck.cpp
   ContainerSizeEmptyCheck.cpp
   ConvertMemberFunctionsToStatic.cpp
   DeleteNullPointerCheck.cpp
-  DeletedDefaultCheck.cpp
+  DuplicateIncludeCheck.cpp
   ElseAfterReturnCheck.cpp
+  FunctionCognitiveComplexityCheck.cpp
   FunctionSizeCheck.cpp
+  IdentifierLengthCheck.cpp
   IdentifierNamingCheck.cpp
   ImplicitBoolConversionCheck.cpp
   InconsistentDeclarationParameterNameCheck.cpp
@@ -24,6 +29,7 @@ add_clang_library(clangTidyReadabilityModule
   NamedParameterCheck.cpp
   NamespaceCommentCheck.cpp
   NonConstParameterCheck.cpp
+  OperatorsRepresentationCheck.cpp
   QualifiedAutoCheck.cpp
   ReadabilityTidyModule.cpp
   RedundantAccessSpecifiersCheck.cpp
@@ -40,17 +46,25 @@ add_clang_library(clangTidyReadabilityModule
   StaticAccessedThroughInstanceCheck.cpp
   StaticDefinitionInAnonymousNamespaceCheck.cpp
   StringCompareCheck.cpp
+  SuspiciousCallArgumentCheck.cpp
   UniqueptrDeleteReleaseCheck.cpp
   UppercaseLiteralSuffixCheck.cpp
   UseAnyOfAllOfCheck.cpp
 
   LINK_LIBS
+  clangTidy
+  clangTidyUtils
+
+  DEPENDS
+  omp_gen
+  )
+
+clang_target_link_libraries(clangTidyReadabilityModule
+  PRIVATE
   clangAnalysis
   clangAST
   clangASTMatchers
   clangBasic
   clangLex
-  clangTidy
-  clangTidyUtils
   clangTooling
   )

@@ -11,10 +11,12 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/HeaderSearchOptions.h"
+#include "clang/Lex/Preprocessor.h"
 
-namespace clang {
-namespace tidy {
-namespace llvm_libc {
+// FixItHint - Hint to check documentation script to mark this check as
+// providing a FixIt.
+
+namespace clang::tidy::llvm_libc {
 
 namespace {
 
@@ -29,9 +31,9 @@ public:
 
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
-                          CharSourceRange FilenameRange, const FileEntry *File,
-                          StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported,
+                          CharSourceRange FilenameRange,
+                          OptionalFileEntryRef File, StringRef SearchPath,
+                          StringRef RelativePath, const Module *Imported,
                           SrcMgr::CharacteristicKind FileType) override;
 
 private:
@@ -42,7 +44,7 @@ private:
 
 void RestrictedIncludesPPCallbacks::InclusionDirective(
     SourceLocation HashLoc, const Token &IncludeTok, StringRef FileName,
-    bool IsAngled, CharSourceRange FilenameRange, const FileEntry *File,
+    bool IsAngled, CharSourceRange FilenameRange, OptionalFileEntryRef File,
     StringRef SearchPath, StringRef RelativePath, const Module *Imported,
     SrcMgr::CharacteristicKind FileType) {
   // Compiler provided headers are allowed (e.g stddef.h).
@@ -62,6 +64,4 @@ void RestrictSystemLibcHeadersCheck::registerPPCallbacks(
       *this, SM, CompilerIncudeDir));
 }
 
-} // namespace llvm_libc
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::llvm_libc

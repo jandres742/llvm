@@ -13,9 +13,7 @@ from lldbsuite.test import lldbutil
 
 class ObjCExceptionsTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
-    @skipUnlessDarwin
+    @skipIf(compiler="clang", compiler_version=['<', '13.0'])
     def test_objc_exceptions_at_throw(self):
         self.build()
 
@@ -23,6 +21,7 @@ class ObjCExceptionsTestCase(TestBase):
         self.assertTrue(target, VALID_TARGET)
 
         launch_info = lldb.SBLaunchInfo(["a.out", "0"])
+        launch_info.SetLaunchFlags(lldb.eLaunchFlagInheritTCCFromParent)
         lldbutil.run_to_name_breakpoint(self, "objc_exception_throw", launch_info=launch_info)
 
         self.expect("thread list",
@@ -66,7 +65,7 @@ class ObjCExceptionsTestCase(TestBase):
             ])
 
         self.expect(
-            'frame variable --dynamic-type no-run-target *e1',
+            'frame variable *e1',
             substrs=[
                 '(NSException) *e1 = ',
                 'name = ', '"ExceptionName"',
@@ -95,7 +94,7 @@ class ObjCExceptionsTestCase(TestBase):
             ])
 
         self.expect(
-            'frame variable --dynamic-type no-run-target *e2',
+            'frame variable *e2',
             substrs=[
                 '(NSException) *e2 = ',
                 'name = ', '"ThrownException"',
@@ -123,9 +122,9 @@ class ObjCExceptionsTestCase(TestBase):
         pcs = [i.unsigned for i in children]
         names = [target.ResolveSymbolContextForAddress(lldb.SBAddress(pc, target), lldb.eSymbolContextSymbol).GetSymbol().name for pc in pcs]
         for n in ["objc_exception_throw", "foo(int)", "main"]:
-            self.assertTrue(n in names, "%s is in the exception backtrace (%s)" % (n, names))
+            self.assertIn(n, names, "%s is in the exception backtrace (%s)" % (n, names))
 
-    @skipUnlessDarwin
+    @skipIf(compiler="clang", compiler_version=['<', '13.0'])
     def test_objc_exceptions_at_abort(self):
         self.build()
 
@@ -182,7 +181,7 @@ class ObjCExceptionsTestCase(TestBase):
         for n in ["objc_exception_throw", "foo(int)", "rethrow(int)", "main"]:
             self.assertEqual(len([f for f in history_thread.frames if f.GetFunctionName() == n]), 1)
 
-    @skipUnlessDarwin
+    @skipIf(compiler="clang", compiler_version=['<', '13.0'])
     def test_cxx_exceptions_at_abort(self):
         self.build()
 

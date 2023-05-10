@@ -26,7 +26,11 @@ class LLDB_API SBCommandInterpreterRunOptions {
 
 public:
   SBCommandInterpreterRunOptions();
+  SBCommandInterpreterRunOptions(const SBCommandInterpreterRunOptions &rhs);
   ~SBCommandInterpreterRunOptions();
+
+  SBCommandInterpreterRunOptions &
+  operator=(const SBCommandInterpreterRunOptions &rhs);
 
   bool GetStopOnContinue() const;
 
@@ -52,6 +56,10 @@ public:
 
   void SetPrintResults(bool);
 
+  bool GetPrintErrors() const;
+
+  void SetPrintErrors(bool);
+
   bool GetAddToHistory() const;
 
   void SetAddToHistory(bool);
@@ -74,6 +82,7 @@ private:
       m_opaque_up;
 };
 
+#ifndef SWIG
 class LLDB_API SBCommandInterpreterRunResult {
   friend class SBDebugger;
   friend class SBCommandInterpreter;
@@ -96,6 +105,7 @@ private:
   // This is set in the constructor and will always be valid.
   std::unique_ptr<lldb_private::CommandInterpreterRunResult> m_opaque_up;
 };
+#endif
 
 } // namespace lldb
 

@@ -11,17 +11,12 @@ from lldbsuite.test import lldbutil
 
 
 class CppDataFormatterTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
-
     def setUp(self):
         # Call super's setUp().
         TestBase.setUp(self)
         # Find the line number to break at.
         self.line = line_number('main.cpp', '// Set break point at this line.')
 
-    @skipIf(debug_info="gmodules",
-            bugnumber="https://bugs.llvm.org/show_bug.cgi?id=36048")
     def test_with_run_command(self):
         """Test that that file and class static variables display correctly."""
         self.build()
@@ -85,7 +80,7 @@ class CppDataFormatterTestCase(TestBase):
                     substrs=['no custom formatter for Speed'])
 
         self.runCmd(
-            "type summary add --summary-string \"arr = ${var%s}\" -x \"char \\[[0-9]+\\]\" -v")
+            "type summary add --summary-string \"arr = ${var%s}\" -x \"char\\[[0-9]+\\]\" -v")
 
         self.expect("frame variable strarr",
                     substrs=['arr = "Hello world!"'])
@@ -99,55 +94,55 @@ class CppDataFormatterTestCase(TestBase):
                     substrs=['ptr = "Hello world!"'])
 
         self.runCmd(
-            "type summary add --summary-string \"arr = ${var%s}\" -x \"char \\[[0-9]+\\]\" -v")
+            "type summary add --summary-string \"arr = ${var%s}\" -x \"char\\[[0-9]+\\]\" -v")
 
         self.expect("frame variable strarr",
                     substrs=['arr = "Hello world!'])
 
         # check that rdar://problem/10011145 (Standard summary format for
         # char[] doesn't work as the result of "expr".) is solved
-        self.expect("p strarr",
+        self.expect("expression strarr",
                     substrs=['arr = "Hello world!'])
 
         self.expect("frame variable strptr",
                     substrs=['ptr = "Hello world!"'])
 
-        self.expect("p strptr",
+        self.expect("expression strptr",
                     substrs=['ptr = "Hello world!"'])
 
         self.expect(
-            "p (char*)\"1234567890123456789012345678901234567890123456789012345678901234ABC\"",
+            "expression (char*)\"1234567890123456789012345678901234567890123456789012345678901234ABC\"",
             substrs=[
                 '(char *) $',
                 ' = ptr = ',
-                ' "1234567890123456789012345678901234567890123456789012345678901234ABC"'])
+                '"1234567890123456789012345678901234567890123456789012345678901234ABC"'])
 
-        self.runCmd("type summary add -c Point")
+        self.runCmd("type summary add -c TestPoint")
 
         self.expect("frame variable iAmSomewhere",
                     substrs=['x = 4',
                              'y = 6'])
 
         self.expect("type summary list",
-                    substrs=['Point',
+                    substrs=['TestPoint',
                              'one-line'])
 
-        self.runCmd("type summary add --summary-string \"y=${var.y%x}\" Point")
+        self.runCmd("type summary add --summary-string \"y=${var.y%x}\" TestPoint")
 
         self.expect("frame variable iAmSomewhere",
                     substrs=['y=0x'])
 
         self.runCmd(
-            "type summary add --summary-string \"y=${var.y},x=${var.x}\" Point")
+            "type summary add --summary-string \"y=${var.y},x=${var.x}\" TestPoint")
 
         self.expect("frame variable iAmSomewhere",
                     substrs=['y=6',
                              'x=4'])
 
-        self.runCmd("type summary add --summary-string \"hello\" Point -e")
+        self.runCmd("type summary add --summary-string \"hello\" TestPoint -e")
 
         self.expect("type summary list",
-                    substrs=['Point',
+                    substrs=['TestPoint',
                              'show children'])
 
         self.expect("frame variable iAmSomewhere",
@@ -176,7 +171,7 @@ class CppDataFormatterTestCase(TestBase):
                     matching=False)
 
         self.runCmd(
-            "type summary add --summary-string \"${var[1-3]}\" \"int [5]\"")
+            "type summary add --summary-string \"${var[1-3]}\" \"int[5]\"")
 
         self.expect("frame variable int_array",
                     substrs=['2',
@@ -188,7 +183,7 @@ class CppDataFormatterTestCase(TestBase):
         self.runCmd(
             "type summary add --summary-string \"${var[0-2].integer}\" \"i_am_cool *\"")
         self.runCmd(
-            "type summary add --summary-string \"${var[2-4].integer}\" \"i_am_cool [5]\"")
+            "type summary add --summary-string \"${var[2-4].integer}\" \"i_am_cool[5]\"")
 
         self.expect("frame variable cool_array",
                     substrs=['1,1,6'])
@@ -199,7 +194,7 @@ class CppDataFormatterTestCase(TestBase):
         # test special symbols for formatting variables into summaries
         self.runCmd(
             "type summary add --summary-string \"cool object @ ${var%L}\" i_am_cool")
-        self.runCmd("type summary delete \"i_am_cool [5]\"")
+        self.runCmd("type summary delete \"i_am_cool[5]\"")
 
         # this test might fail if the compiler tries to store
         # these values into registers.. hopefully this is not
@@ -289,3 +284,24 @@ class CppDataFormatterTestCase(TestBase):
             matching=False,
             substrs=['(int) iAmInt = 0x00000001'])
         self.expect("frame variable iAmInt", substrs=['(int) iAmInt = 1'])
+
+    @skipIfWindows
+    def test_mem_func_ptr_formats(self):
+        self.build()
+
+        lldbutil.run_to_source_breakpoint(self, "Break in has_local_mem_func_pointers", lldb.SBFileSpec("main.cpp"))
+
+        self.expect(
+            "frame variable member_ptr",
+            patterns=['member_ptr = 0x[0-9a-z]+'])
+        self.expect(
+            "frame variable member_func_ptr",
+            patterns=['member_func_ptr = 0x[0-9a-z]+'],
+            substrs=['(a.out`IUseCharStar::member_func(int) at main.cpp:61)'])
+        self.expect(
+            "frame variable ref_to_member_func_ptr",
+            patterns=['ref_to_member_func_ptr = 0x[0-9a-z]+'],
+            substrs=['(a.out`IUseCharStar::member_func(int) at main.cpp:61)'])
+        self.expect(
+            "frame variable virt_member_func_ptr",
+            patterns=['virt_member_func_ptr = 0x[0-9a-z]+$'])

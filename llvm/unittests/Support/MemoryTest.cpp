@@ -41,6 +41,8 @@ bool IsMPROTECT() {
     err(EXIT_FAILURE, "sysctl");
 
   return !!(paxflags & CTL_PROC_PAXFLAGS_MPROTECT);
+#elif defined(__APPLE__) && defined(__aarch64__)
+  return true;
 #else
   return false;
 #endif
@@ -90,7 +92,7 @@ protected:
   do { \
     if ((Flags & Memory::MF_WRITE) && (Flags & Memory::MF_EXEC) && \
         IsMPROTECT()) \
-      return; \
+      GTEST_SKIP();   \
   } while (0)
 
 TEST_P(MappedMemoryTest, AllocAndRelease) {
@@ -156,7 +158,7 @@ TEST_P(MappedMemoryTest, BasicWrite) {
   // This test applies only to readable and writeable combinations
   if (Flags &&
       !((Flags & Memory::MF_READ) && (Flags & Memory::MF_WRITE)))
-    return;
+    GTEST_SKIP();
   CHECK_UNSUPPORTED();
 
   std::error_code EC;
@@ -177,7 +179,7 @@ TEST_P(MappedMemoryTest, MultipleWrite) {
   // This test applies only to readable and writeable combinations
   if (Flags &&
       !((Flags & Memory::MF_READ) && (Flags & Memory::MF_WRITE)))
-    return;
+    GTEST_SKIP();
   CHECK_UNSUPPORTED();
 
   std::error_code EC;
@@ -241,7 +243,7 @@ TEST_P(MappedMemoryTest, EnabledWrite) {
   // MPROTECT prevents W+X, and since this test always adds W we need
   // to block any variant with X.
   if ((Flags & Memory::MF_EXEC) && IsMPROTECT())
-    return;
+    GTEST_SKIP();
 
   std::error_code EC;
   MemoryBlock M1 = Memory::allocateMappedMemory(2 * sizeof(int), nullptr, Flags,
@@ -426,8 +428,7 @@ unsigned MemoryFlags[] = {
                            Memory::MF_READ|Memory::MF_WRITE|Memory::MF_EXEC
                          };
 
-INSTANTIATE_TEST_CASE_P(AllocationTests,
-                        MappedMemoryTest,
-                        ::testing::ValuesIn(MemoryFlags),);
+INSTANTIATE_TEST_SUITE_P(AllocationTests, MappedMemoryTest,
+                         ::testing::ValuesIn(MemoryFlags));
 
 }  // anonymous namespace

@@ -1,21 +1,51 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.14)
 
 project(sycl-solution)
 # Requirements
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 option(SYCL_ENABLE_WERROR "Treat all warnings as errors in SYCL project" OFF)
+option(SYCL_DISABLE_STL_ASSERTIONS "Disable assertions in STL containers" ON)
 option(SYCL_ADD_DEV_VERSION_POSTFIX "Adds -V postfix to version string" ON)
+option(SYCL_ENABLE_COVERAGE "Enables code coverage for runtime and unit tests" OFF)
+option(SYCL_ENABLE_STACK_PRINTING "Enables stack printing on crashes of SYCL applications" OFF)
+option(SYCL_LIB_WITH_DEBUG_SYMBOLS "Builds SYCL runtime libraries with debug symbols" OFF)
 
-set(SYCL_MAJOR_VERSION 1)
+if (NOT SYCL_COVERAGE_PATH)
+  set(SYCL_COVERAGE_PATH "${CMAKE_CURRENT_BINARY_DIR}/profiles")
+endif()
+
+# If SYCL_ENABLE_PLUGINS is undefined, we default to enabling OpenCL and Level
+# Zero plugins.
+if (NOT DEFINED SYCL_ENABLE_PLUGINS)
+  set(SYCL_ENABLE_PLUGINS "opencl;level_zero")
+endif()
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
+include(AddSYCLExecutable)
+include(AddSYCL)
+include(SYCLUtils)
+
+# The change in SYCL_MAJOR_VERSION must be accompanied with the same update in
+# llvm/clang/lib/Driver/CMakeLists.txt.
+#
+# See doc/developer/ABIPolicyGuide.md for the meaning when in the middle of
+# development cycle.
+set(SYCL_MAJOR_VERSION 7)
 set(SYCL_MINOR_VERSION 0)
 set(SYCL_PATCH_VERSION 0)
+
 set(SYCL_DEV_ABI_VERSION 1)
 if (SYCL_ADD_DEV_VERSION_POSTFIX)
   set(SYCL_VERSION_POSTFIX "-${SYCL_DEV_ABI_VERSION}")
 endif()
 set(SYCL_VERSION_STRING "${SYCL_MAJOR_VERSION}.${SYCL_MINOR_VERSION}.${SYCL_PATCH_VERSION}${SYCL_VERSION_POSTFIX}")
+
+define_property(GLOBAL PROPERTY SYCL_TOOLCHAIN_INSTALL_COMPONENTS
+  BRIEF_DOCS "List of components to deploy with SYCL toolchain"
+  FULL_DOCS "List of components to deploy with SYCL toolchain"
+)
 
 # enable all warnings by default
 if (MSVC)
@@ -44,6 +74,37 @@ if(MSVC)
   # Skip asynchronous C++ exceptions catching and assume "extern C" functions
   # never throw C++ exceptions.
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
+
+  # Add PDB debug information
+  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+  include(LLVMCheckLinkerFlag)
+  llvm_check_linker_flag(CXX "/DEBUG" LINKER_SUPPORTS_DEBUG)
+  if(LINKER_SUPPORTS_DEBUG)
+    # sccache is not compatible with /Zi flag
+    if (CMAKE_CXX_COMPILER_LAUNCHER STREQUAL "sccache")
+      # CMake may put /Zi by default
+      if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
+      elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+        string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+        string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
+      elseif(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+        string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO}")
+      endif()
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Z7")
+    else()
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi")
+    endif()
+    add_link_options("/DEBUG")
+
+    # Enable unreferenced removal and ICF in Release mode.
+    llvm_check_linker_flag(CXX "/OPT:REF /OPT:ICF" LINKER_SUPPORTS_OPTS)
+    if (LINKER_SUPPORTS_OPTS AND uppercase_CMAKE_BUILD_TYPE STREQUAL "RELEASE")
+      add_link_options("/OPT:REF" "/OPT:ICF")
+    endif()
+  endif()
 endif()
 
 # Get clang's version
@@ -63,131 +124,112 @@ endif()
 # Unlike PACKAGE_VERSION, CLANG_VERSION does not include LLVM_VERSION_SUFFIX.
 set(CLANG_VERSION "${CLANG_VERSION_MAJOR}.${CLANG_VERSION_MINOR}.${CLANG_VERSION_PATCHLEVEL}")
 
-set(SYCL_INCLUDE_DIR "include/sycl")
+set(SYCL_INCLUDE_DIR "include")
 set(SYCL_INCLUDE_BUILD_DIR ${LLVM_BINARY_DIR}/${SYCL_INCLUDE_DIR})
-set(SYCL_INCLUDE_DEPLOY_DIR ${CMAKE_INSTALL_PREFIX}/${SYCL_INCLUDE_DIR})
 
-# Find OpenCL headers and libraries installed in the system and use them to
-# build SYCL runtime.
-# WARNING: use with caution, building SYCL runtime with OpenCL implementation
-# instead of Khronos ICD loader might cause build and/or portability issues.
-option(OpenCL_BUILD_WITH_SYSTEM_SDK "Build SYCL with OpenCL coming from the build system" OFF)
-
-if( (OpenCL_INCLUDE_DIR AND OpenCL_LIBRARY) OR OpenCL_BUILD_WITH_SYSTEM_SDK)
-  find_package(OpenCL)
+add_llvm_external_project(opencl)
+list(FIND LLVM_ENABLE_PROJECTS opencl OPENCL_FOUND)
+if(OPENCL_FOUND EQUAL -1)
+  message(FATAL_ERROR "opencl external project required but not found.")
 endif()
 
-include(ExternalProject)
+# Copy OpenCL Headers into sycl headers build directory
+# Compiler does automatic lookup bin/../include based on clang binary location,
+# e.g. when run LIT tests
+file(COPY ${OpenCL_INCLUDE_DIR}/CL
+     DESTINATION ${SYCL_INCLUDE_BUILD_DIR}/sycl)
 
-if( NOT OpenCL_INCLUDE_DIRS )
-  message(STATUS "OpenCL_INCLUDE_DIRS is missing. Will try to download OpenCL headers from github.com")
-  set(OpenCL_INCLUDE_DIRS "${CMAKE_CURRENT_BINARY_DIR}/OpenCL/inc")
-  ExternalProject_Add(ocl-headers
-    GIT_REPOSITORY    https://github.com/KhronosGroup/OpenCL-Headers.git
-    GIT_TAG           origin/master
-    SOURCE_DIR        "${CMAKE_CURRENT_BINARY_DIR}/OpenCL/inc"
-    CONFIGURE_COMMAND ""
-    BUILD_COMMAND     ${CMAKE_COMMAND} -E copy_directory ${OpenCL_INCLUDE_DIRS}/CL ${SYCL_INCLUDE_BUILD_DIR}/CL
-    INSTALL_COMMAND   ""
-    STEP_TARGETS      build
-    COMMENT           "Downloading OpenCL headers."
-  )
-  add_definitions(-DCL_TARGET_OPENCL_VERSION=220)
-else()
-  add_custom_target( ocl-headers ALL
-    DEPENDS ${OpenCL_INCLUDE_DIRS}
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${OpenCL_INCLUDE_DIRS}/CL ${SYCL_INCLUDE_BUILD_DIR}/CL
-    COMMENT "Copying OpenCL headers ..."
-  )
+# Include OpenCL Headers into final bundle.
+install(DIRECTORY ${OpenCL_INCLUDE_DIR}/CL
+        DESTINATION ${SYCL_INCLUDE_DIR}/sycl
+        COMPONENT OpenCL-Headers)
+
+# Option to enable online kernel fusion via a JIT compiler
+option(SYCL_ENABLE_KERNEL_FUSION "Enable kernel fusion via JIT compiler" ON)
+if(SYCL_ENABLE_KERNEL_FUSION AND WIN32)
+  message(WARNING "Kernel fusion not yet supported on Windows")
+  set(SYCL_ENABLE_KERNEL_FUSION OFF CACHE 
+      BOOL "Kernel fusion not yet supported on Windows" FORCE)
 endif()
 
-if( NOT OpenCL_LIBRARIES )
-  message(STATUS "OpenCL_LIBRARIES is missing. Will try to download OpenCL ICD Loader from github.com")
-  if(MSVC)
-    set(OpenCL_LIBRARIES
-        "${LLVM_LIBRARY_OUTPUT_INTDIR}/${CMAKE_STATIC_LIBRARY_PREFIX}OpenCL${CMAKE_STATIC_LIBRARY_SUFFIX}")
-    list(APPEND AUX_CMAKE_FLAGS -DOPENCL_ICD_LOADER_REQUIRE_WDK=OFF)
-  else()
-    set(OpenCL_LIBRARIES
-        "${LLVM_LIBRARY_OUTPUT_INTDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}OpenCL${CMAKE_SHARED_LIBRARY_SUFFIX}")
-  endif()
-  if (CMAKE_C_COMPILER)
-      list(APPEND AUX_CMAKE_FLAGS -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER})
-  endif()
-  if (CMAKE_CXX_COMPILER)
-      list(APPEND AUX_CMAKE_FLAGS -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER})
-  endif()
-  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/icd_build)
-  ExternalProject_Add(ocl-icd
-    GIT_REPOSITORY    https://github.com/KhronosGroup/OpenCL-ICD-Loader.git
-    GIT_TAG           origin/master
-    SOURCE_DIR        "${CMAKE_CURRENT_BINARY_DIR}/OpenCL/icd"
-    BINARY_DIR        "${CMAKE_CURRENT_BINARY_DIR}/icd_build"
-    INSTALL_DIR       "${CMAKE_CURRENT_BINARY_DIR}/icd_install"
-    CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-               -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
-               -DOPENCL_ICD_LOADER_HEADERS_DIR=${OpenCL_INCLUDE_DIRS}
-               -DCMAKE_INSTALL_PREFIX=<INSTALL_DIR>
-               -DCMAKE_INSTALL_LIBDIR:PATH=lib${LLVM_LIBDIR_SUFFIX}
-               ${AUX_CMAKE_FLAGS}
-    STEP_TARGETS      configure,build,install
-    DEPENDS           ocl-headers
-    BUILD_BYPRODUCTS ${OpenCL_LIBRARIES}
-  )
-  ExternalProject_Add_Step(ocl-icd llvminstall
-    COMMAND ${CMAKE_COMMAND} -E copy_directory <INSTALL_DIR>/ ${LLVM_BINARY_DIR}
-    COMMENT "Installing ocl-icd into the LLVM binary directory"
-    DEPENDEES install
-  )
-  # Optionally install the ICD library along with LLVM.
-  option(OpenCL_INSTALL_KHRONOS_ICD_LOADER
-    "Install the Khronos ICD Loader built as part of LLVM" OFF)
-  if (OpenCL_INSTALL_KHRONOS_ICD_LOADER)
-    install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/icd_install/"
-      DESTINATION "."
-      COMPONENT opencl-icd
-    )
-  endif()
-else()
-  file(GLOB ICD_LOADER_SRC "${OpenCL_LIBRARIES}*")
-  file(COPY ${ICD_LOADER_SRC} DESTINATION ${LLVM_LIBRARY_OUTPUT_INTDIR})
-  add_custom_target(ocl-icd DEPENDS ${OpenCL_LIBRARIES} COMMENT "Copying OpenCL ICD Loader ...")
+# Needed for feature_test.hpp
+if ("cuda" IN_LIST SYCL_ENABLE_PLUGINS)
+  set(SYCL_BUILD_PI_CUDA ON)
 endif()
-
-set(OPENCL_INCLUDE "${OpenCL_INCLUDE_DIRS}")
-
-add_library (OpenCL-Headers INTERFACE)
-add_library (OpenCL::Headers ALIAS OpenCL-Headers)
-target_include_directories(OpenCL-Headers
-  INTERFACE ${OPENCL_INCLUDE}
-)
-install(DIRECTORY ${OPENCL_INCLUDE}/CL
-  DESTINATION ${SYCL_INCLUDE_DEPLOY_DIR}
-  COMPONENT opencl-headers
-)
-
-option(SYCL_BUILD_PI_CUDA
-  "Enables the CUDA backend for the Plugin Interface" OFF)
+if ("hip" IN_LIST SYCL_ENABLE_PLUGINS)
+  set(SYCL_BUILD_PI_HIP ON)
+endif()
+if ("esimd_emulator" IN_LIST SYCL_ENABLE_PLUGINS)
+  set(SYCL_BUILD_PI_ESIMD_EMULATOR ON)
+endif()
+if ("opencl" IN_LIST SYCL_ENABLE_PLUGINS)
+  set(SYCL_BUILD_PI_OPENCL ON)
+endif()
+if ("level_zero" IN_LIST SYCL_ENABLE_PLUGINS)
+  set(SYCL_BUILD_PI_LEVEL_ZERO ON)
+endif()
 
 # Configure SYCL version macro
 set(sycl_inc_dir ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set(sycl_src_dir ${CMAKE_CURRENT_SOURCE_DIR}/source)
 set(sycl_plugin_dir ${CMAKE_CURRENT_SOURCE_DIR}/plugins)
 string(TIMESTAMP __SYCL_COMPILER_VERSION "%Y%m%d")
-set(version_header "${sycl_inc_dir}/CL/sycl/version.hpp")
-configure_file("${version_header}.in" "${version_header}")
+configure_file("source/version.hpp.in" "${SYCL_INCLUDE_BUILD_DIR}/sycl/version.hpp")
+configure_file("source/feature_test.hpp.in" "${SYCL_INCLUDE_BUILD_DIR}/sycl/feature_test.hpp")
+install(FILES
+  "${SYCL_INCLUDE_BUILD_DIR}/sycl/feature_test.hpp"
+  "${SYCL_INCLUDE_BUILD_DIR}/sycl/version.hpp"
+  DESTINATION "${SYCL_INCLUDE_DIR}/sycl"
+  COMPONENT sycl-headers)
 
-# Copy SYCL headers
-add_custom_target(sycl-headers ALL
-COMMAND ${CMAKE_COMMAND} -E copy_directory ${sycl_inc_dir}/CL ${SYCL_INCLUDE_BUILD_DIR}/CL
-COMMENT "Copying SYCL headers ...")
+include(AddBoostMp11Headers)
 
-# Configure SYCL headers
-install(DIRECTORY "${sycl_inc_dir}/." DESTINATION ${SYCL_INCLUDE_DEPLOY_DIR} COMPONENT sycl-headers)
+# This is workaround to detect changes (add or modify) in subtree which
+# are not detected by copy_directory command.
+# TODO: detect and process remove header/directory case
+file(GLOB_RECURSE HEADERS_IN_SYCL_DIR CONFIGURE_DEPENDS "${sycl_inc_dir}/sycl/*")
+file(GLOB_RECURSE HEADERS_IN_CL_DIR CONFIGURE_DEPENDS "${sycl_inc_dir}/CL/*")
+file(GLOB_RECURSE HEADERS_IN_STD_DIR CONFIGURE_DEPENDS "${sycl_inc_dir}/std/*")
+string(REPLACE "${sycl_inc_dir}" "${SYCL_INCLUDE_BUILD_DIR}"
+  OUT_HEADERS_IN_SYCL_DIR "${HEADERS_IN_SYCL_DIR}")
+string(REPLACE "${sycl_inc_dir}/CL" "${SYCL_INCLUDE_BUILD_DIR}/sycl/CL"
+  OUT_HEADERS_IN_CL_DIR "${HEADERS_IN_CL_DIR}")
+string(REPLACE "${sycl_inc_dir}" "${SYCL_INCLUDE_BUILD_DIR}"
+  OUT_HEADERS_IN_STD_DIR "${HEADERS_IN_STD_DIR}")
 
-set(SYCL_RT_LIBS sycl)
-if (MSVC)
-  list(APPEND SYCL_RT_LIBS sycld)
+# Copy SYCL headers from sources to build directory
+add_custom_target(sycl-headers
+  DEPENDS ${OUT_HEADERS_IN_SYCL_DIR}
+          ${OUT_HEADERS_IN_CL_DIR}
+          ${OUT_HEADERS_IN_STD_DIR}
+          boost_mp11-headers)
+
+add_custom_command(
+  OUTPUT  ${OUT_HEADERS_IN_SYCL_DIR}
+          ${OUT_HEADERS_IN_CL_DIR}
+          ${OUT_HEADERS_IN_STD_DIR}
+  DEPENDS ${HEADERS_IN_SYCL_DIR}
+          ${HEADERS_IN_CL_DIR}
+          ${HEADERS_IN_STD_DIR}
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${sycl_inc_dir}/sycl ${SYCL_INCLUDE_BUILD_DIR}/sycl
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${sycl_inc_dir}/CL ${SYCL_INCLUDE_BUILD_DIR}/sycl/CL
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${sycl_inc_dir}/std ${SYCL_INCLUDE_BUILD_DIR}/std
+  COMMENT "Copying SYCL headers ...")
+
+# Copy SYCL headers from source to install directory
+install(DIRECTORY "${sycl_inc_dir}/sycl" DESTINATION ${SYCL_INCLUDE_DIR} COMPONENT sycl-headers)
+install(DIRECTORY "${sycl_inc_dir}/CL" DESTINATION ${SYCL_INCLUDE_DIR}/sycl COMPONENT sycl-headers)
+install(DIRECTORY "${sycl_inc_dir}/std" DESTINATION ${SYCL_INCLUDE_DIR} COMPONENT sycl-headers)
+install(DIRECTORY ${BOOST_MP11_DESTINATION_DIR} DESTINATION ${SYCL_INCLUDE_DIR}/sycl/detail COMPONENT boost_mp11-headers)
+
+if (WIN32)
+  set(SYCL_RT_LIBS sycl${SYCL_MAJOR_VERSION})
+  # Do we really support non-MSVC ABI on WIN?
+  if (MSVC)
+    list(APPEND SYCL_RT_LIBS sycl${SYCL_MAJOR_VERSION}d)
+  endif()
+else()
+  set(SYCL_RT_LIBS sycl)
 endif()
 
 # This function allows building multiple libraries with the same options.
@@ -195,29 +237,41 @@ endif()
 # Currently handles linking with libcxx support and gcc workaround
 function( add_common_options LIB_NAME)
   if (SYCL_USE_LIBCXX)
-      if ((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR
-          (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
-          target_compile_options(${LIB_NAME} PRIVATE -nostdinc++)
-          if ((NOT (DEFINED SYCL_LIBCXX_INCLUDE_PATH)) OR (NOT (DEFINED SYCL_LIBCXX_LIBRARY_PATH)))
-              message(FATAL_ERROR "When building with libc++ SYCL_LIBCXX_INCLUDE_PATHS and"
-                                  "SYCL_LIBCXX_LIBRARY_PATH should be set")
-          endif()
-          target_include_directories(${LIB_NAME} PRIVATE "${SYCL_LIBCXX_INCLUDE_PATH}")
-          target_link_libraries(${LIB_NAME} PRIVATE "-L${SYCL_LIBCXX_LIBRARY_PATH}" -nodefaultlibs -lc++ -lc++abi -lm -lc -lgcc_s -lgcc)
-      else()
-          message(FATAL_ERROR "Build with libc++ is not yet supported for this compiler")
+    if ((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR
+      (CMAKE_CXX_COMPILER_ID STREQUAL "Clang"))
+      if ((NOT (DEFINED SYCL_LIBCXX_INCLUDE_PATH)) OR (NOT (DEFINED SYCL_LIBCXX_LIBRARY_PATH)))
+        message(FATAL_ERROR "When building with libc++ SYCL_LIBCXX_INCLUDE_PATHS and"
+                            "SYCL_LIBCXX_LIBRARY_PATH should be set")
       endif()
+      target_link_libraries(${LIB_NAME} PRIVATE "-L${SYCL_LIBCXX_LIBRARY_PATH}" -Wl,-rpath,${SYCL_LIBCXX_LIBRARY_PATH} -nodefaultlibs -lc++ -lc++abi -lm -lc -lgcc_s -lgcc)
+      target_compile_options(${LIB_NAME} PRIVATE -nostdinc++)
+      target_include_directories(${LIB_NAME} PRIVATE "${SYCL_LIBCXX_INCLUDE_PATH}")
+      if (ARGC EQUAL 2)
+        target_compile_options(${ARGV1} PRIVATE -nostdinc++)
+        target_include_directories(${ARGV1} PRIVATE "${SYCL_LIBCXX_INCLUDE_PATH}")
+      endif()
+    else()
+      message(FATAL_ERROR "Build with libc++ is not yet supported for this compiler")
+    endif()
   else()
-
-# Workaround for bug in GCC version 5 and higher.
-# More information https://bugs.launchpad.net/ubuntu/+source/gcc-5/+bug/1568899
+    # Workaround for bug in GCC version 5 and higher.
+    # More information https://bugs.launchpad.net/ubuntu/+source/gcc-5/+bug/1568899
     if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
         CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 5.0)
-    target_link_libraries(${LIB_NAME} PRIVATE gcc_s gcc)
+      target_link_libraries(${ARGV0} PRIVATE gcc_s gcc)
     endif()
-
   endif()
 endfunction(add_common_options)
+
+if (LLVM_ENABLE_ASSERTIONS AND NOT SYCL_DISABLE_STL_ASSERTIONS AND NOT WIN32)
+  if(SYCL_USE_LIBCXX)
+    add_definitions(-D_LIBCPP_DEBUG=1)
+    set(SYCL_CLANG_EXTRA_FLAGS "${SYCL_CLANG_EXTRA_FLAGS} -D_LIBCPP_DEBUG=1")
+  else()
+    add_definitions(-D_GLIBCXX_ASSERTIONS=1)
+    set(SYCL_CLANG_EXTRA_FLAGS "${SYCL_CLANG_EXTRA_FLAGS} -D_GLIBCXX_ASSERTIONS=1")
+  endif()
+endif()
 
 set(SYCL_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -227,18 +281,24 @@ add_subdirectory( source )
 # Auxilliary extras for SYCL headers/library
 if (NOT WIN32)
   install(FILES
-      "${CMAKE_CURRENT_SOURCE_DIR}/xmethods/libsycl.so-gdb.py"
-      RENAME "libsycl.so.${SYCL_VERSION_STRING}-gdb.py"
-      DESTINATION "lib${LLVM_LIBDIR_SUFFIX}/"
-      COMPONENT sycl-headers-extras)
+    "${CMAKE_CURRENT_SOURCE_DIR}/gdb/libsycl.so-gdb.py"
+    RENAME "libsycl.so.${SYCL_VERSION_STRING}-gdb.py"
+    DESTINATION "lib${LLVM_LIBDIR_SUFFIX}/"
+    COMPONENT sycl-headers-extras)
+endif()
+
+if (SYCL_ENABLE_XPTI_TRACING)
+  set(XPTIFW_LIBS xpti xptifw)
 endif()
 
 # SYCL toolchain builds all components: compiler, libraries, headers, etc.
-add_custom_target( sycl-toolchain
-  DEPENDS ${SYCL_RT_LIBS}
+add_custom_target(sycl-compiler
+  DEPENDS append-file
           clang
           clang-offload-wrapper
           clang-offload-bundler
+          clang-offload-deps
+          clang-offload-extract
           file-table-tform
           llc
           llvm-ar
@@ -247,16 +307,32 @@ add_custom_target( sycl-toolchain
           llvm-spirv
           llvm-link
           llvm-objcopy
+          spirv-to-ir-wrapper
           sycl-post-link
+          opencl-aot
+)
+
+add_custom_target( sycl-runtime-libraries
+  DEPENDS ${SYCL_RT_LIBS}
+)
+
+add_custom_target( sycl-toolchain
+  DEPENDS sycl-runtime-libraries
+          sycl-compiler
           sycl-ls
+          ${XPTIFW_LIBS}
   COMMENT "Building SYCL compiler toolchain..."
 )
 
-# Check if opencl-aot tool is enabled.
-list(FIND LLVM_ENABLE_PROJECTS opencl-aot OPENCL_AOT_FOUND)
-if(NOT OPENCL_AOT_FOUND EQUAL -1)
-  add_dependencies(sycl-toolchain opencl-aot)
-  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS opencl-aot)
+if (WIN32)
+  add_dependencies(sycl-toolchain win_proxy_loader)
+endif()
+
+# Enable new IN_LIST operator.
+cmake_policy(SET CMP0057 NEW)
+
+if (libdevice IN_LIST LLVM_ENABLE_PROJECTS)
+  add_dependencies(sycl-toolchain libsycldevice)
 endif()
 
 if (SYCL_ENABLE_XPTI_TRACING)
@@ -266,29 +342,51 @@ if (SYCL_ENABLE_XPTI_TRACING)
   endif()
 endif()
 
+if (SYCL_ENABLE_STACK_PRINTING)
+  add_dependencies(sycl-toolchain llvm-symbolizer)
+endif()
+
 option(SYCL_INCLUDE_TESTS
   "Generate build targets for the SYCL unit tests."
   ${LLVM_INCLUDE_TESTS})
+
+# Ensure that HIP platform is uppercase, to match buildbot's output.
+if(NOT "${SYCL_BUILD_PI_HIP_PLATFORM}" STREQUAL "")
+  string(TOUPPER ${SYCL_BUILD_PI_HIP_PLATFORM} SYCL_BUILD_PI_HIP_PLATFORM)
+endif()
 
 # Plugin Library
 add_subdirectory( plugins )
 
 add_subdirectory(tools)
 
+if (WIN32)
+  add_subdirectory(win_proxy_loader)
+endif()
+
 if(SYCL_INCLUDE_TESTS)
-  if(EXISTS ${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include/gtest/gtest.h)
+  if(NOT LLVM_INCLUDE_TESTS)
+      message(FATAL_ERROR
+        "Can't build SYCL tests without LLVM_INCLUDE_TESTS enabled.")
+  endif()
+  if(EXISTS ${LLVM_THIRD_PARTY_DIR}/unittest/googletest/include/gtest/gtest.h)
     add_subdirectory(unittests)
     list(APPEND SYCL_TEST_DEPS SYCLUnitTests)
   endif()
   add_subdirectory(test)
 endif()
 
+get_property(SYCL_TOOLCHAIN_DEPS GLOBAL PROPERTY SYCL_TOOLCHAIN_INSTALL_COMPONENTS)
 # Package deploy support
 # Listed here are component names contributing the package
 set( SYCL_TOOLCHAIN_DEPLOY_COMPONENTS
+     append-file
+     boost_mp11-headers
      clang
      clang-offload-wrapper
      clang-offload-bundler
+     clang-offload-deps
+     clang-offload-extract
      file-table-tform
      llc
      llvm-ar
@@ -297,31 +395,86 @@ set( SYCL_TOOLCHAIN_DEPLOY_COMPONENTS
      llvm-spirv
      llvm-link
      llvm-objcopy
+     spirv-to-ir-wrapper
      sycl-post-link
      sycl-ls
      clang-resource-headers
-     opencl-headers
+     OpenCL-Headers
+     opencl-aot
      sycl-headers
      sycl-headers-extras
      sycl
-     pi_opencl
-     pi_level0
      libsycldevice
+     level-zero-sycl-dev
+     ${XPTIFW_LIBS}
+     ${SYCL_TOOLCHAIN_DEPS}
 )
-if(OpenCL_INSTALL_KHRONOS_ICD_LOADER AND TARGET ocl-icd)
-  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS opencl-icd)
+
+if (WIN32)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS win_proxy_loader)
 endif()
 
-if(SYCL_BUILD_PI_CUDA)
+if (TARGET sycl-prof)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS sycl-prof)
+endif()
+if (TARGET sycl-sanitize)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS sycl-sanitize)
+endif()
+if (TARGET sycl-trace)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS sycl-trace)
+endif()
+
+if(OpenCL_INSTALL_KHRONOS_ICD_LOADER AND TARGET OpenCL-ICD)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS OpenCL-ICD)
+endif()
+
+# Build and install lld as part of the sycl-toolchain if available
+if("lld" IN_LIST LLVM_ENABLE_PROJECTS)
+  add_dependencies(sycl-toolchain lld)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS lld)
+endif()
+
+if("libclc" IN_LIST LLVM_ENABLE_PROJECTS)
+  add_dependencies(sycl-toolchain libspirv-builtins)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS libspirv-builtins)
+endif()
+
+if("cuda" IN_LIST SYCL_ENABLE_PLUGINS)
   # Ensure that libclc is enabled.
   list(FIND LLVM_ENABLE_PROJECTS libclc LIBCLC_FOUND)
   if( LIBCLC_FOUND EQUAL -1 )
     message(FATAL_ERROR
-        "CUDA support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+      "CUDA support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
   endif()
 
-  add_dependencies(sycl-toolchain libspirv-builtins pi_cuda)
-  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS libspirv-builtins pi_cuda)
+  add_dependencies(sycl-toolchain pi_cuda)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS pi_cuda)
+endif()
+
+if("hip" IN_LIST SYCL_ENABLE_PLUGINS)
+  # Ensure that libclc is enabled.
+  list(FIND LLVM_ENABLE_PROJECTS libclc LIBCLC_FOUND)
+  if( LIBCLC_FOUND EQUAL -1 )
+    message(FATAL_ERROR
+      "HIP support requires adding \"libclc\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+  endif()
+
+  if(NOT TARGET lld AND "${SYCL_BUILD_PI_HIP_PLATFORM}" STREQUAL "AMD")
+    message(FATAL_ERROR
+      "HIP support requires adding \"lld\" to the CMake argument \"LLVM_ENABLE_PROJECTS\"")
+  endif()
+
+  add_dependencies(sycl-toolchain pi_hip)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS pi_hip)
+endif()
+
+if("esimd_emulator" IN_LIST SYCL_ENABLE_PLUGINS)
+  list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS pi_esimd_emulator libcmrt-headers)
+  if (MSVC)
+    list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS libcmrt-libs libcmrt-dlls)
+  else()
+    list(APPEND SYCL_TOOLCHAIN_DEPLOY_COMPONENTS libcmrt-sos)
+  endif()
 endif()
 
 # Use it as fake dependency in order to force another command(s) to execute.
@@ -354,3 +507,5 @@ add_custom_target(deploy-sycl-toolchain
 
 # SYCL Runtime documentation
 add_subdirectory(doc)
+# SYCL End-to-End tests
+add_subdirectory(test-e2e)

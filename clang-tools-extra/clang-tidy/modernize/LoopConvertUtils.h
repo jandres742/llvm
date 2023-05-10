@@ -22,11 +22,14 @@
 #include <string>
 #include <utility>
 
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 
-enum LoopFixerKind { LFK_Array, LFK_Iterator, LFK_PseudoArray };
+enum LoopFixerKind {
+  LFK_Array,
+  LFK_Iterator,
+  LFK_ReverseIterator,
+  LFK_PseudoArray
+};
 
 /// A map used to walk the AST in reverse: maps child Stmt to parent Stmt.
 typedef llvm::DenseMap<const clang::Stmt *, const clang::Stmt *> StmtParentMap;
@@ -172,7 +175,7 @@ private:
 class DeclFinderASTVisitor
     : public clang::RecursiveASTVisitor<DeclFinderASTVisitor> {
 public:
-  DeclFinderASTVisitor(const std::string &Name,
+  DeclFinderASTVisitor(const StringRef &Name,
                        const StmtGeneratedVarNameMap *GeneratedDecls)
       : Name(Name), GeneratedDecls(GeneratedDecls), Found(false) {}
 
@@ -270,7 +273,7 @@ private:
 typedef llvm::SmallVector<Usage, 8> UsageResult;
 
 // General functions used by ForLoopIndexUseVisitor and LoopConvertCheck.
-const Expr *digThroughConstructors(const Expr *E);
+const Expr *digThroughConstructorsConversions(const Expr *E);
 bool areSameExpr(ASTContext *Context, const Expr *First, const Expr *Second);
 const DeclRefExpr *getDeclRef(const Expr *E);
 bool areSameVariable(const ValueDecl *First, const ValueDecl *Second);
@@ -346,7 +349,7 @@ private:
   bool TraverseLambdaCapture(LambdaExpr *LE, const LambdaCapture *C,
                              Expr *Init);
   bool TraverseMemberExpr(MemberExpr *Member);
-  bool TraverseUnaryDeref(UnaryOperator *Uop);
+  bool TraverseUnaryOperator(UnaryOperator *Uop);
   bool VisitDeclRefExpr(DeclRefExpr *E);
   bool VisitDeclStmt(DeclStmt *S);
   bool TraverseStmt(Stmt *S);
@@ -459,8 +462,6 @@ private:
   bool declarationExists(llvm::StringRef Symbol);
 };
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::modernize
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_LOOP_CONVERT_UTILS_H

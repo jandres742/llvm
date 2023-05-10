@@ -10,6 +10,7 @@
 #define LLVM_CLANG_LIB_DRIVER_TOOLCHAINS_GNU_H
 
 #include "Cuda.h"
+#include "LazyDetector.h"
 #include "ROCm.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/ToolChain.h"
@@ -27,7 +28,7 @@ struct DetectedMultilibs {
 
   /// On Biarch systems, this corresponds to the default multilib when
   /// targeting the non-default multilib. Otherwise, it is empty.
-  llvm::Optional<Multilib> BiarchSibling;
+  std::optional<Multilib> BiarchSibling;
 };
 
 bool findMIPSMultilibs(const Driver &D, const llvm::Triple &TargetTriple,
@@ -36,21 +37,11 @@ bool findMIPSMultilibs(const Driver &D, const llvm::Triple &TargetTriple,
 
 namespace tools {
 
-/// Base class for all GNU tools that provide the same behavior when
-/// it comes to response files support
-class LLVM_LIBRARY_VISIBILITY GnuTool : public Tool {
-  virtual void anchor();
-
-public:
-  GnuTool(const char *Name, const char *ShortName, const ToolChain &TC)
-      : Tool(Name, ShortName, TC, RF_Full, llvm::sys::WEM_CurrentCodePage) {}
-};
-
 /// Directly call GNU Binutils' assembler and linker.
 namespace gnutools {
-class LLVM_LIBRARY_VISIBILITY Assembler : public GnuTool {
+class LLVM_LIBRARY_VISIBILITY Assembler : public Tool {
 public:
-  Assembler(const ToolChain &TC) : GnuTool("GNU::Assembler", "assembler", TC) {}
+  Assembler(const ToolChain &TC) : Tool("GNU::Assembler", "assembler", TC) {}
 
   bool hasIntegratedCPP() const override { return false; }
 
@@ -60,9 +51,9 @@ public:
                     const char *LinkingOutput) const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
+class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
 public:
-  Linker(const ToolChain &TC) : GnuTool("GNU::Linker", "linker", TC) {}
+  Linker(const ToolChain &TC) : Tool("GNU::Linker", "linker", TC) {}
 
   bool hasIntegratedCPP() const override { return false; }
   bool isLinkJob() const override { return true; }
@@ -78,14 +69,28 @@ private:
                               const InputInfoList &InputFiles,
                               const llvm::opt::ArgList &Args) const;
 };
+
+class LLVM_LIBRARY_VISIBILITY StaticLibTool : public Tool {
+public:
+  StaticLibTool(const ToolChain &TC)
+      : Tool("GNU::StaticLibTool", "static-lib-linker", TC) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
 } // end namespace gnutools
 
 /// gcc - Generic GCC tool implementations.
 namespace gcc {
-class LLVM_LIBRARY_VISIBILITY Common : public GnuTool {
+class LLVM_LIBRARY_VISIBILITY Common : public Tool {
 public:
   Common(const char *Name, const char *ShortName, const ToolChain &TC)
-      : GnuTool(Name, ShortName, TC) {}
+      : Tool(Name, ShortName, TC) {}
 
   // A gcc tool has an "integrated" assembler that it will call to produce an
   // object. Let it use that assembler so that we don't have to deal with
@@ -203,7 +208,7 @@ public:
     Multilib SelectedMultilib;
     /// On Biarch systems, this corresponds to the default multilib when
     /// targeting the non-default multilib. Otherwise, it is empty.
-    llvm::Optional<Multilib> BiarchSibling;
+    std::optional<Multilib> BiarchSibling;
 
     GCCVersion Version;
 
@@ -214,10 +219,13 @@ public:
     /// The set of multilibs that the detected installation supports.
     MultilibSet Multilibs;
 
+    // Gentoo-specific toolchain configurations are stored here.
+    const std::string GentooConfigDir = "/etc/env.d/gcc";
+
   public:
     explicit GCCInstallationDetector(const Driver &D) : IsValid(false), D(D) {}
     void init(const llvm::Triple &TargetTriple, const llvm::opt::ArgList &Args,
-              ArrayRef<std::string> ExtraTripleAliases = None);
+              ArrayRef<std::string> ExtraTripleAliases = std::nullopt);
 
     /// Check whether we detected a valid GCC install.
     bool isValid() const { return IsValid; }
@@ -269,7 +277,8 @@ public:
                                 const llvm::opt::ArgList &Args,
                                 const std::string &LibDir,
                                 StringRef CandidateTriple,
-                                bool NeedsBiarchSuffix = false);
+                                bool NeedsBiarchSuffix, bool GCCDirExists,
+                                bool GCCCrossDirExists);
 
     bool ScanGentooConfigs(const llvm::Triple &TargetTriple,
                            const llvm::opt::ArgList &Args,
@@ -284,8 +293,8 @@ public:
 
 protected:
   GCCInstallationDetector GCCInstallation;
-  CudaInstallationDetector CudaInstallation;
-  RocmInstallationDetector RocmInstallation;
+  LazyDetector<CudaInstallationDetector> CudaInstallation;
+  LazyDetector<RocmInstallationDetector> RocmInstallation;
 
 public:
   Generic_GCC(const Driver &D, const llvm::Triple &Triple,
@@ -294,9 +303,10 @@ public:
 
   void printVerboseInfo(raw_ostream &OS) const override;
 
-  bool IsUnwindTablesDefault(const llvm::opt::ArgList &Args) const override;
+  UnwindTableLevel
+  getDefaultUnwindTableLevel(const llvm::opt::ArgList &Args) const override;
   bool isPICDefault() const override;
-  bool isPIEDefault() const override;
+  bool isPIEDefault(const llvm::opt::ArgList &Args) const override;
   bool isPICDefaultForced() const override;
   bool IsIntegratedAssemblerDefault() const override;
   llvm::opt::DerivedArgList *
@@ -307,11 +317,6 @@ protected:
   Tool *getTool(Action::ActionClass AC) const override;
   Tool *buildAssembler() const override;
   Tool *buildLinker() const override;
-
-  virtual std::string getMultiarchTriple(const Driver &D,
-                                         const llvm::Triple &TargetTriple,
-                                         StringRef SysRoot) const
-  { return TargetTriple.str(); }
 
   /// \name ToolChain Implementation Helper Functions
   /// @{
@@ -345,16 +350,15 @@ protected:
   addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                            llvm::opt::ArgStringList &CC1Args) const;
 
-  bool
-  addGCCLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
-                           llvm::opt::ArgStringList &CC1Args) const;
+  bool addGCCLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
+                                   llvm::opt::ArgStringList &CC1Args,
+                                   StringRef DebianMultiarch) const;
 
-  bool addLibStdCXXIncludePaths(Twine Base, Twine Suffix, StringRef GCCTriple,
-                                StringRef GCCMultiarchTriple,
-                                StringRef TargetMultiarchTriple,
+  bool addLibStdCXXIncludePaths(Twine IncludeDir, StringRef Triple,
                                 Twine IncludeSuffix,
                                 const llvm::opt::ArgList &DriverArgs,
-                                llvm::opt::ArgStringList &CC1Args) const;
+                                llvm::opt::ArgStringList &CC1Args,
+                                bool DetectDebian = false) const;
 
   /// @}
 

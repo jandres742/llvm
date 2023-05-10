@@ -23,8 +23,17 @@ namespace mlir {
 struct CallInterfaceCallable : public PointerUnion<SymbolRefAttr, Value> {
   using PointerUnion<SymbolRefAttr, Value>::PointerUnion;
 };
+} // namespace mlir
 
+/// Include the generated interface declarations.
 #include "mlir/Interfaces/CallInterfaces.h.inc"
-} // end namespace mlir
+
+namespace llvm {
+
+template <typename To>
+struct CastInfo<To, mlir::CallInterfaceCallable>
+    : public CastInfo<To, mlir::CallInterfaceCallable::PointerUnion> {};
+
+} // namespace llvm
 
 #endif // MLIR_INTERFACES_CALLINTERFACES_H

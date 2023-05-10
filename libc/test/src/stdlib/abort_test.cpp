@@ -9,10 +9,10 @@
 #include "include/signal.h"
 #include "include/stdlib.h"
 #include "src/stdlib/abort.h"
-#include "utils/UnitTest/Test.h"
+#include "test/UnitTest/Test.h"
 
-TEST(Stdlib, abort) {
+TEST(LlvmLibcStdlib, abort) {
   // -1 matches against any signal, which is necessary for now until
   // __llvm_libc::abort() unblocks SIGABRT.
-  EXPECT_DEATH([] { __llvm_libc::abort(); }, -1);
+  EXPECT_DEATH([] { __llvm_libc::abort(); }, WITH_SIGNAL(-1));
 }

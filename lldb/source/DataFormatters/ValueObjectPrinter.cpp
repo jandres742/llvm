@@ -71,6 +71,18 @@ void ValueObjectPrinter::Init(
 }
 
 bool ValueObjectPrinter::PrintValueObject() {
+  if (!m_orig_valobj)
+    return false;
+
+  // If the incoming ValueObject is in an error state, the best we're going to 
+  // get out of it is its type.  But if we don't even have that, just print
+  // the error and exit early.
+  if (m_orig_valobj->GetError().Fail() 
+      && !m_orig_valobj->GetCompilerType().IsValid()) {
+    m_stream->Printf("Error: '%s'", m_orig_valobj->GetError().AsCString());
+    return true;
+  }
+   
   if (!GetMostSpecializedValue() || m_valobj == nullptr)
     return false;
 
@@ -151,11 +163,11 @@ const char *ValueObjectPrinter::GetDescriptionForDisplay() {
   return str;
 }
 
-const char *ValueObjectPrinter::GetRootNameForDisplay(const char *if_fail) {
+const char *ValueObjectPrinter::GetRootNameForDisplay() {
   const char *root_valobj_name = m_options.m_root_valobj_name.empty()
                                      ? m_valobj->GetName().AsCString()
                                      : m_options.m_root_valobj_name.c_str();
-  return root_valobj_name ? root_valobj_name : if_fail;
+  return root_valobj_name ? root_valobj_name : "";
 }
 
 bool ValueObjectPrinter::ShouldPrintValueObject() {
@@ -239,17 +251,14 @@ void ValueObjectPrinter::PrintDecl() {
     // type if there is one to print
     ConstString type_name;
     if (m_compiler_type.IsValid()) {
-      if (m_options.m_use_type_display_name)
-        type_name = m_valobj->GetDisplayTypeName();
-      else
-        type_name = m_valobj->GetQualifiedTypeName();
+      type_name = m_options.m_use_type_display_name
+                      ? m_valobj->GetDisplayTypeName()
+                      : m_valobj->GetQualifiedTypeName();
     } else {
       // only show an invalid type name if the user explicitly triggered
       // show_type
       if (m_options.m_show_types)
         type_name = ConstString("<invalid type>");
-      else
-        type_name.Clear();
     }
 
     if (type_name) {
@@ -260,19 +269,17 @@ void ValueObjectPrinter::PrintDecl() {
           type_name_str.erase(iter, 2);
         }
       }
-      typeName.Printf("%s", type_name_str.c_str());
+      typeName << type_name_str.c_str();
     }
   }
 
   StreamString varName;
 
-  if (!m_options.m_hide_name) {
+  if (ShouldShowName()) {
     if (m_options.m_flat_output)
       m_valobj->GetExpressionPath(varName);
-    else {
-      const char *name_cstr = GetRootNameForDisplay("");
-      varName.Printf("%s", name_cstr);
-    }
+    else
+      varName << GetRootNameForDisplay();
   }
 
   bool decl_printed = false;
@@ -307,7 +314,7 @@ void ValueObjectPrinter::PrintDecl() {
       m_stream->Printf("(%s) ", typeName.GetData());
     if (!varName.Empty())
       m_stream->Printf("%s =", varName.GetData());
-    else if (!m_options.m_hide_name)
+    else if (ShouldShowName())
       m_stream->Printf(" =");
   }
 }
@@ -360,22 +367,33 @@ void ValueObjectPrinter::GetValueSummaryError(std::string &value,
   if (err_cstr)
     error.assign(err_cstr);
 
-  if (ShouldPrintValueObject()) {
-    if (IsNil())
-      summary.assign("nil");
-    else if (IsUninitialized())
-      summary.assign("<uninitialized>");
-    else if (m_options.m_omit_summary_depth == 0) {
-      TypeSummaryImpl *entry = GetSummaryFormatter();
-      if (entry)
-        m_valobj->GetSummaryAsCString(entry, summary,
-                                      m_options.m_varformat_language);
-      else {
-        const char *sum_cstr =
-            m_valobj->GetSummaryAsCString(m_options.m_varformat_language);
-        if (sum_cstr)
-          summary.assign(sum_cstr);
-      }
+  if (!ShouldPrintValueObject())
+    return;
+
+  if (IsNil()) {
+    lldb::LanguageType lang_type =
+        (m_options.m_varformat_language == lldb::eLanguageTypeUnknown)
+            ? m_valobj->GetPreferredDisplayLanguage()
+            : m_options.m_varformat_language;
+    if (Language *lang_plugin = Language::FindPlugin(lang_type)) {
+      summary.assign(lang_plugin->GetNilReferenceSummaryString().str());
+    } else {
+      // We treat C as the fallback language rather than as a separate Language
+      // plugin.
+      summary.assign("NULL");
+    }
+  } else if (IsUninitialized()) {
+    summary.assign("<uninitialized>");
+  } else if (m_options.m_omit_summary_depth == 0) {
+    TypeSummaryImpl *entry = GetSummaryFormatter();
+    if (entry) {
+      m_valobj->GetSummaryAsCString(entry, summary,
+                                    m_options.m_varformat_language);
+    } else {
+      const char *sum_cstr =
+          m_valobj->GetSummaryAsCString(m_options.m_varformat_language);
+      if (sum_cstr)
+        summary.assign(sum_cstr);
     }
   }
 }
@@ -408,7 +426,9 @@ bool ValueObjectPrinter::PrintValueAndSummaryIfNeeded(bool &value_printed,
       // this thing is nil (but show the value if the user passes a format
       // explicitly)
       TypeSummaryImpl *entry = GetSummaryFormatter();
-      if (!IsNil() && !IsUninitialized() && !m_value.empty() &&
+      const bool has_nil_or_uninitialized_summary =
+          (IsNil() || IsUninitialized()) && !m_summary.empty();
+      if (!has_nil_or_uninitialized_summary && !m_value.empty() &&
           (entry == nullptr ||
            (entry->DoesPrintValue(m_valobj) ||
             m_options.m_format != eFormatDefault) ||
@@ -417,13 +437,17 @@ bool ValueObjectPrinter::PrintValueAndSummaryIfNeeded(bool &value_printed,
         if (m_options.m_hide_pointer_value &&
             IsPointerValue(m_valobj->GetCompilerType())) {
         } else {
-          m_stream->Printf(" %s", m_value.c_str());
+          if (ShouldShowName())
+            m_stream->PutChar(' ');
+          m_stream->PutCString(m_value);
           value_printed = true;
         }
       }
 
       if (m_summary.size()) {
-        m_stream->Printf(" %s", m_summary.c_str());
+        if (ShouldShowName() || value_printed)
+          m_stream->PutChar(' ');
+        m_stream->PutCString(m_summary);
         summary_printed = true;
       }
     }
@@ -437,7 +461,7 @@ bool ValueObjectPrinter::PrintObjectDescriptionIfNeeded(bool value_printed,
     // let's avoid the overly verbose no description error for a nil thing
     if (m_options.m_use_objc && !IsNil() && !IsUninitialized() &&
         (!m_options.m_pointer_as_array)) {
-      if (!m_options.m_hide_value || !m_options.m_hide_name)
+      if (!m_options.m_hide_value || ShouldShowName())
         m_stream->Printf(" ");
       const char *object_desc = nullptr;
       if (value_printed || summary_printed)
@@ -448,9 +472,9 @@ bool ValueObjectPrinter::PrintObjectDescriptionIfNeeded(bool value_printed,
         // If the description already ends with a \n don't add another one.
         size_t object_end = strlen(object_desc) - 1;
         if (object_desc[object_end] == '\n')
-            m_stream->Printf("%s", object_desc);
+          m_stream->Printf("%s", object_desc);
         else
-            m_stream->Printf("%s\n", object_desc);
+          m_stream->Printf("%s\n", object_desc);
         return true;
       } else if (!value_printed && !summary_printed)
         return true;
@@ -492,7 +516,7 @@ bool ValueObjectPrinter::ShouldPrintChildren(
   if (m_options.m_use_objc)
     return false;
 
-  if (is_failed_description || m_curr_depth < m_options.m_max_depth) {
+  if (is_failed_description || !HasReachedMaximumDepth()) {
     // We will show children for all concrete types. We won't show pointer
     // contents unless a pointer depth has been specified. We won't reference
     // contents unless the reference is the root object (depth of zero).
@@ -538,13 +562,20 @@ ValueObject *ValueObjectPrinter::GetValueObjectForChildrenGeneration() {
   return m_valobj;
 }
 
-void ValueObjectPrinter::PrintChildrenPreamble() {
+void ValueObjectPrinter::PrintChildrenPreamble(bool value_printed,
+                                               bool summary_printed) {
   if (m_options.m_flat_output) {
     if (ShouldPrintValueObject())
       m_stream->EOL();
   } else {
-    if (ShouldPrintValueObject())
-      m_stream->PutCString(IsRef() ? ": {\n" : " {\n");
+    if (ShouldPrintValueObject()) {
+      if (IsRef()) {
+        m_stream->PutCString(": ");
+      } else if (value_printed || summary_printed || ShouldShowName()) {
+        m_stream->PutChar(' ');
+      }
+      m_stream->PutCString("{\n");
+    }
     m_stream->IndentMore();
   }
 }
@@ -665,8 +696,11 @@ void ValueObjectPrinter::PrintChildren(
 
     for (size_t idx = 0; idx < num_children; ++idx) {
       if (ValueObjectSP child_sp = GenerateChild(synth_m_valobj, idx)) {
+        if (m_options.m_child_printing_decider &&
+            !m_options.m_child_printing_decider(child_sp->GetName()))
+          continue;
         if (!any_children_printed) {
-          PrintChildrenPreamble();
+          PrintChildrenPreamble(value_printed, summary_printed);
           any_children_printed = true;
         }
         PrintChild(child_sp, curr_ptr_depth);
@@ -713,14 +747,19 @@ bool ValueObjectPrinter::PrintChildrenOneLiner(bool hide_names) {
   if (num_children) {
     m_stream->PutChar('(');
 
+    bool did_print_children = false;
     for (uint32_t idx = 0; idx < num_children; ++idx) {
       lldb::ValueObjectSP child_sp(synth_m_valobj->GetChildAtIndex(idx, true));
       if (child_sp)
         child_sp = child_sp->GetQualifiedRepresentationIfAvailable(
             m_options.m_use_dynamic, m_options.m_use_synthetic);
       if (child_sp) {
-        if (idx)
+        if (m_options.m_child_printing_decider &&
+            !m_options.m_child_printing_decider(child_sp->GetName()))
+          continue;
+        if (idx && did_print_children)
           m_stream->PutCString(", ");
+        did_print_children = true;
         if (!hide_names) {
           const char *name = child_sp.get()->GetName().AsCString();
           if (name && *name) {
@@ -778,9 +817,28 @@ void ValueObjectPrinter::PrintChildrenIfNeeded(bool value_printed,
       m_stream->EOL();
     } else
       PrintChildren(value_printed, summary_printed, curr_ptr_depth);
-  } else if (m_curr_depth >= m_options.m_max_depth && IsAggregate() &&
+  } else if (HasReachedMaximumDepth() && IsAggregate() &&
              ShouldPrintValueObject()) {
     m_stream->PutCString("{...}\n");
+    // The maximum child depth has been reached. If `m_max_depth` is the default
+    // (i.e. the user has _not_ customized it), then lldb presents a warning to
+    // the user. The warning tells the user that the limit has been reached, but
+    // more importantly tells them how to expand the limit if desired.
+    if (m_options.m_max_depth_is_default)
+      m_valobj->GetTargetSP()
+          ->GetDebugger()
+          .GetCommandInterpreter()
+          .SetReachedMaximumDepth();
   } else
     m_stream->EOL();
+}
+
+bool ValueObjectPrinter::HasReachedMaximumDepth() {
+  return m_curr_depth >= m_options.m_max_depth;
+}
+
+bool ValueObjectPrinter::ShouldShowName() const {
+  if (m_curr_depth == 0)
+    return !m_options.m_hide_root_name && !m_options.m_hide_name;
+  return !m_options.m_hide_name;
 }

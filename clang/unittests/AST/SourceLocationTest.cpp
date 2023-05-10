@@ -20,7 +20,7 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Tooling/Tooling.h"
-#include "llvm/Testing/Support/Annotations.h"
+#include "llvm/Testing/Annotations/Annotations.h"
 #include "gtest/gtest.h"
 
 using namespace clang;
@@ -60,6 +60,59 @@ TEST(RangeVerifier, WrongRange) {
   EXPECT_FALSE(Verifier.match("int i;", varDecl()));
 }
 
+class WhileParenLocationVerifier : public MatchVerifier<WhileStmt> {
+  unsigned ExpectLParenLine = 0, ExpectLParenColumn = 0;
+  unsigned ExpectRParenLine = 0, ExpectRParenColumn = 0;
+
+public:
+  void expectLocations(unsigned LParenLine, unsigned LParenColumn,
+                       unsigned RParenLine, unsigned RParenColumn) {
+    ExpectLParenLine = LParenLine;
+    ExpectLParenColumn = LParenColumn;
+    ExpectRParenLine = RParenLine;
+    ExpectRParenColumn = RParenColumn;
+  }
+
+protected:
+  void verify(const MatchFinder::MatchResult &Result,
+              const WhileStmt &Node) override {
+    SourceLocation LParenLoc = Node.getLParenLoc();
+    SourceLocation RParenLoc = Node.getRParenLoc();
+    unsigned LParenLine =
+        Result.SourceManager->getSpellingLineNumber(LParenLoc);
+    unsigned LParenColumn =
+        Result.SourceManager->getSpellingColumnNumber(LParenLoc);
+    unsigned RParenLine =
+        Result.SourceManager->getSpellingLineNumber(RParenLoc);
+    unsigned RParenColumn =
+        Result.SourceManager->getSpellingColumnNumber(RParenLoc);
+
+    if (LParenLine != ExpectLParenLine || LParenColumn != ExpectLParenColumn ||
+        RParenLine != ExpectRParenLine || RParenColumn != ExpectRParenColumn) {
+      std::string MsgStr;
+      llvm::raw_string_ostream Msg(MsgStr);
+      Msg << "Expected LParen Location <" << ExpectLParenLine << ":"
+          << ExpectLParenColumn << ">, found <";
+      LParenLoc.print(Msg, *Result.SourceManager);
+      Msg << ">\n";
+
+      Msg << "Expected RParen Location <" << ExpectRParenLine << ":"
+          << ExpectRParenColumn << ">, found <";
+      RParenLoc.print(Msg, *Result.SourceManager);
+      Msg << ">";
+
+      this->setFailure(Msg.str());
+    }
+  }
+};
+
+TEST(LocationVerifier, WhileParenLoc) {
+  WhileParenLocationVerifier Verifier;
+  Verifier.expectLocations(1, 17, 1, 38);
+  EXPECT_TRUE(Verifier.match("void f() { while(true/*some comment*/) {} }",
+                             whileStmt()));
+}
+
 class LabelDeclRangeVerifier : public RangeVerifier<LabelStmt> {
 protected:
   SourceRange getRange(const LabelStmt &Node) override {
@@ -82,13 +135,19 @@ TEST(LabelStmt, Range) {
 TEST(ParmVarDecl, KNRLocation) {
   LocationVerifier<ParmVarDecl> Verifier;
   Verifier.expectLocation(1, 8);
-  EXPECT_TRUE(Verifier.match("void f(i) {}", varDecl(), Lang_C99));
+  EXPECT_TRUE(Verifier.match("void f(i) {}", varDecl(), Lang_C89));
+
+  Verifier.expectLocation(1, 15);
+  EXPECT_TRUE(Verifier.match("void f(i) int i; {}", varDecl(), Lang_C99));
 }
 
 TEST(ParmVarDecl, KNRRange) {
   RangeVerifier<ParmVarDecl> Verifier;
   Verifier.expectRange(1, 8, 1, 8);
-  EXPECT_TRUE(Verifier.match("void f(i) {}", varDecl(), Lang_C99));
+  EXPECT_TRUE(Verifier.match("void f(i) {}", varDecl(), Lang_C89));
+
+  Verifier.expectRange(1, 11, 1, 15);
+  EXPECT_TRUE(Verifier.match("void f(i) int i; {}", varDecl(), Lang_C99));
 }
 
 TEST(CXXNewExpr, ArrayRange) {
@@ -160,6 +219,48 @@ TEST(TypeLoc, LongRange) {
   RangeVerifier<TypeLoc> Verifier;
   Verifier.expectRange(1, 1, 1, 1);
   EXPECT_TRUE(Verifier.match("long a;", typeLoc()));
+}
+
+TEST(TypeLoc, DecltypeTypeLocRange) {
+  llvm::Annotations Code(R"(
+    $full1[[decltype(1)]] a;
+    struct A {struct B{};} var;
+    $full2[[decltype(var)]]::B c;
+  )");
+  auto AST = tooling::buildASTFromCodeWithArgs(Code.code(), /*Args=*/{});
+  ASTContext &Ctx = AST->getASTContext();
+  const auto &SM = Ctx.getSourceManager();
+
+  auto MatchedLocs = clang::ast_matchers::match(
+      typeLoc(loc(decltypeType())).bind("target"), Ctx);
+  ASSERT_EQ(MatchedLocs.size(), 2u);
+  auto verify = [&](SourceRange ActualRange,
+                    const llvm::Annotations::Range &Expected) {
+    auto ActualCharRange =
+        Lexer::getAsCharRange(ActualRange, SM, Ctx.getLangOpts());
+    EXPECT_EQ(SM.getFileOffset(ActualCharRange.getBegin()), Expected.Begin);
+    EXPECT_EQ(SM.getFileOffset(ActualCharRange.getEnd()), Expected.End);
+  };
+  const auto *Target1 = MatchedLocs[0].getNodeAs<DecltypeTypeLoc>("target");
+  verify(Target1->getSourceRange(), Code.range("full1"));
+
+  const auto *Target2 = MatchedLocs[1].getNodeAs<DecltypeTypeLoc>("target");
+  verify(Target2->getSourceRange(), Code.range("full2"));
+}
+
+TEST(TypeLoc, AutoTypeLocRange) {
+  RangeVerifier<TypeLoc> Verifier;
+  Verifier.expectRange(1, 1, 1, 14);
+  EXPECT_TRUE(Verifier.match("decltype(auto) a = 1;", typeLoc(loc(autoType())),
+                             Lang_CXX14));
+
+  const char *Code =
+      R"cpp(template <typename T> concept C = true;
+C auto abc();
+)cpp";
+  // Should include "C auto" tokens.
+  Verifier.expectRange(2, 1, 2, 3); // token range.
+  EXPECT_TRUE(Verifier.match(Code, typeLoc(loc(autoType())), Lang_CXX20));
 }
 
 TEST(TypeLoc, LongDoubleRange) {
@@ -337,6 +438,47 @@ TEST(UnaryTransformTypeLoc, ParensRange) {
       loc(unaryTransformType())));
 }
 
+TEST(PointerTypeLoc, StarLoc) {
+  llvm::Annotations Example(R"c(
+    int $star^*var;
+  )c");
+
+  auto AST = tooling::buildASTFromCode(Example.code());
+  SourceManager &SM = AST->getSourceManager();
+  auto &Ctx = AST->getASTContext();
+
+  auto *VD = selectFirst<VarDecl>("vd", match(varDecl(hasName("var")).bind("vd"), Ctx));
+  ASSERT_NE(VD, nullptr);
+
+  auto TL =
+      VD->getTypeSourceInfo()->getTypeLoc().castAs<PointerTypeLoc>();
+  ASSERT_EQ(SM.getFileOffset(TL.getStarLoc()), Example.point("star"));
+}
+
+TEST(PointerTypeLoc, StarLocBehindSugar) {
+  llvm::Annotations Example(R"c(
+    #define NODEREF __attribute__((noderef))
+    char $1st^* NODEREF _Nonnull $2nd^* var;
+  )c");
+
+  auto AST = tooling::buildASTFromCode(Example.code());
+  SourceManager &SM = AST->getSourceManager();
+  auto &Ctx = AST->getASTContext();
+
+  auto *VD = selectFirst<VarDecl>("vd", match(varDecl(hasName("var")).bind("vd"), Ctx));
+  ASSERT_NE(VD, nullptr);
+
+  auto TL = VD->getTypeSourceInfo()->getTypeLoc().castAs<PointerTypeLoc>();
+  EXPECT_EQ(SM.getFileOffset(TL.getStarLoc()), Example.point("2nd"));
+
+  // Cast intermediate TypeLoc to make sure the structure matches expectations.
+  auto InnerPtrTL = TL.getPointeeLoc().castAs<AttributedTypeLoc>()
+    .getNextTypeLoc().castAs<MacroQualifiedTypeLoc>()
+    .getNextTypeLoc().castAs<AttributedTypeLoc>()
+    .getNextTypeLoc().castAs<PointerTypeLoc>();
+  EXPECT_EQ(SM.getFileOffset(InnerPtrTL.getStarLoc()), Example.point("1st"));
+}
+
 TEST(CXXFunctionalCastExpr, SourceRange) {
   RangeVerifier<CXXFunctionalCastExpr> Verifier;
   Verifier.expectRange(2, 10, 2, 14);
@@ -506,7 +648,7 @@ TEST(FriendDecl, FriendDecltypeLocation) {
 
 TEST(FriendDecl, FriendDecltypeRange) {
   RangeVerifier<FriendDecl> Verifier;
-  Verifier.expectRange(4, 1, 4, 8);
+  Verifier.expectRange(4, 1, 4, 22);
   EXPECT_TRUE(Verifier.match("struct A;\n"
                              "A foo();\n"
                              "struct A {\n"
@@ -630,8 +772,7 @@ TEST(ObjCMessageExpr, ParenExprRange) {
                              "+ (void) f1: (A)arg;\n"
                              "@end\n"
                              "void f2() { A a; [B f1: (a)]; }\n",
-                             traverse(ast_type_traits::TK_AsIs, parenExpr()),
-                             Lang_OBJCXX));
+                             traverse(TK_AsIs, parenExpr()), Lang_OBJCXX));
 }
 
 TEST(FunctionDecl, FunctionDeclWithThrowSpecification) {

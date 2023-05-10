@@ -6,63 +6,30 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Format/Format.h"
+#include "FormatTestBase.h"
 
-#include "../Tooling/ReplacementTest.h"
-#include "FormatTestUtils.h"
-
-#include "clang/Frontend/TextDiagnosticPrinter.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include "gtest/gtest.h"
-
-#define DEBUG_TYPE "format-test"
-
-using clang::tooling::ReplacementTest;
+#define DEBUG_TYPE "format-test-objc"
 
 namespace clang {
 namespace format {
+namespace test {
 namespace {
 
-class FormatTestObjC : public ::testing::Test {
+class FormatTestObjC : public FormatTestBase {
 protected:
   FormatTestObjC() {
     Style = getLLVMStyle();
     Style.Language = FormatStyle::LK_ObjC;
   }
 
-  enum StatusCheck { SC_ExpectComplete, SC_ExpectIncomplete, SC_DoNotCheck };
-
-  std::string format(llvm::StringRef Code,
-                     StatusCheck CheckComplete = SC_ExpectComplete) {
-    LLVM_DEBUG(llvm::errs() << "---\n");
-    LLVM_DEBUG(llvm::errs() << Code << "\n\n");
-    std::vector<tooling::Range> Ranges(1, tooling::Range(0, Code.size()));
-    FormattingAttemptStatus Status;
-    tooling::Replacements Replaces =
-        reformat(Style, Code, Ranges, "<stdin>", &Status);
-    if (CheckComplete != SC_DoNotCheck) {
-      bool ExpectedCompleteFormat = CheckComplete == SC_ExpectComplete;
-      EXPECT_EQ(ExpectedCompleteFormat, Status.FormatComplete)
-          << Code << "\n\n";
-    }
-    auto Result = applyAllReplacements(Code, Replaces);
-    EXPECT_TRUE(static_cast<bool>(Result));
-    LLVM_DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
-    return *Result;
-  }
-
-  void verifyFormat(StringRef Code) {
-    EXPECT_EQ(Code.str(), format(Code)) << "Expected code is not stable";
-    EXPECT_EQ(Code.str(), format(test::messUp(Code)));
-  }
-
-  void verifyIncompleteFormat(StringRef Code) {
-    EXPECT_EQ(Code.str(), format(test::messUp(Code), SC_ExpectIncomplete));
-  }
+  FormatStyle getDefaultStyle() const override { return Style; }
 
   FormatStyle Style;
 };
+
+#define verifyIncompleteFormat(...)                                            \
+  _verifyIncompleteFormat(__FILE__, __LINE__, __VA_ARGS__)
+#define verifyFormat(...) _verifyFormat(__FILE__, __LINE__, __VA_ARGS__)
 
 TEST(FormatTestObjCStyle, DetectsObjCInHeaders) {
   auto Style = getStyle("LLVM", "a.h", "none",
@@ -119,6 +86,11 @@ TEST(FormatTestObjCStyle, DetectsObjCInHeaders) {
 
   Style =
       getStyle("{}", "a.h", "none", "typedef NS_CLOSED_ENUM(int, Foo) {};\n");
+  ASSERT_TRUE((bool)Style);
+  EXPECT_EQ(FormatStyle::LK_ObjC, Style->Language);
+
+  Style =
+      getStyle("{}", "a.h", "none", "typedef NS_ERROR_ENUM(int, Foo) {};\n");
   ASSERT_TRUE((bool)Style);
   EXPECT_EQ(FormatStyle::LK_ObjC, Style->Language);
 
@@ -328,6 +300,18 @@ TEST_F(FormatTestObjC, FormatObjCInterface) {
                "+ (id)init;\n"
                "@end");
 
+  verifyFormat("@interface Foo<Bar : Baz <Blech>> : Xyzzy <Corge> <Quux> {\n"
+               "  int _i;\n"
+               "}\n"
+               "+ (id)init;\n"
+               "@end");
+
+  verifyFormat("@interface Foo : Bar <Baz> <Blech>\n"
+               "@end");
+
+  verifyFormat("@interface Foo : Bar <Baz> <Blech, Xyzzy, Corge>\n"
+               "@end");
+
   verifyFormat("@interface Foo (HackStuff) {\n"
                "  int _i;\n"
                "}\n"
@@ -413,6 +397,10 @@ TEST_F(FormatTestObjC, FormatObjCInterface) {
                "    fffffffffffff,\n"
                "    fffffffffffff> {\n"
                "}");
+  verifyFormat("@interface ggggggggggggg\n"
+               "    : ggggggggggggg <ggggggggggggg>\n"
+               "      <ggggggggggggg>\n"
+               "@end");
 }
 
 TEST_F(FormatTestObjC, FormatObjCImplementation) {
@@ -955,6 +943,19 @@ TEST_F(FormatTestObjC, FormatObjCMethodExpr) {
       "        performSelectorOnMainThread:@selector(loadAccessories)\n"
       "                         withObject:nil\n"
       "                      waitUntilDone:false];");
+
+  // The appropriate indentation is used after a block statement.
+  Style.ContinuationIndentWidth = 4;
+  verifyFormat(
+      "void aaaaaaaaaaaaaaaaaaaaa(int c) {\n"
+      "  if (c) {\n"
+      "    f();\n"
+      "  }\n"
+      "  [dddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"
+      "      eeeeeeeeeeeeeeeeeeeeeeeeeeeee:^(fffffffffffffff gggggggg) {\n"
+      "        f(SSSSS, c);\n"
+      "      }];\n"
+      "}");
 }
 
 TEST_F(FormatTestObjC, ObjCAt) {
@@ -1023,6 +1024,12 @@ TEST_F(FormatTestObjC, ObjCSnippets) {
 
   verifyFormat("@property(assign, nonatomic) CGFloat hoverAlpha;");
   verifyFormat("@property(assign, getter=isEditable) BOOL editable;");
+
+  verifyFormat("extern UIWindow *MainWindow(void) "
+               "NS_SWIFT_NAME(getter:MyHelper.mainWindow());");
+
+  verifyFormat("extern UIWindow *MainWindow(void) "
+               "CF_SWIFT_NAME(getter:MyHelper.mainWindow());");
 
   Style.ColumnLimit = 50;
   verifyFormat("@interface Foo\n"
@@ -1432,6 +1439,39 @@ TEST_F(FormatTestObjC, BreakLineBeforeNestedBlockParam) {
       "           callback:^(typeof(self) self, NSNumber *u, NSNumber *v) {\n"
       "             u = v;\n"
       "           }]");
+
+  verifyFormat("[self block:^(void) {\n"
+               "  doStuff();\n"
+               "} completionHandler:^(void) {\n"
+               "  doStuff();\n"
+               "  [self block:^(void) {\n"
+               "    doStuff();\n"
+               "  } completionHandler:^(void) {\n"
+               "    doStuff();\n"
+               "  }];\n"
+               "}];");
+
+  Style.ColumnLimit = 0;
+  verifyFormat("[[SessionService sharedService] "
+               "loadWindowWithCompletionBlock:^(SessionWindow *window) {\n"
+               "  if (window) {\n"
+               "    [self windowDidLoad:window];\n"
+               "  } else {\n"
+               "    [self errorLoadingWindow];\n"
+               "  }\n"
+               "}];");
+  verifyFormat("[controller test:^{\n"
+               "  doStuff();\n"
+               "} withTimeout:5 completionHandler:^{\n"
+               "  doStuff();\n"
+               "}];");
+  verifyFormat(
+      "[self setupTextFieldSignals:@[\n"
+      "  self.documentWidthField,\n"
+      "  self.documentHeightField,\n"
+      "] solver:^(NSTextField *textField) {\n"
+      "  return [self.representedObject solveEquationForTextField:textField];\n"
+      "}];");
 }
 
 TEST_F(FormatTestObjC, IfNotUnlikely) {
@@ -1453,6 +1493,19 @@ TEST_F(FormatTestObjC, IfNotUnlikely) {
                "  [obj func:arg2];");
 }
 
+TEST_F(FormatTestObjC, Attributes) {
+  verifyFormat("__attribute__((objc_subclassing_restricted))\n"
+               "@interface Foo\n"
+               "@end");
+  verifyFormat("__attribute__((objc_subclassing_restricted))\n"
+               "@protocol Foo\n"
+               "@end");
+  verifyFormat("__attribute__((objc_subclassing_restricted))\n"
+               "@implementation Foo\n"
+               "@end");
+}
+
 } // end namespace
+} // namespace test
 } // end namespace format
 } // end namespace clang

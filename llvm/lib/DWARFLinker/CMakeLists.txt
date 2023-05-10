@@ -9,4 +9,15 @@ add_llvm_component_library(LLVMDWARFLinker
 
   DEPENDS
   intrinsics_gen
+
+  LINK_COMPONENTS
+  AsmPrinter
+  BinaryFormat
+  CodeGen
+  CodeGenTypes
+  DebugInfoDWARF
+  MC
+  Object
+  Support
+  TargetParser
   )

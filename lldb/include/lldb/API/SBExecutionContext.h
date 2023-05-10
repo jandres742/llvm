@@ -12,7 +12,7 @@
 
 #include "lldb/API/SBDefines.h"
 
-#include <stdio.h>
+#include <cstdio>
 #include <vector>
 
 namespace lldb {
@@ -25,7 +25,9 @@ public:
 
   SBExecutionContext(const lldb::SBExecutionContext &rhs);
 
+#ifndef SWIG
   SBExecutionContext(lldb::ExecutionContextRefSP exe_ctx_ref_sp);
+#endif
 
   SBExecutionContext(const lldb::SBTarget &target);
 
@@ -50,8 +52,6 @@ public:
   SBFrame GetFrame() const;
 
 protected:
-  void reset(lldb::ExecutionContextRefSP &event_sp);
-
   lldb_private::ExecutionContextRef *get() const;
 
 private:

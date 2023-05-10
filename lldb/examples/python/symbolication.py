@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 #----------------------------------------------------------------------
 # Be sure to add the python path that points to the LLDB shared library.
@@ -26,7 +26,6 @@
 #   PYTHONPATH=/path/to/LLDB.framework/Resources/Python ./crashlog.py ~/Library/Logs/DiagnosticReports/a.crash
 #----------------------------------------------------------------------
 
-from __future__ import print_function
 import lldb
 import optparse
 import os
@@ -36,6 +35,8 @@ import shlex
 import sys
 import time
 import uuid
+import json
+import tempfile
 
 
 class Address:
@@ -231,6 +232,7 @@ class Image:
     def __init__(self, path, uuid=None):
         self.path = path
         self.resolved_path = None
+        self.resolve = False
         self.resolved = False
         self.unavailable = False
         self.uuid = uuid
@@ -241,6 +243,7 @@ class Image:
         self.module = None
         self.symfile = None
         self.slide = None
+        self.symbols = dict()
 
     @classmethod
     def InitWithSBTargetAndSBModule(cls, target, module):
@@ -373,14 +376,37 @@ class Image:
             uuid_str = self.get_normalized_uuid_string()
             if uuid_str:
                 self.module = target.AddModule(None, None, uuid_str)
-            if not self.module:
+            if not self.module and self.resolve:
                 self.locate_module_and_debug_symbols()
-                if self.unavailable:
-                    return None
-                resolved_path = self.get_resolved_path()
-                self.module = target.AddModule(
-                    resolved_path, str(self.arch), uuid_str, self.symfile)
-            if not self.module:
+                if not self.unavailable:
+                    resolved_path = self.get_resolved_path()
+                    self.module = target.AddModule(
+                        resolved_path, None, uuid_str, self.symfile)
+            if not self.module and self.section_infos:
+                name = os.path.basename(self.path)
+                with tempfile.NamedTemporaryFile(suffix='.' + name) as tf:
+                    data = {
+                        'triple': target.triple,
+                        'uuid': uuid_str,
+                        'type': 'sharedlibrary',
+                        'sections': list(),
+                        'symbols': list()
+                    }
+                    for section in self.section_infos:
+                        data['sections'].append({
+                            'name' : section.name,
+                            'size': section.end_addr - section.start_addr
+                            })
+                    data['symbols'] = list(self.symbols.values())
+                    with open(tf.name, 'w') as f:
+                        f.write(json.dumps(data, indent=4))
+                    self.module = target.AddModule(tf.name, None, uuid_str)
+                    if self.module:
+                        # If we were able to add the module with inlined
+                        # symbols, we should mark it as available so load_module
+                        # does not exit early.
+                        self.unavailable = False
+            if not self.module and not self.unavailable:
                 return 'error: unable to get module for (%s) "%s"' % (
                     self.arch, self.get_resolved_path())
             if self.has_section_load_info():
@@ -410,7 +436,7 @@ class Image:
             return str(self.uuid).upper()
         return None
 
-    def create_target(self):
+    def create_target(self, debugger):
         '''Create a target using the information in this Image object.'''
         if self.unavailable:
             return None
@@ -419,7 +445,7 @@ class Image:
             resolved_path = self.get_resolved_path()
             path_spec = lldb.SBFileSpec(resolved_path)
             error = lldb.SBError()
-            target = lldb.debugger.CreateTarget(
+            target = debugger.CreateTarget(
                 resolved_path, self.arch, None, False, error)
             if target:
                 self.module = target.FindModule(path_spec)
@@ -437,17 +463,22 @@ class Image:
 
 class Symbolicator:
 
-    def __init__(self):
-        """A class the represents the information needed to symbolicate addresses in a program"""
-        self.target = None
-        self.images = list()  # a list of images to be used when symbolicating
+    def __init__(self, debugger=None, target=None, images=list()):
+        """A class the represents the information needed to symbolicate
+        addresses in a program.
+
+        Do not call this initializer directly, but rather use the factory
+        methods.
+        """
+        self.debugger = debugger
+        self.target = target
+        self.images = images  # a list of images to be used when symbolicating
         self.addr_mask = 0xffffffffffffffff
 
     @classmethod
     def InitWithSBTarget(cls, target):
-        obj = cls()
-        obj.target = target
-        obj.images = list()
+        """Initialize a new Symbolicator with an existing SBTarget."""
+        obj = cls(target=target)
         triple = target.triple
         if triple:
             arch = triple.split('-')[0]
@@ -457,6 +488,13 @@ class Symbolicator:
         for module in target.modules:
             image = Image.InitWithSBTargetAndSBModule(target, module)
             obj.images.append(image)
+        return obj
+
+    @classmethod
+    def InitWithSBDebugger(cls, debugger, images):
+        """Initialize a new Symbolicator with an existing debugger and list of
+        images. The Symbolicator will create the target."""
+        obj = cls(debugger=debugger, images=images)
         return obj
 
     def __str__(self):
@@ -496,7 +534,7 @@ class Symbolicator:
 
         if self.images:
             for image in self.images:
-                self.target = image.create_target()
+                self.target = image.create_target(self.debugger)
                 if self.target:
                     if self.target.GetAddressByteSize() == 4:
                         triple = self.target.triple
@@ -632,7 +670,7 @@ def print_module_symbols(module):
         print(sym)
 
 
-def Symbolicate(command_args):
+def Symbolicate(debugger, command_args):
 
     usage = "usage: %prog [options] <addr1> [addr2 ...]"
     description = '''Symbolicate one or more addresses using LLDB's python scripting API..'''
@@ -686,7 +724,7 @@ def Symbolicate(command_args):
         (options, args) = parser.parse_args(command_args)
     except:
         return
-    symbolicator = Symbolicator()
+    symbolicator = Symbolicator(debugger)
     images = list()
     if options.file:
         image = Image(options.file)
@@ -720,5 +758,6 @@ def Symbolicate(command_args):
 
 if __name__ == '__main__':
     # Create a new debugger instance
-    lldb.debugger = lldb.SBDebugger.Create()
-    Symbolicate(sys.argv[1:])
+    debugger = lldb.SBDebugger.Create()
+    Symbolicate(debugger, sys.argv[1:])
+    SBDebugger.Destroy(debugger)

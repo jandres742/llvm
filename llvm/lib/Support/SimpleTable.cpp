@@ -42,7 +42,7 @@ Expected<SimpleTable::UPtrTy>
 SimpleTable::create(ArrayRef<StringRef> ColNames) {
   auto Res = std::make_unique<SimpleTable>();
 
-  for (auto N : ColNames)
+  for (auto &N : ColNames)
     if (Error Err = Res->addColumnName(N))
       return std::move(Err);
   return std::move(Res);
@@ -64,7 +64,7 @@ int SimpleTable::getColumnId(StringRef ColName) const {
 
 Error SimpleTable::addColumnName(StringRef ColName) {
   if (ColumnName2Num.find(ColName) != ColumnName2Num.end())
-    return makeError("column already exists" + ColName);
+    return makeError("column already exists " + ColName);
   ColumnNames.emplace_back(ColName.str());
   ColumnName2Num[ColumnNames.back()] = static_cast<int>(ColumnNames.size()) - 1;
   ColumnNum2Name.push_back(std::prev(ColumnNames.end()));
@@ -76,7 +76,7 @@ Error SimpleTable::addColumn(const Twine &Title, ArrayRef<std::string> Cells) {
   if (!Rows.empty() && (Rows.size() != N))
     return makeError("column size mismatch for " + Title);
   if (Error Err = addColumnName(Title.str()))
-    return std::move(Err);
+    return Err;
   if (Rows.empty()) {
     Rows.resize(Cells.size());
     for (auto &R : Rows)
@@ -103,9 +103,25 @@ Error SimpleTable::replaceColumn(StringRef Name, const SimpleTable &Src,
     return makeError("empty table");
   int Cdst = getNumColumns() > 1 ? getColumnId(Name) : 0;
   int Csrc = Src.getNumColumns() > 1 ? Src.getColumnId(SrcName) : 0;
-
+  if (Cdst < 0)
+    return makeError("Column not found: " + Name);
+  if (Csrc < 0)
+    return makeError("Column not found: " + SrcName);
   for (unsigned R = 0; R < Rows.size(); ++R)
     Rows[R][Cdst] = Src[R][Csrc];
+  return Error::success();
+}
+
+Error SimpleTable::updateCellValue(StringRef ColName, int Row,
+                                   StringRef NewValue) {
+  if (getNumColumns() == 0)
+    return makeError("empty table");
+  if (Row > getNumRows() || Row < 0)
+    return makeError("row index out of bounds");
+  int Col = getColumnId(ColName);
+  if (Col < 0)
+    return makeError("Column not found: " + ColName);
+  Rows[Row][Col] = NewValue.str();
   return Error::success();
 }
 
@@ -114,7 +130,7 @@ Error SimpleTable::renameColumn(StringRef OldName, StringRef NewName) {
 
   if (I < 0)
     return makeError("column not found: " + OldName);
-  *ColumnNum2Name[I] = std::move(NewName.str());
+  *ColumnNum2Name[I] = NewName.str();
   ColumnName2Num.erase(OldName);
   ColumnName2Num[StringRef(*ColumnNum2Name[I])] = I;
   return Error::success();
@@ -239,6 +255,15 @@ Expected<SimpleTable::UPtrTy> SimpleTable::read(const Twine &FileName,
   if (!MemBuf || !MemBuf->get())
     return createFileError(Twine("can't read ") + FileName, MemBuf.getError());
   return read(MemBuf->get(), ColSep);
+}
+
+Error SimpleTable::merge(const SimpleTable &Other) {
+  if (getNumColumns() != Other.getNumColumns())
+    return makeError("different number of columns");
+  if (ColumnNames != Other.ColumnNames)
+    return makeError("different column names");
+  Rows.insert(Rows.end(), Other.Rows.begin(), Other.Rows.end());
+  return Error::success();
 }
 
 } // namespace util

@@ -15,6 +15,26 @@
 #include "lldb/lldb-types.h"
 #include "lldb/lldb-versioning.h"
 
+#ifndef LLDB_API
+#if defined(_WIN32)
+#if defined(LLDB_IN_LIBLLDB)
+#define LLDB_API __declspec(dllexport)
+#else
+#define LLDB_API __declspec(dllimport)
+#endif
+#else // defined (_WIN32)
+#define LLDB_API
+#endif
+#endif
+
+// Don't add the deprecated attribute when generating the bindings or when
+// building for anything older than C++14 which is the first version that
+// supports the attribute.
+#if defined(SWIG) || _cplusplus < 201402L
+#undef LLDB_DEPRECATED
+#define LLDB_DEPRECATED(MSG, FIX)
+#endif
+
 // Forward Declarations
 namespace lldb {
 
@@ -76,7 +96,7 @@ class LLDB_API SBThread;
 class LLDB_API SBThreadCollection;
 class LLDB_API SBThreadPlan;
 class LLDB_API SBTrace;
-class LLDB_API SBTraceOptions;
+class LLDB_API SBTraceCursor;
 class LLDB_API SBType;
 class LLDB_API SBTypeCategory;
 class LLDB_API SBTypeEnumMember;
@@ -98,6 +118,11 @@ class LLDB_API SBUnixSignals;
 typedef bool (*SBBreakpointHitCallback)(void *baton, SBProcess &process,
                                         SBThread &thread,
                                         lldb::SBBreakpointLocation &location);
+
+typedef void (*SBDebuggerDestroyCallback)(lldb::user_id_t debugger_id,
+                                          void *baton);
+
+typedef void *ScriptedObject;
 }
 
 #endif // LLDB_API_SBDEFINES_H

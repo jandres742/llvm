@@ -1,6 +1,6 @@
 ; RUN: llvm-as < %s -o %t.bc
 ; RUN: llvm-spirv %t.bc -o %t.spv
-; RUN: llvm-spirv -r %t.spv -o - | llvm-dis -o %t.ll
+; RUN: llvm-spirv -r -emit-opaque-pointers %t.spv -o - | llvm-dis -o %t.ll
 
 ; RUN: llc -mtriple=%triple -march=x86 -asm-verbose < %t.ll | grep DW_TAG_formal_parameter
 
@@ -11,7 +11,7 @@ target triple = "spir64-unknown-unknown"
 %struct.Pt = type { double, double }
 %struct.Rect = type { %struct.Pt, %struct.Pt }
 
-define double @foo(%struct.Rect* byval %my_r0) nounwind ssp !dbg !1 {
+define double @foo(%struct.Rect* byval(%struct.Rect) %my_r0) nounwind ssp !dbg !1 {
 entry:
   %retval = alloca double                         ; <double*> [#uses=2]
   %0 = alloca double                              ; <double*> [#uses=2]

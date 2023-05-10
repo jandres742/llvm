@@ -9,13 +9,13 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPUARGUMENTUSAGEINFO_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUARGUMENTUSAGEINFO_H
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/Register.h"
 #include "llvm/Pass.h"
 
 namespace llvm {
 
 class Function;
+class LLT;
 class raw_ostream;
 class TargetRegisterClass;
 class TargetRegisterInfo;
@@ -26,7 +26,7 @@ private:
   friend class AMDGPUArgumentUsageInfo;
 
   union {
-    Register Reg;
+    MCRegister Reg;
     unsigned StackOffset;
   };
 
@@ -68,7 +68,7 @@ public:
     return !IsStack;
   }
 
-  Register getRegister() const {
+  MCRegister getRegister() const {
     assert(!IsStack);
     return Reg;
   }
@@ -103,6 +103,7 @@ struct AMDGPUFunctionArgInfo {
     KERNARG_SEGMENT_PTR =  3,
     DISPATCH_ID         =  4,
     FLAT_SCRATCH_INIT   =  5,
+    LDS_KERNEL_ID       =  6, // LLVM internal, not part of the ABI
     WORKGROUP_ID_X      = 10,
     WORKGROUP_ID_Y      = 11,
     WORKGROUP_ID_Z      = 12,
@@ -128,6 +129,7 @@ struct AMDGPUFunctionArgInfo {
   ArgDescriptor DispatchID;
   ArgDescriptor FlatScratchInit;
   ArgDescriptor PrivateSegmentSize;
+  ArgDescriptor LDSKernelId;
 
   // System SGPRs in kernels.
   ArgDescriptor WorkGroupIDX;
@@ -143,12 +145,13 @@ struct AMDGPUFunctionArgInfo {
   // Input registers for non-HSA ABI
   ArgDescriptor ImplicitBufferPtr;
 
-  // VGPRs inputs. These are always v0, v1 and v2 for entry functions.
+  // VGPRs inputs. For entry functions these are either v0, v1 and v2 or packed
+  // into v0, 10 bits per dimension if packed-tid is set.
   ArgDescriptor WorkItemIDX;
   ArgDescriptor WorkItemIDY;
   ArgDescriptor WorkItemIDZ;
 
-  std::pair<const ArgDescriptor *, const TargetRegisterClass *>
+  std::tuple<const ArgDescriptor *, const TargetRegisterClass *, LLT>
   getPreloadedValue(PreloadedValue Value) const;
 
   static constexpr AMDGPUFunctionArgInfo fixedABILayout();

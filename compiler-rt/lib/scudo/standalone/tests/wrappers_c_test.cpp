@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "memtag.h"
+#include "scudo/interface.h"
 #include "tests/scudo_unit_test.h"
 
 #include <errno.h>
@@ -13,6 +15,10 @@
 #include <malloc.h>
 #include <stdlib.h>
 #include <unistd.h>
+
+#ifndef __GLIBC_PREREQ
+#define __GLIBC_PREREQ(x, y) 0
+#endif
 
 extern "C" {
 void malloc_enable(void);
@@ -36,13 +42,24 @@ void *pvalloc(size_t size);
 
 static const size_t Size = 100U;
 
-TEST(ScudoWrappersCTest, Malloc) {
+TEST(ScudoWrappersCDeathTest, Malloc) {
   void *P = malloc(Size);
   EXPECT_NE(P, nullptr);
   EXPECT_LE(Size, malloc_usable_size(P));
   EXPECT_EQ(reinterpret_cast<uintptr_t>(P) % FIRST_32_SECOND_64(8U, 16U), 0U);
+
+  // An update to this warning in Clang now triggers in this line, but it's ok
+  // because the check is expecting a bad pointer and should fail.
+#if defined(__has_warning) && __has_warning("-Wfree-nonheap-object")
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfree-nonheap-object"
+#endif
   EXPECT_DEATH(
       free(reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(P) | 1U)), "");
+#if defined(__has_warning) && __has_warning("-Wfree-nonheap-object")
+#pragma GCC diagnostic pop
+#endif
+
   free(P);
   EXPECT_DEATH(free(P), "");
 
@@ -80,6 +97,18 @@ TEST(ScudoWrappersCTest, Calloc) {
   errno = 0;
   EXPECT_EQ(calloc(SIZE_MAX, SIZE_MAX), nullptr);
   EXPECT_EQ(errno, ENOMEM);
+}
+
+TEST(ScudoWrappersCTest, SmallAlign) {
+  void *P;
+  for (size_t Size = 1; Size <= 0x10000; Size <<= 1) {
+    for (size_t Align = 1; Align <= 0x10000; Align <<= 1) {
+      for (size_t Count = 0; Count < 3; ++Count) {
+        P = memalign(Align, Size);
+        EXPECT_TRUE(reinterpret_cast<uintptr_t>(P) % Align == 0);
+      }
+    }
+  }
 }
 
 TEST(ScudoWrappersCTest, Memalign) {
@@ -129,7 +158,7 @@ TEST(ScudoWrappersCTest, AlignedAlloc) {
   EXPECT_EQ(errno, EINVAL);
 }
 
-TEST(ScudoWrappersCTest, Realloc) {
+TEST(ScudoWrappersCDeathTest, Realloc) {
   // realloc(nullptr, N) is malloc(N)
   void *P = realloc(nullptr, 0U);
   EXPECT_NE(P, nullptr);
@@ -188,14 +217,6 @@ TEST(ScudoWrappersCTest, Realloc) {
   }
 }
 
-#ifndef M_DECAY_TIME
-#define M_DECAY_TIME -100
-#endif
-
-#ifndef M_PURGE
-#define M_PURGE -101
-#endif
-
 #if !SCUDO_FUCHSIA
 TEST(ScudoWrappersCTest, MallOpt) {
   errno = 0;
@@ -209,6 +230,12 @@ TEST(ScudoWrappersCTest, MallOpt) {
   EXPECT_EQ(mallopt(M_DECAY_TIME, 0), 1);
   EXPECT_EQ(mallopt(M_DECAY_TIME, 1), 1);
   EXPECT_EQ(mallopt(M_DECAY_TIME, 0), 1);
+
+  if (SCUDO_ANDROID) {
+    EXPECT_EQ(mallopt(M_CACHE_COUNT_MAX, 100), 1);
+    EXPECT_EQ(mallopt(M_CACHE_SIZE_MAX, 1024 * 1024 * 2), 1);
+    EXPECT_EQ(mallopt(M_TSDS_COUNT_MAX, 10), 1);
+  }
 }
 #endif
 
@@ -235,8 +262,10 @@ TEST(ScudoWrappersCTest, OtherAlloc) {
 
 #if !SCUDO_FUCHSIA
 TEST(ScudoWrappersCTest, MallInfo) {
+  // mallinfo is deprecated.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   const size_t BypassQuarantineSize = 1024U;
-
   struct mallinfo MI = mallinfo();
   size_t Allocated = MI.uordblks;
   void *P = malloc(BypassQuarantineSize);
@@ -248,6 +277,24 @@ TEST(ScudoWrappersCTest, MallInfo) {
   free(P);
   MI = mallinfo();
   EXPECT_GE(static_cast<size_t>(MI.fordblks), Free + BypassQuarantineSize);
+#pragma clang diagnostic pop
+}
+#endif
+
+#if __GLIBC_PREREQ(2, 33)
+TEST(ScudoWrappersCTest, MallInfo2) {
+  const size_t BypassQuarantineSize = 1024U;
+  struct mallinfo2 MI = mallinfo2();
+  size_t Allocated = MI.uordblks;
+  void *P = malloc(BypassQuarantineSize);
+  EXPECT_NE(P, nullptr);
+  MI = mallinfo2();
+  EXPECT_GE(MI.uordblks, Allocated + BypassQuarantineSize);
+  EXPECT_GT(MI.hblkhd, 0U);
+  size_t Free = MI.fordblks;
+  free(P);
+  MI = mallinfo2();
+  EXPECT_GE(MI.fordblks, Free + BypassQuarantineSize);
 }
 #endif
 
@@ -255,6 +302,10 @@ static uintptr_t BoundaryP;
 static size_t Count;
 
 static void callback(uintptr_t Base, size_t Size, void *Arg) {
+  if (scudo::archSupportsMemoryTagging()) {
+    Base = scudo::untagPointer(Base);
+    BoundaryP = scudo::untagPointer(BoundaryP);
+  }
   if (Base == BoundaryP)
     Count++;
 }
@@ -304,8 +355,10 @@ TEST(ScudoWrappersCTest, MallocIterateBoundary) {
   }
 }
 
-// We expect heap operations within a disable/enable scope to deadlock.
-TEST(ScudoWrappersCTest, MallocDisableDeadlock) {
+// Fuchsia doesn't have alarm, fork or malloc_info.
+#if !SCUDO_FUCHSIA
+TEST(ScudoWrappersCDeathTest, MallocDisableDeadlock) {
+  // We expect heap operations within a disable/enable scope to deadlock.
   EXPECT_DEATH(
       {
         void *P = malloc(Size);
@@ -318,9 +371,6 @@ TEST(ScudoWrappersCTest, MallocDisableDeadlock) {
       },
       "");
 }
-
-// Fuchsia doesn't have fork or malloc_info.
-#if !SCUDO_FUCHSIA
 
 TEST(ScudoWrappersCTest, MallocInfo) {
   // Use volatile so that the allocations don't get optimized away.
@@ -342,10 +392,10 @@ TEST(ScudoWrappersCTest, MallocInfo) {
   free(P2);
 }
 
-TEST(ScudoWrappersCTest, Fork) {
+TEST(ScudoWrappersCDeathTest, Fork) {
   void *P;
   pid_t Pid = fork();
-  EXPECT_GE(Pid, 0);
+  EXPECT_GE(Pid, 0) << strerror(errno);
   if (Pid == 0) {
     P = malloc(Size);
     EXPECT_NE(P, nullptr);
@@ -396,6 +446,7 @@ static void *enableMalloc(void *Unused) {
 
 TEST(ScudoWrappersCTest, DisableForkEnable) {
   pthread_t ThreadId;
+  Ready = false;
   EXPECT_EQ(pthread_create(&ThreadId, nullptr, &enableMalloc, nullptr), 0);
 
   // Wait for the thread to be warmed up.

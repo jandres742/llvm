@@ -12,8 +12,6 @@ from lldbsuite.test import lldbutil
 
 class ExprCommandWithTimeoutsTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     def setUp(self):
         # Call super's setUp().
         TestBase.setUp(self)
@@ -26,7 +24,6 @@ class ExprCommandWithTimeoutsTestCase(TestBase):
         oslist=[
             "windows"],
         bugnumber="llvm.org/pr21765")
-    @skipIfReproducer # Timeouts are not currently modeled.
     def test(self):
         """Test calling std::String member function."""
         self.build()
@@ -59,7 +56,7 @@ class ExprCommandWithTimeoutsTestCase(TestBase):
         options.SetTimeoutInMicroSeconds(1000000)
         value = frame.EvaluateExpression("wait_a_while (1000)", options)
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())
 
         # Now do the same thingwith the command line command, and make sure it
         # works too.
@@ -77,4 +74,4 @@ class ExprCommandWithTimeoutsTestCase(TestBase):
         options.SetOneThreadTimeoutInMicroSeconds(500000)
         value = frame.EvaluateExpression("wait_a_while (1000)", options)
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())

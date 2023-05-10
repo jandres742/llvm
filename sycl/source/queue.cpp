@@ -6,79 +6,73 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <CL/sycl/event.hpp>
-#include <CL/sycl/exception_list.hpp>
-#include <CL/sycl/handler.hpp>
-#include <CL/sycl/queue.hpp>
-#include <CL/sycl/stl.hpp>
+#include <detail/backend_impl.hpp>
+#include <detail/event_impl.hpp>
 #include <detail/queue_impl.hpp>
+#include <sycl/detail/common.hpp>
+#include <sycl/event.hpp>
+#include <sycl/exception_list.hpp>
+#include <sycl/ext/codeplay/experimental/fusion_properties.hpp>
+#include <sycl/handler.hpp>
+#include <sycl/queue.hpp>
+#include <sycl/stl.hpp>
 
 #include <algorithm>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 
-namespace detail {
+queue::queue(const context &SyclContext, const device_selector &DeviceSelector,
+             const async_handler &AsyncHandler, const property_list &PropList,
+             Discriminator Disc) {
+  (void)Disc;
+  const std::vector<device> Devs = SyclContext.get_devices();
 
-QueueOrder getQueueOrder(const property_list &propList) {
-  if (propList.has_property<property::queue::in_order>()) {
-    return QueueOrder::Ordered;
-  }
-  return QueueOrder::OOO;
-}
-
-} // namespace detail
-
-queue::queue(const context &syclContext, const device_selector &deviceSelector,
-             const async_handler &asyncHandler, const property_list &propList) {
-
-  const vector_class<device> Devs = syclContext.get_devices();
-
-  auto Comp = [&deviceSelector](const device &d1, const device &d2) {
-    return deviceSelector(d1) < deviceSelector(d2);
+  auto Comp = [&DeviceSelector](const device &d1, const device &d2) {
+    return DeviceSelector(d1) < DeviceSelector(d2);
   };
 
-  const device &syclDevice = *std::max_element(Devs.begin(), Devs.end(), Comp);
+  const device &SyclDevice = *std::max_element(Devs.begin(), Devs.end(), Comp);
 
   impl = std::make_shared<detail::queue_impl>(
-      detail::getSyclObjImpl(syclDevice), detail::getSyclObjImpl(syclContext),
-      asyncHandler, detail::getQueueOrder(propList), propList);
+      detail::getSyclObjImpl(SyclDevice), detail::getSyclObjImpl(SyclContext),
+      AsyncHandler, PropList, false);
 }
-
-queue::queue(const context &syclContext,
-             const device &syclDevice,
-             const async_handler &asyncHandler,
-             const property_list &propList) {
-  impl = std::make_shared<detail::queue_impl>(
-      detail::getSyclObjImpl(syclDevice), detail::getSyclObjImpl(syclContext),
-      asyncHandler, cl::sycl::detail::QueueOrder::OOO, propList);
-}
-
-queue::queue(const device &syclDevice, const async_handler &asyncHandler,
-             const property_list &propList) {
-  impl = std::make_shared<detail::queue_impl>(
-      detail::getSyclObjImpl(syclDevice), asyncHandler,
-      detail::getQueueOrder(propList), propList);
-}
-
-queue::queue(cl_command_queue clQueue, const context &syclContext,
-             const async_handler &asyncHandler) {
-  impl = std::make_shared<detail::queue_impl>(
-      detail::pi::cast<detail::RT::PiQueue>(clQueue),
-      detail::getSyclObjImpl(syclContext), asyncHandler);
-}
-
-queue::queue(const context &syclContext, const device_selector &deviceSelector,
-             const property_list &propList)
-    : queue(syclContext, deviceSelector,
-            detail::getSyclObjImpl(syclContext)->get_async_handler(),
-            propList) {}
 
 queue::queue(const context &SyclContext, const device &SyclDevice,
-             const property_list &PropList)
+             const async_handler &AsyncHandler, const property_list &PropList,
+             Discriminator Disc) {
+  (void)Disc;
+  impl = std::make_shared<detail::queue_impl>(
+      detail::getSyclObjImpl(SyclDevice), detail::getSyclObjImpl(SyclContext),
+      AsyncHandler, PropList, false);
+}
+
+queue::queue(const device &SyclDevice, const async_handler &AsyncHandler,
+             const property_list &PropList, Discriminator Disc) {
+  (void)Disc;
+  impl = std::make_shared<detail::queue_impl>(
+      detail::getSyclObjImpl(SyclDevice), AsyncHandler, PropList, false);
+}
+
+queue::queue(const context &SyclContext, const device_selector &deviceSelector,
+             const property_list &PropList, Discriminator Disc)
+    : queue(SyclContext, deviceSelector,
+            detail::getSyclObjImpl(SyclContext)->get_async_handler(), PropList,
+            Disc) {}
+
+queue::queue(const context &SyclContext, const device &SyclDevice,
+             const property_list &PropList, Discriminator Disc)
     : queue(SyclContext, SyclDevice,
-            detail::getSyclObjImpl(SyclContext)->get_async_handler(),
-            PropList) {}
+            detail::getSyclObjImpl(SyclContext)->get_async_handler(), PropList,
+            Disc) {}
+
+queue::queue(cl_command_queue clQueue, const context &SyclContext,
+             const async_handler &AsyncHandler) {
+  impl = std::make_shared<detail::queue_impl>(
+      reinterpret_cast<RT::PiQueue>(clQueue),
+      detail::getSyclObjImpl(SyclContext), AsyncHandler);
+}
 
 cl_command_queue queue::get() const { return impl->get(); }
 
@@ -86,31 +80,87 @@ context queue::get_context() const { return impl->get_context(); }
 
 device queue::get_device() const { return impl->get_device(); }
 
-bool queue::is_host() const { return impl->is_host(); }
-
+bool queue::is_host() const {
+  bool IsHost = impl->is_host();
+  assert(!IsHost && "queue::is_host should not be called in implementation.");
+  return IsHost;
+}
 
 void queue::throw_asynchronous() { impl->throw_asynchronous(); }
 
-event queue::memset(void *ptr, int value, size_t count) {
-  return impl->memset(impl, ptr, value, count);
+event queue::memset(void *Ptr, int Value, size_t Count) {
+  return impl->memset(impl, Ptr, Value, Count, {});
 }
 
-event queue::memcpy(void *dest, const void *src, size_t count) {
-  return impl->memcpy(impl, dest, src, count);
+event queue::memset(void *Ptr, int Value, size_t Count, event DepEvent) {
+  return impl->memset(impl, Ptr, Value, Count, {DepEvent});
 }
 
-event queue::mem_advise(const void *ptr, size_t length, pi_mem_advice advice) {
-  return impl->mem_advise(ptr, length, advice);
+event queue::memset(void *Ptr, int Value, size_t Count,
+                    const std::vector<event> &DepEvents) {
+  return impl->memset(impl, Ptr, Value, Count, DepEvents);
 }
 
-event queue::submit_impl(function_class<void(handler &)> CGH,
+event queue::memcpy(void *Dest, const void *Src, size_t Count) {
+  return impl->memcpy(impl, Dest, Src, Count, {});
+}
+
+event queue::memcpy(void *Dest, const void *Src, size_t Count, event DepEvent) {
+  return impl->memcpy(impl, Dest, Src, Count, {DepEvent});
+}
+
+event queue::memcpy(void *Dest, const void *Src, size_t Count,
+                    const std::vector<event> &DepEvents) {
+  return impl->memcpy(impl, Dest, Src, Count, DepEvents);
+}
+
+event queue::mem_advise(const void *Ptr, size_t Length, pi_mem_advice Advice) {
+  return mem_advise(Ptr, Length, int(Advice));
+}
+
+event queue::mem_advise(const void *Ptr, size_t Length, int Advice) {
+  return impl->mem_advise(impl, Ptr, Length, pi_mem_advice(Advice), {});
+}
+
+event queue::mem_advise(const void *Ptr, size_t Length, int Advice,
+                        event DepEvent) {
+  return impl->mem_advise(impl, Ptr, Length, pi_mem_advice(Advice), {DepEvent});
+}
+
+event queue::mem_advise(const void *Ptr, size_t Length, int Advice,
+                        const std::vector<event> &DepEvents) {
+  return impl->mem_advise(impl, Ptr, Length, pi_mem_advice(Advice), DepEvents);
+}
+
+event queue::discard_or_return(const event &Event) {
+  if (!(impl->MDiscardEvents))
+    return Event;
+  using detail::event_impl;
+  auto Impl = std::make_shared<event_impl>(event_impl::HES_Discarded);
+  return detail::createSyclObjFromImpl<event>(Impl);
+}
+
+event queue::submit_impl(std::function<void(handler &)> CGH,
                          const detail::code_location &CodeLoc) {
   return impl->submit(CGH, impl, CodeLoc);
 }
 
-event queue::submit_impl(function_class<void(handler &)> CGH, queue secondQueue,
+event queue::submit_impl(std::function<void(handler &)> CGH, queue SecondQueue,
                          const detail::code_location &CodeLoc) {
-  return impl->submit(CGH, impl, secondQueue.impl, CodeLoc);
+  return impl->submit(CGH, impl, SecondQueue.impl, CodeLoc);
+}
+
+event queue::submit_impl_and_postprocess(
+    std::function<void(handler &)> CGH, const detail::code_location &CodeLoc,
+    const SubmitPostProcessF &PostProcess) {
+  return impl->submit(CGH, impl, CodeLoc, &PostProcess);
+}
+
+event queue::submit_impl_and_postprocess(
+    std::function<void(handler &)> CGH, queue SecondQueue,
+    const detail::code_location &CodeLoc,
+    const SubmitPostProcessF &PostProcess) {
+  return impl->submit(CGH, impl, SecondQueue.impl, CodeLoc, &PostProcess);
 }
 
 void queue::wait_proxy(const detail::code_location &CodeLoc) {
@@ -121,38 +171,83 @@ void queue::wait_and_throw_proxy(const detail::code_location &CodeLoc) {
   impl->wait_and_throw(CodeLoc);
 }
 
-template <info::queue param>
-typename info::param_traits<info::queue, param>::return_type
+template <typename Param>
+typename detail::is_queue_info_desc<Param>::return_type
 queue::get_info() const {
-  return impl->get_info<param>();
+  return impl->get_info<Param>();
 }
 
-#define PARAM_TRAITS_SPEC(param_type, param, ret_type)                         \
-  template __SYCL_EXPORT ret_type queue::get_info<info::param_type::param>()   \
-      const;
+#define __SYCL_PARAM_TRAITS_SPEC(DescType, Desc, ReturnT, Picode)              \
+  template __SYCL_EXPORT ReturnT queue::get_info<info::queue::Desc>() const;
 
-#include <CL/sycl/info/queue_traits.def>
+#include <sycl/info/queue_traits.def>
 
-#undef PARAM_TRAITS_SPEC
+#undef __SYCL_PARAM_TRAITS_SPEC
 
-template <typename propertyT> bool queue::has_property() const {
-  return impl->has_property<propertyT>();
+template <typename PropertyT> bool queue::has_property() const noexcept {
+  return impl->has_property<PropertyT>();
 }
 
-template <typename propertyT> propertyT queue::get_property() const {
-  return impl->get_property<propertyT>();
+template <typename PropertyT> PropertyT queue::get_property() const {
+  return impl->get_property<PropertyT>();
 }
 
-template __SYCL_EXPORT bool
-queue::has_property<property::queue::enable_profiling>() const;
-template __SYCL_EXPORT property::queue::enable_profiling
-queue::get_property<property::queue::enable_profiling>() const;
+#define __SYCL_MANUALLY_DEFINED_PROP(NS_QUALIFIER, PROP_NAME)                  \
+  template __SYCL_EXPORT bool queue::has_property<NS_QUALIFIER::PROP_NAME>()   \
+      const noexcept;                                                          \
+  template __SYCL_EXPORT NS_QUALIFIER::PROP_NAME                               \
+  queue::get_property<NS_QUALIFIER::PROP_NAME>() const;
+
+#define __SYCL_DATA_LESS_PROP(NS_QUALIFIER, PROP_NAME, ENUM_VAL)               \
+  __SYCL_MANUALLY_DEFINED_PROP(NS_QUALIFIER, PROP_NAME)
+
+#include <sycl/properties/queue_properties.def>
 
 bool queue::is_in_order() const {
   return impl->has_property<property::queue::in_order>();
 }
 
+backend queue::get_backend() const noexcept { return getImplBackend(impl); }
+
+bool queue::ext_oneapi_empty() const { return impl->ext_oneapi_empty(); }
+
 pi_native_handle queue::getNative() const { return impl->getNative(); }
 
+pi_native_handle queue::getNative2(int32_t &NativeHandleDesc) const {
+  return impl->getNative2(NativeHandleDesc);
+}
+
+buffer<detail::AssertHappened, 1> &queue::getAssertHappenedBuffer() {
+  return impl->getAssertHappenedBuffer();
+}
+
+event queue::memcpyToDeviceGlobal(void *DeviceGlobalPtr, const void *Src,
+                                  bool IsDeviceImageScope, size_t NumBytes,
+                                  size_t Offset,
+                                  const std::vector<event> &DepEvents) {
+  return impl->memcpyToDeviceGlobal(impl, DeviceGlobalPtr, Src,
+                                    IsDeviceImageScope, NumBytes, Offset,
+                                    DepEvents);
+}
+
+event queue::memcpyFromDeviceGlobal(void *Dest, const void *DeviceGlobalPtr,
+                                    bool IsDeviceImageScope, size_t NumBytes,
+                                    size_t Offset,
+                                    const std::vector<event> &DepEvents) {
+  return impl->memcpyFromDeviceGlobal(impl, Dest, DeviceGlobalPtr,
+                                      IsDeviceImageScope, NumBytes, Offset,
+                                      DepEvents);
+}
+
+bool queue::device_has(aspect Aspect) const {
+  // avoid creating sycl object from impl
+  return impl->getDeviceImplPtr()->has(Aspect);
+}
+
+bool queue::ext_codeplay_supports_fusion() const {
+  return impl->has_property<
+      ext::codeplay::experimental::property::queue::enable_fusion>();
+}
+
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

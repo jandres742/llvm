@@ -12,12 +12,38 @@ set(LLVM_LINK_COMPONENTS
 
 if(MLIR_INCLUDE_TESTS)
   set(test_libs
+    MLIRTestFuncToLLVM
     MLIRAffineTransformsTestPasses
+    MLIRArithTestPasses
+    MLIRBufferizationTestPasses
+    MLIRControlFlowTestPasses
+    MLIRDLTITestPasses
+    MLIRFuncTestPasses
+    MLIRGPUTestPasses
+    MLIRLinalgTestPasses
+    MLIRLoopLikeInterfaceTestPasses
+    MLIRMathTestPasses
+    MLIRMemRefTestPasses
+    MLIRNVGPUTestPasses
+    MLIRSCFTestPasses
+    MLIRShapeTestPasses
     MLIRSPIRVTestPasses
+    MLIRTensorTestPasses
+    MLIRTestAnalysis
     MLIRTestDialect
+    MLIRTestDynDialect
     MLIRTestIR
+    MLIRTestOneToNTypeConversionPass
     MLIRTestPass
+    MLIRTestPDLL
+    MLIRTestReducer
+    MLIRTestRewrite
+    MLIRTestTransformDialect
     MLIRTestTransforms
+    MLIRTilingInterfaceTestPasses
+    MLIRVectorTestPasses
+    MLIRTestVectorToSPIRV
+    MLIRLLVMTestPasses
     )
 endif()
 
@@ -25,10 +51,9 @@ set(LIBS
   ${dialect_libs}
   ${conversion_libs}
   ${test_libs}
-  MLIRLoopAnalysis
+  MLIRAffineAnalysis
   MLIRAnalysis
   MLIRDialect
-  MLIREDSC
   MLIROptLib
   MLIRParser
   MLIRPass
@@ -49,13 +74,15 @@ add_mlir_library(MLIRMlirOptMain
   ${LIBS}
   )
 
-add_llvm_tool(mlir-opt
+add_mlir_tool(mlir-opt
   mlir-opt.cpp
 
   DEPENDS
   ${LIBS}
+  SUPPORT_PLUGINS
   )
 target_link_libraries(mlir-opt PRIVATE ${LIBS})
 llvm_update_compile_flags(mlir-opt)
 
 mlir_check_all_link_libraries(mlir-opt)
+export_executable_symbols_for_plugins(mlir-opt)

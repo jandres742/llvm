@@ -49,20 +49,34 @@ def do_dependency(args):
     # fetch OpenCL headers
     ocl_header_dir = os.path.join(args.obj_dir, "OpenCL-Headers")
     if not os.path.isdir(ocl_header_dir):
-        clone_cmd = ["git", "clone", "https://github.com/KhronosGroup/OpenCL-Headers", "OpenCL-Headers"]
+        clone_cmd = ["git", "clone", "https://github.com/KhronosGroup/OpenCL-Headers",
+                     "OpenCL-Headers", "-b", "main"]
         subprocess.check_call(clone_cmd, cwd=args.obj_dir)
     else:
         fetch_cmd = ["git", "pull", "--ff", "--ff-only", "origin"]
         subprocess.check_call(fetch_cmd, cwd=ocl_header_dir)
 
+    # Checkout fixed version to avoid unexpected issues coming from upstream
+    # Specific version can be uplifted as soon as such need arise
+    checkout_cmd = ["git", "checkout", "9ddb236e6eb3cf844f9e2f81677e1045f9bf838e"]
+    subprocess.check_call(checkout_cmd, cwd=ocl_header_dir)
+
     # fetch and build OpenCL ICD loader
     icd_loader_dir = os.path.join(args.obj_dir, "OpenCL-ICD-Loader")
     if not os.path.isdir(icd_loader_dir):
-        clone_cmd = ["git", "clone", "https://github.com/KhronosGroup/OpenCL-ICD-Loader", "OpenCL-ICD-Loader"]
+        clone_cmd = ["git", "clone",
+                     "https://github.com/KhronosGroup/OpenCL-ICD-Loader",
+                     "OpenCL-ICD-Loader", "-b", "main"]
+
         subprocess.check_call(clone_cmd, cwd=args.obj_dir)
     else:
         fetch_cmd = ["git", "pull", "--ff", "--ff-only", "origin"]
         subprocess.check_call(fetch_cmd, cwd=icd_loader_dir)
+
+    # Checkout fixed version to avoid unexpected issues coming from upstream
+    # Specific version can be uplifted as soon as such need arise
+    checkout_cmd = ["git", "checkout", "9a3e962f16f5097d2054233ad8b6dad51b6f41b7"]
+    subprocess.check_call(checkout_cmd, cwd=icd_loader_dir)
 
     icd_build_dir = os.path.join(icd_loader_dir, "build")
     if os.path.isdir(icd_build_dir):
@@ -73,6 +87,9 @@ def do_dependency(args):
                  "-DCMAKE_INSTALL_PREFIX={}".format(install_dir),
                  "-DOPENCL_ICD_LOADER_HEADERS_DIR={}".format(ocl_header_dir),
                  ".." ]
+
+    print("[Cmake Command]: {}".format(" ".join(cmake_cmd)))
+    
     subprocess.check_call(cmake_cmd, cwd=icd_build_dir)
 
     env_tmp=os.environ
@@ -91,7 +108,7 @@ def main():
     parser.add_argument("-d", "--base-branch", metavar="BASE_BRANCH", help="pull request base branch")
     parser.add_argument("-r", "--pr-number", metavar="PR_NUM", help="pull request number")
     parser.add_argument("-w", "--builder-dir", metavar="BUILDER_DIR",
-                        help="builder directory, which is the directory contains source and build directories")
+                        help="builder directory, which is the directory containing source and build directories")
     parser.add_argument("-s", "--src-dir", metavar="SRC_DIR", help="source directory")
     parser.add_argument("-o", "--obj-dir", metavar="OBJ_DIR", required=True, help="build directory")
     parser.add_argument("-c", "--clean-build", action="store_true", default=False,
@@ -107,4 +124,3 @@ if __name__ == "__main__":
     ret = main()
     exit_code = 0 if ret else 1
     sys.exit(exit_code)
-

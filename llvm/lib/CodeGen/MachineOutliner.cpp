@@ -59,10 +59,10 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOptimizationRemarkEmitter.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -70,9 +70,9 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/Support/Allocator.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/SuffixTree.h"
 #include "llvm/Support/raw_ostream.h"
 #include <functional>
 #include <tuple>
@@ -84,8 +84,19 @@ using namespace llvm;
 using namespace ore;
 using namespace outliner;
 
+// Statistics for outlined functions.
 STATISTIC(NumOutlined, "Number of candidates outlined");
 STATISTIC(FunctionsCreated, "Number of functions created");
+
+// Statistics for instruction mapping.
+STATISTIC(NumLegalInUnsignedVec, "Outlinable instructions mapped");
+STATISTIC(NumIllegalInUnsignedVec,
+          "Unoutlinable instructions mapped + number of sentinel values");
+STATISTIC(NumSentinels, "Sentinel values inserted during mapping");
+STATISTIC(NumInvisible,
+          "Invisible instructions skipped during mapping");
+STATISTIC(UnsignedVecSize,
+          "Total number of instructions mapped and saved to mapping vector");
 
 // Set to true if the user wants the outliner to run on linkonceodr linkage
 // functions. This is false by default because the linker can dedupe linkonceodr
@@ -105,514 +116,12 @@ static cl::opt<unsigned> OutlinerReruns(
     cl::desc(
         "Number of times to rerun the outliner after the initial outline"));
 
+static cl::opt<unsigned> OutlinerBenefitThreshold(
+    "outliner-benefit-threshold", cl::init(1), cl::Hidden,
+    cl::desc(
+        "The minimum size in bytes before an outlining candidate is accepted"));
+
 namespace {
-
-/// Represents an undefined index in the suffix tree.
-const unsigned EmptyIdx = -1;
-
-/// A node in a suffix tree which represents a substring or suffix.
-///
-/// Each node has either no children or at least two children, with the root
-/// being a exception in the empty tree.
-///
-/// Children are represented as a map between unsigned integers and nodes. If
-/// a node N has a child M on unsigned integer k, then the mapping represented
-/// by N is a proper prefix of the mapping represented by M. Note that this,
-/// although similar to a trie is somewhat different: each node stores a full
-/// substring of the full mapping rather than a single character state.
-///
-/// Each internal node contains a pointer to the internal node representing
-/// the same string, but with the first character chopped off. This is stored
-/// in \p Link. Each leaf node stores the start index of its respective
-/// suffix in \p SuffixIdx.
-struct SuffixTreeNode {
-
-  /// The children of this node.
-  ///
-  /// A child existing on an unsigned integer implies that from the mapping
-  /// represented by the current node, there is a way to reach another
-  /// mapping by tacking that character on the end of the current string.
-  DenseMap<unsigned, SuffixTreeNode *> Children;
-
-  /// The start index of this node's substring in the main string.
-  unsigned StartIdx = EmptyIdx;
-
-  /// The end index of this node's substring in the main string.
-  ///
-  /// Every leaf node must have its \p EndIdx incremented at the end of every
-  /// step in the construction algorithm. To avoid having to update O(N)
-  /// nodes individually at the end of every step, the end index is stored
-  /// as a pointer.
-  unsigned *EndIdx = nullptr;
-
-  /// For leaves, the start index of the suffix represented by this node.
-  ///
-  /// For all other nodes, this is ignored.
-  unsigned SuffixIdx = EmptyIdx;
-
-  /// For internal nodes, a pointer to the internal node representing
-  /// the same sequence with the first character chopped off.
-  ///
-  /// This acts as a shortcut in Ukkonen's algorithm. One of the things that
-  /// Ukkonen's algorithm does to achieve linear-time construction is
-  /// keep track of which node the next insert should be at. This makes each
-  /// insert O(1), and there are a total of O(N) inserts. The suffix link
-  /// helps with inserting children of internal nodes.
-  ///
-  /// Say we add a child to an internal node with associated mapping S. The
-  /// next insertion must be at the node representing S - its first character.
-  /// This is given by the way that we iteratively build the tree in Ukkonen's
-  /// algorithm. The main idea is to look at the suffixes of each prefix in the
-  /// string, starting with the longest suffix of the prefix, and ending with
-  /// the shortest. Therefore, if we keep pointers between such nodes, we can
-  /// move to the next insertion point in O(1) time. If we don't, then we'd
-  /// have to query from the root, which takes O(N) time. This would make the
-  /// construction algorithm O(N^2) rather than O(N).
-  SuffixTreeNode *Link = nullptr;
-
-  /// The length of the string formed by concatenating the edge labels from the
-  /// root to this node.
-  unsigned ConcatLen = 0;
-
-  /// Returns true if this node is a leaf.
-  bool isLeaf() const { return SuffixIdx != EmptyIdx; }
-
-  /// Returns true if this node is the root of its owning \p SuffixTree.
-  bool isRoot() const { return StartIdx == EmptyIdx; }
-
-  /// Return the number of elements in the substring associated with this node.
-  size_t size() const {
-
-    // Is it the root? If so, it's the empty string so return 0.
-    if (isRoot())
-      return 0;
-
-    assert(*EndIdx != EmptyIdx && "EndIdx is undefined!");
-
-    // Size = the number of elements in the string.
-    // For example, [0 1 2 3] has length 4, not 3. 3-0 = 3, so we have 3-0+1.
-    return *EndIdx - StartIdx + 1;
-  }
-
-  SuffixTreeNode(unsigned StartIdx, unsigned *EndIdx, SuffixTreeNode *Link)
-      : StartIdx(StartIdx), EndIdx(EndIdx), Link(Link) {}
-
-  SuffixTreeNode() {}
-};
-
-/// A data structure for fast substring queries.
-///
-/// Suffix trees represent the suffixes of their input strings in their leaves.
-/// A suffix tree is a type of compressed trie structure where each node
-/// represents an entire substring rather than a single character. Each leaf
-/// of the tree is a suffix.
-///
-/// A suffix tree can be seen as a type of state machine where each state is a
-/// substring of the full string. The tree is structured so that, for a string
-/// of length N, there are exactly N leaves in the tree. This structure allows
-/// us to quickly find repeated substrings of the input string.
-///
-/// In this implementation, a "string" is a vector of unsigned integers.
-/// These integers may result from hashing some data type. A suffix tree can
-/// contain 1 or many strings, which can then be queried as one large string.
-///
-/// The suffix tree is implemented using Ukkonen's algorithm for linear-time
-/// suffix tree construction. Ukkonen's algorithm is explained in more detail
-/// in the paper by Esko Ukkonen "On-line construction of suffix trees. The
-/// paper is available at
-///
-/// https://www.cs.helsinki.fi/u/ukkonen/SuffixT1withFigs.pdf
-class SuffixTree {
-public:
-  /// Each element is an integer representing an instruction in the module.
-  ArrayRef<unsigned> Str;
-
-  /// A repeated substring in the tree.
-  struct RepeatedSubstring {
-    /// The length of the string.
-    unsigned Length;
-
-    /// The start indices of each occurrence.
-    std::vector<unsigned> StartIndices;
-  };
-
-private:
-  /// Maintains each node in the tree.
-  SpecificBumpPtrAllocator<SuffixTreeNode> NodeAllocator;
-
-  /// The root of the suffix tree.
-  ///
-  /// The root represents the empty string. It is maintained by the
-  /// \p NodeAllocator like every other node in the tree.
-  SuffixTreeNode *Root = nullptr;
-
-  /// Maintains the end indices of the internal nodes in the tree.
-  ///
-  /// Each internal node is guaranteed to never have its end index change
-  /// during the construction algorithm; however, leaves must be updated at
-  /// every step. Therefore, we need to store leaf end indices by reference
-  /// to avoid updating O(N) leaves at every step of construction. Thus,
-  /// every internal node must be allocated its own end index.
-  BumpPtrAllocator InternalEndIdxAllocator;
-
-  /// The end index of each leaf in the tree.
-  unsigned LeafEndIdx = -1;
-
-  /// Helper struct which keeps track of the next insertion point in
-  /// Ukkonen's algorithm.
-  struct ActiveState {
-    /// The next node to insert at.
-    SuffixTreeNode *Node = nullptr;
-
-    /// The index of the first character in the substring currently being added.
-    unsigned Idx = EmptyIdx;
-
-    /// The length of the substring we have to add at the current step.
-    unsigned Len = 0;
-  };
-
-  /// The point the next insertion will take place at in the
-  /// construction algorithm.
-  ActiveState Active;
-
-  /// Allocate a leaf node and add it to the tree.
-  ///
-  /// \param Parent The parent of this node.
-  /// \param StartIdx The start index of this node's associated string.
-  /// \param Edge The label on the edge leaving \p Parent to this node.
-  ///
-  /// \returns A pointer to the allocated leaf node.
-  SuffixTreeNode *insertLeaf(SuffixTreeNode &Parent, unsigned StartIdx,
-                             unsigned Edge) {
-
-    assert(StartIdx <= LeafEndIdx && "String can't start after it ends!");
-
-    SuffixTreeNode *N = new (NodeAllocator.Allocate())
-        SuffixTreeNode(StartIdx, &LeafEndIdx, nullptr);
-    Parent.Children[Edge] = N;
-
-    return N;
-  }
-
-  /// Allocate an internal node and add it to the tree.
-  ///
-  /// \param Parent The parent of this node. Only null when allocating the root.
-  /// \param StartIdx The start index of this node's associated string.
-  /// \param EndIdx The end index of this node's associated string.
-  /// \param Edge The label on the edge leaving \p Parent to this node.
-  ///
-  /// \returns A pointer to the allocated internal node.
-  SuffixTreeNode *insertInternalNode(SuffixTreeNode *Parent, unsigned StartIdx,
-                                     unsigned EndIdx, unsigned Edge) {
-
-    assert(StartIdx <= EndIdx && "String can't start after it ends!");
-    assert(!(!Parent && StartIdx != EmptyIdx) &&
-           "Non-root internal nodes must have parents!");
-
-    unsigned *E = new (InternalEndIdxAllocator) unsigned(EndIdx);
-    SuffixTreeNode *N =
-        new (NodeAllocator.Allocate()) SuffixTreeNode(StartIdx, E, Root);
-    if (Parent)
-      Parent->Children[Edge] = N;
-
-    return N;
-  }
-
-  /// Set the suffix indices of the leaves to the start indices of their
-  /// respective suffixes.
-  void setSuffixIndices() {
-    // List of nodes we need to visit along with the current length of the
-    // string.
-    std::vector<std::pair<SuffixTreeNode *, unsigned>> ToVisit;
-
-    // Current node being visited.
-    SuffixTreeNode *CurrNode = Root;
-
-    // Sum of the lengths of the nodes down the path to the current one.
-    unsigned CurrNodeLen = 0;
-    ToVisit.push_back({CurrNode, CurrNodeLen});
-    while (!ToVisit.empty()) {
-      std::tie(CurrNode, CurrNodeLen) = ToVisit.back();
-      ToVisit.pop_back();
-      CurrNode->ConcatLen = CurrNodeLen;
-      for (auto &ChildPair : CurrNode->Children) {
-        assert(ChildPair.second && "Node had a null child!");
-        ToVisit.push_back(
-            {ChildPair.second, CurrNodeLen + ChildPair.second->size()});
-      }
-
-      // No children, so we are at the end of the string.
-      if (CurrNode->Children.size() == 0 && !CurrNode->isRoot())
-        CurrNode->SuffixIdx = Str.size() - CurrNodeLen;
-    }
-  }
-
-  /// Construct the suffix tree for the prefix of the input ending at
-  /// \p EndIdx.
-  ///
-  /// Used to construct the full suffix tree iteratively. At the end of each
-  /// step, the constructed suffix tree is either a valid suffix tree, or a
-  /// suffix tree with implicit suffixes. At the end of the final step, the
-  /// suffix tree is a valid tree.
-  ///
-  /// \param EndIdx The end index of the current prefix in the main string.
-  /// \param SuffixesToAdd The number of suffixes that must be added
-  /// to complete the suffix tree at the current phase.
-  ///
-  /// \returns The number of suffixes that have not been added at the end of
-  /// this step.
-  unsigned extend(unsigned EndIdx, unsigned SuffixesToAdd) {
-    SuffixTreeNode *NeedsLink = nullptr;
-
-    while (SuffixesToAdd > 0) {
-
-      // Are we waiting to add anything other than just the last character?
-      if (Active.Len == 0) {
-        // If not, then say the active index is the end index.
-        Active.Idx = EndIdx;
-      }
-
-      assert(Active.Idx <= EndIdx && "Start index can't be after end index!");
-
-      // The first character in the current substring we're looking at.
-      unsigned FirstChar = Str[Active.Idx];
-
-      // Have we inserted anything starting with FirstChar at the current node?
-      if (Active.Node->Children.count(FirstChar) == 0) {
-        // If not, then we can just insert a leaf and move too the next step.
-        insertLeaf(*Active.Node, EndIdx, FirstChar);
-
-        // The active node is an internal node, and we visited it, so it must
-        // need a link if it doesn't have one.
-        if (NeedsLink) {
-          NeedsLink->Link = Active.Node;
-          NeedsLink = nullptr;
-        }
-      } else {
-        // There's a match with FirstChar, so look for the point in the tree to
-        // insert a new node.
-        SuffixTreeNode *NextNode = Active.Node->Children[FirstChar];
-
-        unsigned SubstringLen = NextNode->size();
-
-        // Is the current suffix we're trying to insert longer than the size of
-        // the child we want to move to?
-        if (Active.Len >= SubstringLen) {
-          // If yes, then consume the characters we've seen and move to the next
-          // node.
-          Active.Idx += SubstringLen;
-          Active.Len -= SubstringLen;
-          Active.Node = NextNode;
-          continue;
-        }
-
-        // Otherwise, the suffix we're trying to insert must be contained in the
-        // next node we want to move to.
-        unsigned LastChar = Str[EndIdx];
-
-        // Is the string we're trying to insert a substring of the next node?
-        if (Str[NextNode->StartIdx + Active.Len] == LastChar) {
-          // If yes, then we're done for this step. Remember our insertion point
-          // and move to the next end index. At this point, we have an implicit
-          // suffix tree.
-          if (NeedsLink && !Active.Node->isRoot()) {
-            NeedsLink->Link = Active.Node;
-            NeedsLink = nullptr;
-          }
-
-          Active.Len++;
-          break;
-        }
-
-        // The string we're trying to insert isn't a substring of the next node,
-        // but matches up to a point. Split the node.
-        //
-        // For example, say we ended our search at a node n and we're trying to
-        // insert ABD. Then we'll create a new node s for AB, reduce n to just
-        // representing C, and insert a new leaf node l to represent d. This
-        // allows us to ensure that if n was a leaf, it remains a leaf.
-        //
-        //   | ABC  ---split--->  | AB
-        //   n                    s
-        //                     C / \ D
-        //                      n   l
-
-        // The node s from the diagram
-        SuffixTreeNode *SplitNode =
-            insertInternalNode(Active.Node, NextNode->StartIdx,
-                               NextNode->StartIdx + Active.Len - 1, FirstChar);
-
-        // Insert the new node representing the new substring into the tree as
-        // a child of the split node. This is the node l from the diagram.
-        insertLeaf(*SplitNode, EndIdx, LastChar);
-
-        // Make the old node a child of the split node and update its start
-        // index. This is the node n from the diagram.
-        NextNode->StartIdx += Active.Len;
-        SplitNode->Children[Str[NextNode->StartIdx]] = NextNode;
-
-        // SplitNode is an internal node, update the suffix link.
-        if (NeedsLink)
-          NeedsLink->Link = SplitNode;
-
-        NeedsLink = SplitNode;
-      }
-
-      // We've added something new to the tree, so there's one less suffix to
-      // add.
-      SuffixesToAdd--;
-
-      if (Active.Node->isRoot()) {
-        if (Active.Len > 0) {
-          Active.Len--;
-          Active.Idx = EndIdx - SuffixesToAdd + 1;
-        }
-      } else {
-        // Start the next phase at the next smallest suffix.
-        Active.Node = Active.Node->Link;
-      }
-    }
-
-    return SuffixesToAdd;
-  }
-
-public:
-  /// Construct a suffix tree from a sequence of unsigned integers.
-  ///
-  /// \param Str The string to construct the suffix tree for.
-  SuffixTree(const std::vector<unsigned> &Str) : Str(Str) {
-    Root = insertInternalNode(nullptr, EmptyIdx, EmptyIdx, 0);
-    Active.Node = Root;
-
-    // Keep track of the number of suffixes we have to add of the current
-    // prefix.
-    unsigned SuffixesToAdd = 0;
-
-    // Construct the suffix tree iteratively on each prefix of the string.
-    // PfxEndIdx is the end index of the current prefix.
-    // End is one past the last element in the string.
-    for (unsigned PfxEndIdx = 0, End = Str.size(); PfxEndIdx < End;
-         PfxEndIdx++) {
-      SuffixesToAdd++;
-      LeafEndIdx = PfxEndIdx; // Extend each of the leaves.
-      SuffixesToAdd = extend(PfxEndIdx, SuffixesToAdd);
-    }
-
-    // Set the suffix indices of each leaf.
-    assert(Root && "Root node can't be nullptr!");
-    setSuffixIndices();
-  }
-
-  /// Iterator for finding all repeated substrings in the suffix tree.
-  struct RepeatedSubstringIterator {
-  private:
-    /// The current node we're visiting.
-    SuffixTreeNode *N = nullptr;
-
-    /// The repeated substring associated with this node.
-    RepeatedSubstring RS;
-
-    /// The nodes left to visit.
-    std::vector<SuffixTreeNode *> ToVisit;
-
-    /// The minimum length of a repeated substring to find.
-    /// Since we're outlining, we want at least two instructions in the range.
-    /// FIXME: This may not be true for targets like X86 which support many
-    /// instruction lengths.
-    const unsigned MinLength = 2;
-
-    /// Move the iterator to the next repeated substring.
-    void advance() {
-      // Clear the current state. If we're at the end of the range, then this
-      // is the state we want to be in.
-      RS = RepeatedSubstring();
-      N = nullptr;
-
-      // Each leaf node represents a repeat of a string.
-      std::vector<SuffixTreeNode *> LeafChildren;
-
-      // Continue visiting nodes until we find one which repeats more than once.
-      while (!ToVisit.empty()) {
-        SuffixTreeNode *Curr = ToVisit.back();
-        ToVisit.pop_back();
-        LeafChildren.clear();
-
-        // Keep track of the length of the string associated with the node. If
-        // it's too short, we'll quit.
-        unsigned Length = Curr->ConcatLen;
-
-        // Iterate over each child, saving internal nodes for visiting, and
-        // leaf nodes in LeafChildren. Internal nodes represent individual
-        // strings, which may repeat.
-        for (auto &ChildPair : Curr->Children) {
-          // Save all of this node's children for processing.
-          if (!ChildPair.second->isLeaf())
-            ToVisit.push_back(ChildPair.second);
-
-          // It's not an internal node, so it must be a leaf. If we have a
-          // long enough string, then save the leaf children.
-          else if (Length >= MinLength)
-            LeafChildren.push_back(ChildPair.second);
-        }
-
-        // The root never represents a repeated substring. If we're looking at
-        // that, then skip it.
-        if (Curr->isRoot())
-          continue;
-
-        // Do we have any repeated substrings?
-        if (LeafChildren.size() >= 2) {
-          // Yes. Update the state to reflect this, and then bail out.
-          N = Curr;
-          RS.Length = Length;
-          for (SuffixTreeNode *Leaf : LeafChildren)
-            RS.StartIndices.push_back(Leaf->SuffixIdx);
-          break;
-        }
-      }
-
-      // At this point, either NewRS is an empty RepeatedSubstring, or it was
-      // set in the above loop. Similarly, N is either nullptr, or the node
-      // associated with NewRS.
-    }
-
-  public:
-    /// Return the current repeated substring.
-    RepeatedSubstring &operator*() { return RS; }
-
-    RepeatedSubstringIterator &operator++() {
-      advance();
-      return *this;
-    }
-
-    RepeatedSubstringIterator operator++(int I) {
-      RepeatedSubstringIterator It(*this);
-      advance();
-      return It;
-    }
-
-    bool operator==(const RepeatedSubstringIterator &Other) {
-      return N == Other.N;
-    }
-    bool operator!=(const RepeatedSubstringIterator &Other) {
-      return !(*this == Other);
-    }
-
-    RepeatedSubstringIterator(SuffixTreeNode *N) : N(N) {
-      // Do we have a non-null node?
-      if (N) {
-        // Yes. At the first step, we need to visit all of N's children.
-        // Note: This means that we visit N last.
-        ToVisit.push_back(N);
-        advance();
-      }
-    }
-  };
-
-  typedef RepeatedSubstringIterator iterator;
-  iterator begin() { return iterator(Root); }
-  iterator end() { return iterator(nullptr); }
-};
 
 /// Maps \p MachineInstrs to unsigned integers and stores the mappings.
 struct InstructionMapper {
@@ -635,11 +144,11 @@ struct InstructionMapper {
   DenseMap<MachineBasicBlock *, unsigned> MBBFlagsMap;
 
   /// The vector of unsigned integers that the module is mapped to.
-  std::vector<unsigned> UnsignedVec;
+  SmallVector<unsigned> UnsignedVec;
 
   /// Stores the location of the instruction associated with the integer
   /// at index i in \p UnsignedVec for each index i.
-  std::vector<MachineBasicBlock::iterator> InstrList;
+  SmallVector<MachineBasicBlock::iterator> InstrList;
 
   // Set if we added an illegal number in the previous step.
   // Since each illegal number is unique, we only need one of them between
@@ -656,8 +165,8 @@ struct InstructionMapper {
   unsigned mapToLegalUnsigned(
       MachineBasicBlock::iterator &It, bool &CanOutlineWithPrevInstr,
       bool &HaveLegalRange, unsigned &NumLegalInBlock,
-      std::vector<unsigned> &UnsignedVecForMBB,
-      std::vector<MachineBasicBlock::iterator> &InstrListForMBB) {
+      SmallVector<unsigned> &UnsignedVecForMBB,
+      SmallVector<MachineBasicBlock::iterator> &InstrListForMBB) {
     // We added something legal, so we should unset the AddedLegalLastTime
     // flag.
     AddedIllegalLastTime = false;
@@ -697,6 +206,8 @@ struct InstructionMapper {
     assert(LegalInstrNumber != DenseMapInfo<unsigned>::getTombstoneKey() &&
            "Tried to assign DenseMap tombstone or empty key to instruction.");
 
+    // Statistics.
+    ++NumLegalInUnsignedVec;
     return MINumber;
   }
 
@@ -708,8 +219,8 @@ struct InstructionMapper {
   /// \returns The integer that \p *It was mapped to.
   unsigned mapToIllegalUnsigned(
       MachineBasicBlock::iterator &It, bool &CanOutlineWithPrevInstr,
-      std::vector<unsigned> &UnsignedVecForMBB,
-      std::vector<MachineBasicBlock::iterator> &InstrListForMBB) {
+      SmallVector<unsigned> &UnsignedVecForMBB,
+      SmallVector<MachineBasicBlock::iterator> &InstrListForMBB) {
     // Can't outline an illegal instruction. Set the flag.
     CanOutlineWithPrevInstr = false;
 
@@ -724,6 +235,8 @@ struct InstructionMapper {
     InstrListForMBB.push_back(It);
     UnsignedVecForMBB.push_back(IllegalInstrNumber);
     IllegalInstrNumber--;
+    // Statistics.
+    ++NumIllegalInUnsignedVec;
 
     assert(LegalInstrNumber < IllegalInstrNumber &&
            "Instruction mapping overflow!");
@@ -749,10 +262,18 @@ struct InstructionMapper {
   /// \param TII \p TargetInstrInfo for the function.
   void convertToUnsignedVec(MachineBasicBlock &MBB,
                             const TargetInstrInfo &TII) {
+    LLVM_DEBUG(dbgs() << "*** Converting MBB '" << MBB.getName()
+                      << "' to unsigned vector ***\n");
     unsigned Flags = 0;
 
     // Don't even map in this case.
     if (!TII.isMBBSafeToOutlineFrom(MBB, Flags))
+      return;
+
+    auto OutlinableRanges = TII.getOutlinableRanges(MBB, Flags);
+    LLVM_DEBUG(dbgs() << MBB.getName() << ": " << OutlinableRanges.size()
+                      << " outlinable range(s)\n");
+    if (OutlinableRanges.empty())
       return;
 
     // Store info for the MBB for later outlining.
@@ -774,38 +295,70 @@ struct InstructionMapper {
 
     // FIXME: Should this all just be handled in the target, rather than using
     // repeated calls to getOutliningType?
-    std::vector<unsigned> UnsignedVecForMBB;
-    std::vector<MachineBasicBlock::iterator> InstrListForMBB;
+    SmallVector<unsigned> UnsignedVecForMBB;
+    SmallVector<MachineBasicBlock::iterator> InstrListForMBB;
 
-    for (MachineBasicBlock::iterator Et = MBB.end(); It != Et; ++It) {
-      // Keep track of where this instruction is in the module.
-      switch (TII.getOutliningType(It, Flags)) {
-      case InstrType::Illegal:
+    LLVM_DEBUG(dbgs() << "*** Mapping outlinable ranges ***\n");
+    for (auto &OutlinableRange : OutlinableRanges) {
+      auto OutlinableRangeBegin = OutlinableRange.first;
+      auto OutlinableRangeEnd = OutlinableRange.second;
+#ifndef NDEBUG
+      LLVM_DEBUG(
+          dbgs() << "Mapping "
+                 << std::distance(OutlinableRangeBegin, OutlinableRangeEnd)
+                 << " instruction range\n");
+      // Everything outside of an outlinable range is illegal.
+      unsigned NumSkippedInRange = 0;
+#endif
+      for (; It != OutlinableRangeBegin; ++It) {
+#ifndef NDEBUG
+        ++NumSkippedInRange;
+#endif
         mapToIllegalUnsigned(It, CanOutlineWithPrevInstr, UnsignedVecForMBB,
                              InstrListForMBB);
-        break;
+      }
+#ifndef NDEBUG
+      LLVM_DEBUG(dbgs() << "Skipped " << NumSkippedInRange
+                        << " instructions outside outlinable range\n");
+#endif
+      assert(It != MBB.end() && "Should still have instructions?");
+      // `It` is now positioned at the beginning of a range of instructions
+      // which may be outlinable. Check if each instruction is known to be safe.
+      for (; It != OutlinableRangeEnd; ++It) {
+        // Keep track of where this instruction is in the module.
+        switch (TII.getOutliningType(It, Flags)) {
+        case InstrType::Illegal:
+          mapToIllegalUnsigned(It, CanOutlineWithPrevInstr, UnsignedVecForMBB,
+                               InstrListForMBB);
+          break;
 
-      case InstrType::Legal:
-        mapToLegalUnsigned(It, CanOutlineWithPrevInstr, HaveLegalRange,
-                           NumLegalInBlock, UnsignedVecForMBB, InstrListForMBB);
-        break;
-
-      case InstrType::LegalTerminator:
-        mapToLegalUnsigned(It, CanOutlineWithPrevInstr, HaveLegalRange,
-                           NumLegalInBlock, UnsignedVecForMBB, InstrListForMBB);
-        // The instruction also acts as a terminator, so we have to record that
-        // in the string.
-        mapToIllegalUnsigned(It, CanOutlineWithPrevInstr, UnsignedVecForMBB,
+        case InstrType::Legal:
+          mapToLegalUnsigned(It, CanOutlineWithPrevInstr, HaveLegalRange,
+                             NumLegalInBlock, UnsignedVecForMBB,
                              InstrListForMBB);
-        break;
+          break;
 
-      case InstrType::Invisible:
-        // Normally this is set by mapTo(Blah)Unsigned, but we just want to
-        // skip this instruction. So, unset the flag here.
-        AddedIllegalLastTime = false;
-        break;
+        case InstrType::LegalTerminator:
+          mapToLegalUnsigned(It, CanOutlineWithPrevInstr, HaveLegalRange,
+                             NumLegalInBlock, UnsignedVecForMBB,
+                             InstrListForMBB);
+          // The instruction also acts as a terminator, so we have to record
+          // that in the string.
+          mapToIllegalUnsigned(It, CanOutlineWithPrevInstr, UnsignedVecForMBB,
+                               InstrListForMBB);
+          break;
+
+        case InstrType::Invisible:
+          // Normally this is set by mapTo(Blah)Unsigned, but we just want to
+          // skip this instruction. So, unset the flag here.
+          ++NumInvisible;
+          AddedIllegalLastTime = false;
+          break;
+        }
       }
     }
+
+    LLVM_DEBUG(dbgs() << "HaveLegalRange = " << HaveLegalRange << "\n");
 
     // Are there enough legal instructions in the block for outlining to be
     // possible?
@@ -816,10 +369,9 @@ struct InstructionMapper {
       // repeated substring.
       mapToIllegalUnsigned(It, CanOutlineWithPrevInstr, UnsignedVecForMBB,
                            InstrListForMBB);
-      InstrList.insert(InstrList.end(), InstrListForMBB.begin(),
-                       InstrListForMBB.end());
-      UnsignedVec.insert(UnsignedVec.end(), UnsignedVecForMBB.begin(),
-                         UnsignedVecForMBB.end());
+      ++NumSentinels;
+      append_range(InstrList, InstrListForMBB);
+      append_range(UnsignedVec, UnsignedVecForMBB);
     }
   }
 
@@ -1029,12 +581,19 @@ void MachineOutliner::findCandidates(
   // First, find all of the repeated substrings in the tree of minimum length
   // 2.
   std::vector<Candidate> CandidatesForRepeatedSeq;
-  for (auto It = ST.begin(), Et = ST.end(); It != Et; ++It) {
+  LLVM_DEBUG(dbgs() << "*** Discarding overlapping candidates *** \n");
+  LLVM_DEBUG(
+      dbgs() << "Searching for overlaps in all repeated sequences...\n");
+  for (const SuffixTree::RepeatedSubstring &RS : ST) {
     CandidatesForRepeatedSeq.clear();
-    SuffixTree::RepeatedSubstring RS = *It;
     unsigned StringLen = RS.Length;
+    LLVM_DEBUG(dbgs() << "  Sequence length: " << StringLen << "\n");
+    // Debug code to keep track of how many candidates we removed.
+#ifndef NDEBUG
+    unsigned NumDiscarded = 0;
+    unsigned NumKept = 0;
+#endif
     for (const unsigned &StartIdx : RS.StartIndices) {
-      unsigned EndIdx = StartIdx + StringLen - 1;
       // Trick: Discard some candidates that would be incompatible with the
       // ones we've already found for this sequence. This will save us some
       // work in candidate selection.
@@ -1056,24 +615,39 @@ void MachineOutliner::findCandidates(
       // That is, one must either
       // * End before the other starts
       // * Start after the other ends
-      if (std::all_of(
-              CandidatesForRepeatedSeq.begin(), CandidatesForRepeatedSeq.end(),
-              [&StartIdx, &EndIdx](const Candidate &C) {
-                return (EndIdx < C.getStartIdx() || StartIdx > C.getEndIdx());
-              })) {
-        // It doesn't overlap with anything, so we can outline it.
-        // Each sequence is over [StartIt, EndIt].
-        // Save the candidate and its location.
-
-        MachineBasicBlock::iterator StartIt = Mapper.InstrList[StartIdx];
-        MachineBasicBlock::iterator EndIt = Mapper.InstrList[EndIdx];
-        MachineBasicBlock *MBB = StartIt->getParent();
-
-        CandidatesForRepeatedSeq.emplace_back(StartIdx, StringLen, StartIt,
-                                              EndIt, MBB, FunctionList.size(),
-                                              Mapper.MBBFlagsMap[MBB]);
+      unsigned EndIdx = StartIdx + StringLen - 1;
+      auto FirstOverlap = find_if(
+          CandidatesForRepeatedSeq, [StartIdx, EndIdx](const Candidate &C) {
+            return EndIdx >= C.getStartIdx() && StartIdx <= C.getEndIdx();
+          });
+      if (FirstOverlap != CandidatesForRepeatedSeq.end()) {
+#ifndef NDEBUG
+        ++NumDiscarded;
+        LLVM_DEBUG(dbgs() << "    .. DISCARD candidate @ [" << StartIdx
+                          << ", " << EndIdx << "]; overlaps with candidate @ ["
+                          << FirstOverlap->getStartIdx() << ", "
+                          << FirstOverlap->getEndIdx() << "]\n");
+#endif
+        continue;
       }
+      // It doesn't overlap with anything, so we can outline it.
+      // Each sequence is over [StartIt, EndIt].
+      // Save the candidate and its location.
+#ifndef NDEBUG
+      ++NumKept;
+#endif
+      MachineBasicBlock::iterator StartIt = Mapper.InstrList[StartIdx];
+      MachineBasicBlock::iterator EndIt = Mapper.InstrList[EndIdx];
+      MachineBasicBlock *MBB = StartIt->getParent();
+      CandidatesForRepeatedSeq.emplace_back(StartIdx, StringLen, StartIt, EndIt,
+                                            MBB, FunctionList.size(),
+                                            Mapper.MBBFlagsMap[MBB]);
     }
+#ifndef NDEBUG
+    LLVM_DEBUG(dbgs() << "    Candidates discarded: " << NumDiscarded
+                      << "\n");
+    LLVM_DEBUG(dbgs() << "    Candidates kept: " << NumKept << "\n\n");
+#endif
 
     // We've found something we might want to outline.
     // Create an OutlinedFunction to store it and check if it'd be beneficial
@@ -1086,21 +660,21 @@ void MachineOutliner::findCandidates(
     const TargetInstrInfo *TII =
         CandidatesForRepeatedSeq[0].getMF()->getSubtarget().getInstrInfo();
 
-    OutlinedFunction OF =
+    std::optional<OutlinedFunction> OF =
         TII->getOutliningCandidateInfo(CandidatesForRepeatedSeq);
 
     // If we deleted too many candidates, then there's nothing worth outlining.
     // FIXME: This should take target-specified instruction sizes into account.
-    if (OF.Candidates.size() < 2)
+    if (!OF || OF->Candidates.size() < 2)
       continue;
 
     // Is it better to outline this candidate than not?
-    if (OF.getBenefit() < 1) {
-      emitNotOutliningCheaperRemark(StringLen, CandidatesForRepeatedSeq, OF);
+    if (OF->getBenefit() < OutlinerBenefitThreshold) {
+      emitNotOutliningCheaperRemark(StringLen, CandidatesForRepeatedSeq, *OF);
       continue;
     }
 
-    FunctionList.push_back(OF);
+    FunctionList.push_back(*OF);
   }
 }
 
@@ -1125,22 +699,25 @@ MachineFunction *MachineOutliner::createOutlinedFunction(
   F->setLinkage(GlobalValue::InternalLinkage);
   F->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
 
-  // FIXME: Set nounwind, so we don't generate eh_frame? Haven't verified it's
-  // necessary.
-
   // Set optsize/minsize, so we don't insert padding between outlined
   // functions.
   F->addFnAttr(Attribute::OptimizeForSize);
   F->addFnAttr(Attribute::MinSize);
 
-  // Include target features from an arbitrary candidate for the outlined
-  // function. This makes sure the outlined function knows what kinds of
-  // instructions are going into it. This is fine, since all parent functions
-  // must necessarily support the instructions that are in the outlined region.
   Candidate &FirstCand = OF.Candidates.front();
-  const Function &ParentFn = FirstCand.getMF()->getFunction();
-  if (ParentFn.hasFnAttribute("target-features"))
-    F->addFnAttr(ParentFn.getFnAttribute("target-features"));
+  const TargetInstrInfo &TII =
+      *FirstCand.getMF()->getSubtarget().getInstrInfo();
+
+  TII.mergeOutliningCandidateAttributes(*F, OF.Candidates);
+
+  // Set uwtable, so we generate eh_frame.
+  UWTableKind UW = std::accumulate(
+      OF.Candidates.cbegin(), OF.Candidates.cend(), UWTableKind::None,
+      [](UWTableKind K, const outliner::Candidate &C) {
+        return std::max(K, C.getMF()->getFunction().getUWTableKind());
+      });
+  if (UW != UWTableKind::None)
+    F->setUWTableKind(UW);
 
   BasicBlock *EntryBB = BasicBlock::Create(C, "entry", F);
   IRBuilder<> Builder(EntryBB);
@@ -1148,9 +725,8 @@ MachineFunction *MachineOutliner::createOutlinedFunction(
 
   MachineModuleInfo &MMI = getAnalysis<MachineModuleInfoWrapperPass>().getMMI();
   MachineFunction &MF = MMI.getOrCreateMachineFunction(*F);
+  MF.setIsOutlined(true);
   MachineBasicBlock &MBB = *MF.CreateMachineBasicBlock();
-  const TargetSubtargetInfo &STI = MF.getSubtarget();
-  const TargetInstrInfo &TII = *STI.getInstrInfo();
 
   // Insert the new function into the module.
   MF.insert(MF.begin(), &MBB);
@@ -1160,17 +736,22 @@ MachineFunction *MachineOutliner::createOutlinedFunction(
       OriginalMF->getFrameInstructions();
   for (auto I = FirstCand.front(), E = std::next(FirstCand.back()); I != E;
        ++I) {
-    MachineInstr *NewMI = MF.CloneMachineInstr(&*I);
-    if (I->isCFIInstruction()) {
-      unsigned CFIIndex = NewMI->getOperand(0).getCFIIndex();
-      MCCFIInstruction CFI = Instrs[CFIIndex];
-      (void)MF.addFrameInst(CFI);
-    }
-    NewMI->dropMemRefs(MF);
+    if (I->isDebugInstr())
+      continue;
 
     // Don't keep debug information for outlined instructions.
-    NewMI->setDebugLoc(DebugLoc());
-    MBB.insert(MBB.end(), NewMI);
+    auto DL = DebugLoc();
+    if (I->isCFIInstruction()) {
+      unsigned CFIIndex = I->getOperand(0).getCFIIndex();
+      MCCFIInstruction CFI = Instrs[CFIIndex];
+      BuildMI(MBB, MBB.end(), DL, TII.get(TargetOpcode::CFI_INSTRUCTION))
+          .addCFIIndex(MF.addFrameInst(CFI));
+    } else {
+      MachineInstr *NewMI = MF.CloneMachineInstr(&*I);
+      NewMI->dropMemRefs(MF);
+      NewMI->setDebugLoc(DL);
+      MBB.insert(MBB.end(), NewMI);
+    }
   }
 
   // Set normal properties for a late MachineFunction.
@@ -1195,7 +776,7 @@ MachineFunction *MachineOutliner::createOutlinedFunction(
 
     // The live-in set for the outlined function is the union of the live-ins
     // from all the outlining points.
-    for (MCPhysReg Reg : make_range(CandLiveIns.begin(), CandLiveIns.end()))
+    for (MCPhysReg Reg : CandLiveIns)
       LiveIns.addReg(Reg);
   }
   addLiveIns(MBB, LiveIns);
@@ -1212,14 +793,15 @@ MachineFunction *MachineOutliner::createOutlinedFunction(
     Mangler Mg;
     // Get the mangled name of the function for the linkage name.
     std::string Dummy;
-    llvm::raw_string_ostream MangledNameStream(Dummy);
+    raw_string_ostream MangledNameStream(Dummy);
     Mg.getNameWithPrefix(MangledNameStream, F, false);
 
     DISubprogram *OutlinedSP = DB.createFunction(
         Unit /* Context */, F->getName(), StringRef(MangledNameStream.str()),
         Unit /* File */,
         0 /* Line 0 is reserved for compiler-generated code. */,
-        DB.createSubroutineType(DB.getOrCreateTypeArray(None)), /* void type */
+        DB.createSubroutineType(
+            DB.getOrCreateTypeArray(std::nullopt)), /* void type */
         0, /* Line 0 is reserved for compiler-generated code. */
         DINode::DIFlags::FlagArtificial /* Compiler-generated code. */,
         /* Outlined code is optimized code by definition. */
@@ -1245,25 +827,26 @@ bool MachineOutliner::outline(Module &M,
   bool OutlinedSomething = false;
 
   // Sort by benefit. The most beneficial functions should be outlined first.
-  llvm::stable_sort(FunctionList, [](const OutlinedFunction &LHS,
-                                     const OutlinedFunction &RHS) {
-    return LHS.getBenefit() > RHS.getBenefit();
-  });
+  stable_sort(FunctionList,
+              [](const OutlinedFunction &LHS, const OutlinedFunction &RHS) {
+                return LHS.getBenefit() > RHS.getBenefit();
+              });
 
   // Walk over each function, outlining them as we go along. Functions are
   // outlined greedily, based off the sort above.
+  auto *UnsignedVecBegin = Mapper.UnsignedVec.begin();
   for (OutlinedFunction &OF : FunctionList) {
     // If we outlined something that overlapped with a candidate in a previous
     // step, then we can't outline from it.
-    erase_if(OF.Candidates, [&Mapper](Candidate &C) {
-      return std::any_of(
-          Mapper.UnsignedVec.begin() + C.getStartIdx(),
-          Mapper.UnsignedVec.begin() + C.getEndIdx() + 1,
-          [](unsigned I) { return (I == static_cast<unsigned>(-1)); });
+    erase_if(OF.Candidates, [&UnsignedVecBegin](Candidate &C) {
+      return std::any_of(UnsignedVecBegin + C.getStartIdx(),
+                         UnsignedVecBegin + C.getEndIdx() + 1, [](unsigned I) {
+                           return I == static_cast<unsigned>(-1);
+                         });
     });
 
     // If we made it unbeneficial to outline this function, skip it.
-    if (OF.getBenefit() < 1)
+    if (OF.getBenefit() < OutlinerBenefitThreshold)
       continue;
 
     // It's beneficial. Create the function and outline its sequence's
@@ -1306,6 +889,7 @@ bool MachineOutliner::outline(Module &M,
                  Last = std::next(CallInst.getReverse());
              Iter != Last; Iter++) {
           MachineInstr *MI = &*Iter;
+          SmallSet<Register, 2> InstrUseRegs;
           for (MachineOperand &MOP : MI->operands()) {
             // Skip over anything that isn't a register.
             if (!MOP.isReg())
@@ -1314,7 +898,8 @@ bool MachineOutliner::outline(Module &M,
             if (MOP.isDef()) {
               // Introduce DefRegs set to skip the redundant register.
               DefRegs.insert(MOP.getReg());
-              if (UseRegs.count(MOP.getReg()))
+              if (UseRegs.count(MOP.getReg()) &&
+                  !InstrUseRegs.count(MOP.getReg()))
                 // Since the regiester is modeled as defined,
                 // it is not necessary to be put in use register set.
                 UseRegs.erase(MOP.getReg());
@@ -1322,6 +907,7 @@ bool MachineOutliner::outline(Module &M,
               // Any register which is not undefined should
               // be put in the use register set.
               UseRegs.insert(MOP.getReg());
+              InstrUseRegs.insert(MOP.getReg());
             }
           }
           if (MI->isCandidateForCallSiteEntry())
@@ -1347,9 +933,9 @@ bool MachineOutliner::outline(Module &M,
       MBB.erase(std::next(StartIt), std::next(EndIt));
 
       // Keep track of what we removed by marking them all as -1.
-      std::for_each(Mapper.UnsignedVec.begin() + C.getStartIdx(),
-                    Mapper.UnsignedVec.begin() + C.getEndIdx() + 1,
-                    [](unsigned &I) { I = static_cast<unsigned>(-1); });
+      for (unsigned &I : make_range(UnsignedVecBegin + C.getStartIdx(),
+                                    UnsignedVecBegin + C.getEndIdx() + 1))
+        I = static_cast<unsigned>(-1);
       OutlinedSomething = true;
 
       // Statistics.
@@ -1365,12 +951,14 @@ void MachineOutliner::populateMapper(InstructionMapper &Mapper, Module &M,
                                      MachineModuleInfo &MMI) {
   // Build instruction mappings for each function in the module. Start by
   // iterating over each Function in M.
+  LLVM_DEBUG(dbgs() << "*** Populating mapper ***\n");
   for (Function &F : M) {
+    LLVM_DEBUG(dbgs() << "MAPPING FUNCTION: " << F.getName() << "\n");
 
-    // If there's nothing in F, then there's no reason to try and outline from
-    // it.
-    if (F.empty())
+    if (F.hasFnAttribute("nooutline")) {
+      LLVM_DEBUG(dbgs() << "SKIP: Function has nooutline attribute\n");
       continue;
+    }
 
     // There's something in F. Check if it has a MachineFunction associated with
     // it.
@@ -1378,41 +966,58 @@ void MachineOutliner::populateMapper(InstructionMapper &Mapper, Module &M,
 
     // If it doesn't, then there's nothing to outline from. Move to the next
     // Function.
-    if (!MF)
+    if (!MF) {
+      LLVM_DEBUG(dbgs() << "SKIP: Function does not have a MachineFunction\n");
       continue;
+    }
 
     const TargetInstrInfo *TII = MF->getSubtarget().getInstrInfo();
-
-    if (!RunOnAllFunctions && !TII->shouldOutlineFromFunctionByDefault(*MF))
+    if (!RunOnAllFunctions && !TII->shouldOutlineFromFunctionByDefault(*MF)) {
+      LLVM_DEBUG(dbgs() << "SKIP: Target does not want to outline from "
+                           "function by default\n");
       continue;
+    }
 
     // We have a MachineFunction. Ask the target if it's suitable for outlining.
     // If it isn't, then move on to the next Function in the module.
-    if (!TII->isFunctionSafeToOutlineFrom(*MF, OutlineFromLinkOnceODRs))
+    if (!TII->isFunctionSafeToOutlineFrom(*MF, OutlineFromLinkOnceODRs)) {
+      LLVM_DEBUG(dbgs() << "SKIP: " << MF->getName()
+                        << ": unsafe to outline from\n");
       continue;
+    }
 
     // We have a function suitable for outlining. Iterate over every
     // MachineBasicBlock in MF and try to map its instructions to a list of
     // unsigned integers.
+    const unsigned MinMBBSize = 2;
+
     for (MachineBasicBlock &MBB : *MF) {
+      LLVM_DEBUG(dbgs() << "  MAPPING MBB: '" << MBB.getName() << "'\n");
       // If there isn't anything in MBB, then there's no point in outlining from
       // it.
       // If there are fewer than 2 instructions in the MBB, then it can't ever
       // contain something worth outlining.
       // FIXME: This should be based off of the maximum size in B of an outlined
       // call versus the size in B of the MBB.
-      if (MBB.empty() || MBB.size() < 2)
+      if (MBB.size() < MinMBBSize) {
+        LLVM_DEBUG(dbgs() << "    SKIP: MBB size less than minimum size of "
+                          << MinMBBSize << "\n");
         continue;
+      }
 
       // Check if MBB could be the target of an indirect branch. If it is, then
       // we don't want to outline from it.
-      if (MBB.hasAddressTaken())
+      if (MBB.hasAddressTaken()) {
+        LLVM_DEBUG(dbgs() << "    SKIP: MBB's address is taken\n");
         continue;
+      }
 
       // MBB is suitable for outlining. Map it to a list of unsigneds.
       Mapper.convertToUnsignedVec(MBB, *TII);
     }
   }
+  // Statistics.
+  UnsignedVecSize = Mapper.UnsignedVec.size();
 }
 
 void MachineOutliner::initSizeRemarkInfo(

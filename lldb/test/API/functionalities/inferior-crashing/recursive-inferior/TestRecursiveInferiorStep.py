@@ -10,9 +10,6 @@ from lldbsuite.test import lldbutil
 
 class CrashingRecursiveInferiorStepTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
-    @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
     def test_recursive_inferior_crashing_step(self):
         """Test that stepping after a crash behaves correctly."""
         self.build()
@@ -20,6 +17,7 @@ class CrashingRecursiveInferiorStepTestCase(TestBase):
 
     @skipIfTargetAndroid()  # debuggerd interferes with this test on Android
     @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
+    @expectedFailureNetBSD
     def test_recursive_inferior_crashing_step_after_break(self):
         """Test that lldb functions correctly after stepping through a crash."""
         self.build()
@@ -27,9 +25,7 @@ class CrashingRecursiveInferiorStepTestCase(TestBase):
 
     # Inferior exits after stepping after a segfault. This is working as
     # intended IMHO.
-    @skipIfLinux
-    @skipIfFreeBSD
-    @expectedFailureNetBSD
+    @skipIf(oslist=["freebsd", "linux", "netbsd"])
     def test_recursive_inferior_crashing_expr_step_and_expr(self):
         """Test that lldb expressions work before and after stepping after a crash."""
         self.build()
@@ -72,7 +68,7 @@ class CrashingRecursiveInferiorStepTestCase(TestBase):
 
         # The lldb expression interpreter should be able to read from addresses
         # of the inferior after a crash.
-        self.expect("p i", substrs=['(int) $0 ='])
+        self.expect("expression i", substrs=['(int) $0 ='])
 
         # lldb should be able to read from registers from the inferior after
         # crashing.
@@ -115,12 +111,12 @@ class CrashingRecursiveInferiorStepTestCase(TestBase):
 
         # The lldb expression interpreter should be able to read from addresses
         # of the inferior after a crash.
-        self.expect("p null", startstr='(char *) $0 = 0x0')
+        self.expect("expression null", startstr='(char *) $0 = 0x0')
 
         self.runCmd("next")
 
         # The lldb expression interpreter should be able to read from addresses
         # of the inferior after a step.
-        self.expect("p null", startstr='(char *) $1 = 0x0')
+        self.expect("expression null", startstr='(char *) $1 = 0x0')
 
         self.check_stop_reason()

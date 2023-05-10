@@ -10,12 +10,14 @@
 #define LLDB_INTERPRETER_OPTIONVALUE_H
 
 #include "lldb/Core/FormatEntity.h"
+#include "lldb/Utility/Cloneable.h"
 #include "lldb/Utility/CompletionRequest.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-defines.h"
 #include "lldb/lldb-private-enumerations.h"
 #include "lldb/lldb-private-interfaces.h"
+#include "llvm/Support/JSON.h"
 
 namespace lldb_private {
 
@@ -31,6 +33,7 @@ public:
     eTypeChar,
     eTypeDictionary,
     eTypeEnum,
+    eTypeFileLineColumn,
     eTypeFileSpec,
     eTypeFileSpecList,
     eTypeFormat,
@@ -58,7 +61,7 @@ public:
     eDumpGroupExport = (eDumpOptionCommand | eDumpOptionName | eDumpOptionValue)
   };
 
-  OptionValue() : m_value_was_set(false) {}
+  OptionValue() = default;
 
   virtual ~OptionValue() = default;
 
@@ -80,13 +83,24 @@ public:
   virtual void DumpValue(const ExecutionContext *exe_ctx, Stream &strm,
                          uint32_t dump_mask) = 0;
 
+  // TODO: make this function pure virtual after implementing it in all
+  // child classes.
+  virtual llvm::json::Value ToJSON(const ExecutionContext *exe_ctx) {
+    // Return nullptr which will create a llvm::json::Value() that is a NULL
+    // value. No setting should ever really have a NULL value in JSON. This
+    // indicates an error occurred and if/when we add a FromJSON() it will know
+    // to fail if someone tries to set it with a NULL JSON value.
+    return nullptr;
+  }
+
   virtual Status
   SetValueFromString(llvm::StringRef value,
                      VarSetOperationType op = eVarSetOperationAssign);
 
-  virtual bool Clear() = 0;
+  virtual void Clear() = 0;
 
-  virtual lldb::OptionValueSP DeepCopy() const = 0;
+  virtual lldb::OptionValueSP
+  DeepCopy(const lldb::OptionValueSP &new_parent) const;
 
   virtual void AutoComplete(CommandInterpreter &interpreter,
                             CompletionRequest &request);
@@ -94,7 +108,6 @@ public:
   // Subclasses can override these functions
   virtual lldb::OptionValueSP GetSubValue(const ExecutionContext *exe_ctx,
                                           llvm::StringRef name,
-                                          bool will_modify,
                                           Status &error) const {
     error.SetErrorStringWithFormat("'%s' is not a value subvalue", name.str().c_str());
     return lldb::OptionValueSP();
@@ -135,6 +148,8 @@ public:
       return eTypeDictionary;
     case 1u << eTypeEnum:
       return eTypeEnum;
+    case 1u << eTypeFileLineColumn:
+      return eTypeFileLineColumn;
     case 1u << eTypeFileSpec:
       return eTypeFileSpec;
     case 1u << eTypeFileSpecList:
@@ -165,10 +180,6 @@ public:
   static lldb::OptionValueSP
   CreateValueFromCStringForTypeMask(const char *value_cstr, uint32_t type_mask,
                                     Status &error);
-
-  // Get this value as a uint64_t value if it is encoded as a boolean, uint64_t
-  // or int64_t. Other types will cause "fail_value" to be returned
-  uint64_t GetUInt64Value(uint64_t fail_value, bool *success_ptr);
 
   OptionValueArch *GetAsArch();
 
@@ -246,15 +257,15 @@ public:
 
   const OptionValueFormatEntity *GetAsFormatEntity() const;
 
-  bool GetBooleanValue(bool fail_value = false) const;
+  std::optional<bool> GetBooleanValue() const;
 
   bool SetBooleanValue(bool new_value);
 
-  char GetCharValue(char fail_value) const;
+  std::optional<char> GetCharValue() const;
 
   char SetCharValue(char new_value);
 
-  int64_t GetEnumerationValue(int64_t fail_value = -1) const;
+  std::optional<int64_t> GetEnumerationValue() const;
 
   bool SetEnumerationValue(int64_t value);
 
@@ -264,13 +275,11 @@ public:
 
   FileSpecList GetFileSpecListValue() const;
 
-  lldb::Format
-  GetFormatValue(lldb::Format fail_value = lldb::eFormatDefault) const;
+  std::optional<lldb::Format> GetFormatValue() const;
 
   bool SetFormatValue(lldb::Format new_value);
 
-  lldb::LanguageType GetLanguageValue(
-      lldb::LanguageType fail_value = lldb::eLanguageTypeUnknown) const;
+  std::optional<lldb::LanguageType> GetLanguageValue() const;
 
   bool SetLanguageValue(lldb::LanguageType new_language);
 
@@ -278,16 +287,15 @@ public:
 
   const RegularExpression *GetRegexValue() const;
 
-  int64_t GetSInt64Value(int64_t fail_value = 0) const;
+  std::optional<int64_t> GetSInt64Value() const;
 
   bool SetSInt64Value(int64_t new_value);
 
-  llvm::StringRef GetStringValue(llvm::StringRef fail_value) const;
-  llvm::StringRef GetStringValue() const { return GetStringValue(llvm::StringRef()); }
+  std::optional<llvm::StringRef> GetStringValue() const;
 
   bool SetStringValue(llvm::StringRef new_value);
 
-  uint64_t GetUInt64Value(uint64_t fail_value = 0) const;
+  std::optional<uint64_t> GetUInt64Value() const;
 
   bool SetUInt64Value(uint64_t new_value);
 
@@ -303,8 +311,9 @@ public:
     m_parent_wp = parent_sp;
   }
 
+  lldb::OptionValueSP GetParent() const { return m_parent_wp.lock(); }
+
   void SetValueChangedCallback(std::function<void()> callback) {
-    assert(!m_callback);
     m_callback = std::move(callback);
   }
 
@@ -314,14 +323,20 @@ public:
   }
 
 protected:
+  using TopmostBase = OptionValue;
+
+  // Must be overriden by a derived class for correct downcasting the result of
+  // DeepCopy to it. Inherit from Cloneable to avoid doing this manually.
+  virtual lldb::OptionValueSP Clone() const = 0;
+
   lldb::OptionValueWP m_parent_wp;
   std::function<void()> m_callback;
-  bool m_value_was_set; // This can be used to see if a value has been set
-                        // by a call to SetValueFromCString(). It is often
-                        // handy to know if an option value was set from the
-                        // command line or as a setting, versus if we just have
-                        // the default value that was already populated in the
-                        // option value.
+  bool m_value_was_set = false; // This can be used to see if a value has been
+                                // set by a call to SetValueFromCString(). It is
+                                // often handy to know if an option value was
+                                // set from the command line or as a setting,
+                                // versus if we just have the default value that
+                                // was already populated in the option value.
 };
 
 } // namespace lldb_private

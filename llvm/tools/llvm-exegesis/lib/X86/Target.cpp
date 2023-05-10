@@ -14,21 +14,57 @@
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "MCTargetDesc/X86MCTargetDesc.h"
 #include "X86.h"
+#include "X86Counter.h"
 #include "X86RegisterInfo.h"
-#include "X86Subtarget.h"
 #include "llvm/ADT/Sequence.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/MC/MCInstBuilder.h"
+#include "llvm/Support/Errc.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/TargetParser/Host.h"
+
+#include <memory>
+#include <string>
+#include <vector>
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+#include <immintrin.h>
+#include <intrin.h>
+#endif
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <float.h> // For _clearfp in ~X86SavedState().
+#endif
 
 namespace llvm {
 namespace exegesis {
+
+// If a positive value is specified, we are going to use the LBR in
+// latency-mode.
+//
+// Note:
+//  -  A small value is preferred, but too low a value could result in
+//     throttling.
+//  -  A prime number is preferred to avoid always skipping certain blocks.
+//
+static cl::opt<unsigned> LbrSamplingPeriod(
+    "x86-lbr-sample-period",
+    cl::desc("The sample period (nbranches/sample), used for LBR sampling"),
+    cl::cat(BenchmarkOptions), cl::init(0));
+
+static cl::opt<bool>
+    DisableUpperSSERegisters("x86-disable-upper-sse-registers",
+                             cl::desc("Disable XMM8-XMM15 register usage"),
+                             cl::cat(BenchmarkOptions), cl::init(false));
+
+// FIXME: Validates that repetition-mode is loop if LBR is requested.
 
 // Returns a non-null reason if we cannot handle the memory references in this
 // instruction.
 static const char *isInvalidMemoryInstr(const Instruction &Instr) {
   switch (Instr.Description.TSFlags & X86II::FormMask) {
   default:
-    llvm_unreachable("Unknown FormMask value");
+    return "Unknown FormMask value";
   // These have no memory access.
   case X86II::Pseudo:
   case X86II::RawFrm:
@@ -40,6 +76,7 @@ static const char *isInvalidMemoryInstr(const Instruction &Instr) {
   case X86II::MRMSrcRegOp4:
   case X86II::MRMSrcRegCC:
   case X86II::MRMXrCC:
+  case X86II::MRMr0:
   case X86II::MRMXr:
   case X86II::MRM0r:
   case X86II::MRM1r:
@@ -49,6 +86,14 @@ static const char *isInvalidMemoryInstr(const Instruction &Instr) {
   case X86II::MRM5r:
   case X86II::MRM6r:
   case X86II::MRM7r:
+  case X86II::MRM0X:
+  case X86II::MRM1X:
+  case X86II::MRM2X:
+  case X86II::MRM3X:
+  case X86II::MRM4X:
+  case X86II::MRM5X:
+  case X86II::MRM6X:
+  case X86II::MRM7X:
   case X86II::MRM_C0:
   case X86II::MRM_C1:
   case X86II::MRM_C2:
@@ -155,9 +200,27 @@ static const char *isInvalidOpcode(const Instruction &Instr) {
   const auto OpcodeName = Instr.Name;
   if ((Instr.Description.TSFlags & X86II::FormMask) == X86II::Pseudo)
     return "unsupported opcode: pseudo instruction";
-  if (OpcodeName.startswith("POP") || OpcodeName.startswith("PUSH") ||
-      OpcodeName.startswith("ADJCALLSTACK") || OpcodeName.startswith("LEAVE"))
+  if ((OpcodeName.startswith("POP") && !OpcodeName.startswith("POPCNT")) ||
+      OpcodeName.startswith("PUSH") || OpcodeName.startswith("ADJCALLSTACK") ||
+      OpcodeName.startswith("LEAVE"))
     return "unsupported opcode: Push/Pop/AdjCallStack/Leave";
+  switch (Instr.Description.Opcode) {
+  case X86::LFS16rm:
+  case X86::LFS32rm:
+  case X86::LFS64rm:
+  case X86::LGS16rm:
+  case X86::LGS32rm:
+  case X86::LGS64rm:
+  case X86::LSS16rm:
+  case X86::LSS32rm:
+  case X86::LSS64rm:
+  case X86::SYSENTER:
+  case X86::WRFSBASE:
+  case X86::WRFSBASE64:
+    return "unsupported opcode";
+  default:
+    break;
+  }
   if (const auto reason = isInvalidMemoryInstr(Instr))
     return reason;
   // We do not handle instructions with OPERAND_PCREL.
@@ -305,7 +368,7 @@ X86SerialSnippetGenerator::generateCodeTemplates(
     //   - `ST(0) = fsqrt(ST(0))` (OneArgFPRW)
     //   - `ST(0) = ST(0) + ST(i)` (TwoArgFP)
     // They are intrinsically serial and do not modify the state of the stack.
-    return generateSelfAliasingCodeTemplates(Variant);
+    return generateSelfAliasingCodeTemplates(Variant, ForbiddenRegisters);
   default:
     llvm_unreachable("Unknown FP Type!");
   }
@@ -361,7 +424,7 @@ X86ParallelSnippetGenerator::generateCodeTemplates(
     //   - `ST(0) = ST(0) + ST(i)` (TwoArgFP)
     // They are intrinsically serial and do not modify the state of the stack.
     // We generate the same code for latency and uops.
-    return generateSelfAliasingCodeTemplates(Variant);
+    return generateSelfAliasingCodeTemplates(Variant, ForbiddenRegisters);
   case X86II::CompareFP:
   case X86II::CondMovFP:
     // We can compute uops for any FP instruction that does not grow or shrink
@@ -559,9 +622,68 @@ void ConstantInliner::initStack(unsigned Bytes) {
 #include "X86GenExegesis.inc"
 
 namespace {
+
+class X86SavedState : public ExegesisTarget::SavedState {
+public:
+  X86SavedState() {
+#if defined(_MSC_VER) && defined(_M_X64)
+    _fxsave64(FPState);
+    Eflags = __readeflags();
+#elif defined(__GNUC__) && defined(__x86_64__)
+    __builtin_ia32_fxsave64(FPState);
+    Eflags = __builtin_ia32_readeflags_u64();
+#else
+    report_fatal_error("X86 exegesis running on unsupported target");
+#endif
+  }
+
+  ~X86SavedState() {
+    // Restoring the X87 state does not flush pending exceptions, make sure
+    // these exceptions are flushed now.
+#if defined(_MSC_VER) && defined(_M_X64)
+    _clearfp();
+    _fxrstor64(FPState);
+    __writeeflags(Eflags);
+#elif defined(__GNUC__) && defined(__x86_64__)
+    asm volatile("fwait");
+    __builtin_ia32_fxrstor64(FPState);
+    __builtin_ia32_writeeflags_u64(Eflags);
+#else
+    report_fatal_error("X86 exegesis running on unsupported target");
+#endif
+  }
+
+private:
+#if defined(__x86_64__) || defined(_M_X64)
+  alignas(16) char FPState[512];
+  uint64_t Eflags;
+#endif
+};
+
 class ExegesisX86Target : public ExegesisTarget {
 public:
   ExegesisX86Target() : ExegesisTarget(X86CpuPfmCounters) {}
+
+  Expected<std::unique_ptr<pfm::Counter>>
+  createCounter(StringRef CounterName, const LLVMState &State) const override {
+    // If LbrSamplingPeriod was provided, then ignore the
+    // CounterName because we only have one for LBR.
+    if (LbrSamplingPeriod > 0) {
+      // Can't use LBR without HAVE_LIBPFM, LIBPFM_HAS_FIELD_CYCLES, or without
+      // __linux__ (for now)
+#if defined(HAVE_LIBPFM) && defined(LIBPFM_HAS_FIELD_CYCLES) &&                \
+    defined(__linux__)
+      return std::make_unique<X86LbrCounter>(
+          X86LbrPerfEvent(LbrSamplingPeriod));
+#else
+      return llvm::make_error<llvm::StringError>(
+          "LBR counter requested without HAVE_LIBPFM, LIBPFM_HAS_FIELD_CYCLES, "
+          "or running on Linux.",
+          llvm::errc::invalid_argument);
+#endif
+    }
+    return ExegesisTarget::createCounter(CounterName, State);
+  }
 
 private:
   void addTargetSpecificPasses(PassManagerBase &PM) const override;
@@ -587,9 +709,12 @@ private:
                                const APInt &Value) const override;
 
   ArrayRef<unsigned> getUnavailableRegisters() const override {
-    return makeArrayRef(kUnavailableRegisters,
-                        sizeof(kUnavailableRegisters) /
-                            sizeof(kUnavailableRegisters[0]));
+    if (DisableUpperSSERegisters)
+      return ArrayRef(kUnavailableRegistersSSE,
+                      sizeof(kUnavailableRegistersSSE) /
+                          sizeof(kUnavailableRegistersSSE[0]));
+
+    return ArrayRef(kUnavailableRegisters, std::size(kUnavailableRegisters));
   }
 
   bool allowAsBackToBack(const Instruction &Instr) const override {
@@ -618,13 +743,53 @@ private:
     return Arch == Triple::x86_64 || Arch == Triple::x86;
   }
 
+  Error checkFeatureSupport() const override {
+    // LBR is the only feature we conditionally support now.
+    // So if LBR is not requested, then we should be able to run the benchmarks.
+    if (LbrSamplingPeriod == 0)
+      return Error::success();
+
+#if defined(__linux__) && defined(HAVE_LIBPFM) &&                              \
+    defined(LIBPFM_HAS_FIELD_CYCLES)
+      // FIXME: Fix this.
+      // https://bugs.llvm.org/show_bug.cgi?id=48918
+      // For now, only do the check if we see an Intel machine because
+      // the counter uses some intel-specific magic and it could
+      // be confuse and think an AMD machine actually has LBR support.
+#if defined(__i386__) || defined(_M_IX86) || defined(__x86_64__) ||            \
+    defined(_M_X64)
+    using namespace sys::detail::x86;
+
+    if (getVendorSignature() == VendorSignatures::GENUINE_INTEL)
+      // If the kernel supports it, the hardware still may not have it.
+      return X86LbrCounter::checkLbrSupport();
+#else
+    report_fatal_error("Running X86 exegesis on unsupported target");
+#endif
+#endif
+    return llvm::make_error<llvm::StringError>(
+        "LBR not supported on this kernel and/or platform",
+        llvm::errc::not_supported);
+  }
+
+  std::unique_ptr<SavedState> withSavedState() const override {
+    return std::make_unique<X86SavedState>();
+  }
+
   static const unsigned kUnavailableRegisters[4];
+  static const unsigned kUnavailableRegistersSSE[12];
 };
 
 // We disable a few registers that cannot be encoded on instructions with a REX
 // prefix.
 const unsigned ExegesisX86Target::kUnavailableRegisters[4] = {X86::AH, X86::BH,
                                                               X86::CH, X86::DH};
+
+// Optionally, also disable the upper (x86_64) SSE registers to reduce frontend
+// decoder load.
+const unsigned ExegesisX86Target::kUnavailableRegistersSSE[12] = {
+    X86::AH,    X86::BH,    X86::CH,    X86::DH,    X86::XMM8,  X86::XMM9,
+    X86::XMM10, X86::XMM11, X86::XMM12, X86::XMM13, X86::XMM14, X86::XMM15};
 
 // We're using one of R8-R15 because these registers are never hardcoded in
 // instructions (e.g. MOVS writes to EDI, ESI, EDX), so they have less
@@ -710,6 +875,35 @@ std::vector<MCInst> ExegesisX86Target::setRegTo(const MCSubtargetInfo &STI,
     return {loadImmediate(Reg, 32, Value)};
   if (X86::GR64RegClass.contains(Reg))
     return {loadImmediate(Reg, 64, Value)};
+  if (X86::VK8RegClass.contains(Reg) || X86::VK16RegClass.contains(Reg) ||
+      X86::VK32RegClass.contains(Reg) || X86::VK64RegClass.contains(Reg)) {
+    switch (Value.getBitWidth()) {
+    case 8:
+      if (STI.getFeatureBits()[X86::FeatureDQI]) {
+        ConstantInliner CI(Value);
+        return CI.loadAndFinalize(Reg, Value.getBitWidth(), X86::KMOVBkm);
+      }
+      [[fallthrough]];
+    case 16:
+      if (STI.getFeatureBits()[X86::FeatureAVX512]) {
+        ConstantInliner CI(Value.zextOrTrunc(16));
+        return CI.loadAndFinalize(Reg, 16, X86::KMOVWkm);
+      }
+      break;
+    case 32:
+      if (STI.getFeatureBits()[X86::FeatureBWI]) {
+        ConstantInliner CI(Value);
+        return CI.loadAndFinalize(Reg, Value.getBitWidth(), X86::KMOVDkm);
+      }
+      break;
+    case 64:
+      if (STI.getFeatureBits()[X86::FeatureBWI]) {
+        ConstantInliner CI(Value);
+        return CI.loadAndFinalize(Reg, Value.getBitWidth(), X86::KMOVQkm);
+      }
+      break;
+    }
+  }
   ConstantInliner CI(Value);
   if (X86::VR64RegClass.contains(Reg))
     return CI.loadAndFinalize(Reg, 64, X86::MMX_MOVQ64rm);
@@ -767,9 +961,10 @@ std::vector<InstructionTemplate> ExegesisX86Target::generateInstructionVariants(
       continue;
     case X86::OperandType::OPERAND_COND_CODE: {
       Exploration = true;
-      auto CondCodes = seq((int)X86::CondCode::COND_O,
-                           1 + (int)X86::CondCode::LAST_VALID_COND);
-      Choices.reserve(std::distance(CondCodes.begin(), CondCodes.end()));
+      auto CondCodes = enum_seq_inclusive(X86::CondCode::COND_O,
+                                          X86::CondCode::LAST_VALID_COND,
+                                          force_iteration_on_noniterable_enum);
+      Choices.reserve(CondCodes.size());
       for (int CondCode : CondCodes)
         Choices.emplace_back(MCOperand::createImm(CondCode));
       break;

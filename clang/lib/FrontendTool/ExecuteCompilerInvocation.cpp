@@ -15,6 +15,7 @@
 #include "clang/CodeGen/CodeGenAction.h"
 #include "clang/Config/config.h"
 #include "clang/Driver/Options.h"
+#include "clang/ExtractAPI/FrontendActions.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendActions.h"
@@ -57,13 +58,15 @@ CreateFrontendBaseAction(CompilerInstance &CI) {
   case EmitLLVMOnly:           return std::make_unique<EmitLLVMOnlyAction>();
   case EmitCodeGenOnly:        return std::make_unique<EmitCodeGenOnlyAction>();
   case EmitObj:                return std::make_unique<EmitObjAction>();
+  case ExtractAPI:
+    return std::make_unique<ExtractAPIAction>();
   case FixIt:                  return std::make_unique<FixItAction>();
   case GenerateModule:
     return std::make_unique<GenerateModuleFromModuleMapAction>();
   case GenerateModuleInterface:
     return std::make_unique<GenerateModuleInterfaceAction>();
-  case GenerateHeaderModule:
-    return std::make_unique<GenerateHeaderModuleAction>();
+  case GenerateHeaderUnit:
+    return std::make_unique<GenerateHeaderUnitAction>();
   case GeneratePCH:            return std::make_unique<GeneratePCHAction>();
   case GenerateInterfaceStubs:
     return std::make_unique<GenerateInterfaceStubsAction>();
@@ -74,16 +77,15 @@ CreateFrontendBaseAction(CompilerInstance &CI) {
   case TemplightDump:          return std::make_unique<TemplightDumpAction>();
 
   case PluginAction: {
-    for (FrontendPluginRegistry::iterator it =
-           FrontendPluginRegistry::begin(), ie = FrontendPluginRegistry::end();
-         it != ie; ++it) {
-      if (it->getName() == CI.getFrontendOpts().ActionName) {
-        std::unique_ptr<PluginASTAction> P(it->instantiate());
+    for (const FrontendPluginRegistry::entry &Plugin :
+         FrontendPluginRegistry::entries()) {
+      if (Plugin.getName() == CI.getFrontendOpts().ActionName) {
+        std::unique_ptr<PluginASTAction> P(Plugin.instantiate());
         if ((P->getActionType() != PluginASTAction::ReplaceAction &&
-             P->getActionType() != PluginASTAction::Cmdline) ||
+             P->getActionType() != PluginASTAction::CmdlineAfterMainAction) ||
             !P->ParseArgs(
                 CI,
-                CI.getFrontendOpts().PluginArgs[std::string(it->getName())]))
+                CI.getFrontendOpts().PluginArgs[std::string(Plugin.getName())]))
           return nullptr;
         return std::move(P);
       }
@@ -188,7 +190,7 @@ CreateFrontendAction(CompilerInstance &CI) {
 bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
   // Honor -help.
   if (Clang->getFrontendOpts().ShowHelp) {
-    driver::getDriverOptTable().PrintHelp(
+    driver::getDriverOptTable().printHelp(
         llvm::outs(), "clang -cc1 [options] file...",
         "LLVM 'Clang' Compiler: http://clang.llvm.org",
         /*Include=*/driver::options::CC1Option,
@@ -204,27 +206,7 @@ bool ExecuteCompilerInvocation(CompilerInstance *Clang) {
     return true;
   }
 
-  // Load any requested plugins.
-  for (unsigned i = 0,
-         e = Clang->getFrontendOpts().Plugins.size(); i != e; ++i) {
-    const std::string &Path = Clang->getFrontendOpts().Plugins[i];
-    std::string Error;
-    if (llvm::sys::DynamicLibrary::LoadLibraryPermanently(Path.c_str(), &Error))
-      Clang->getDiagnostics().Report(diag::err_fe_unable_to_load_plugin)
-        << Path << Error;
-  }
-
-  // Check if any of the loaded plugins replaces the main AST action
-  for (FrontendPluginRegistry::iterator it = FrontendPluginRegistry::begin(),
-                                        ie = FrontendPluginRegistry::end();
-       it != ie; ++it) {
-    std::unique_ptr<PluginASTAction> P(it->instantiate());
-    if (P->getActionType() == PluginASTAction::ReplaceAction) {
-      Clang->getFrontendOpts().ProgramAction = clang::frontend::PluginAction;
-      Clang->getFrontendOpts().ActionName = std::string(it->getName());
-      break;
-    }
-  }
+  Clang->LoadRequestedPlugins();
 
   // Honor -mllvm.
   //

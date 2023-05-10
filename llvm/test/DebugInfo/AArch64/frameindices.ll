@@ -5,7 +5,7 @@
 ; CHECK: DW_TAG_inlined_subroutine
 ; CHECK:    "_Z3f111A"
 ; CHECK: DW_TAG_formal_parameter
-; CHECK: DW_AT_location [DW_FORM_block1]    (DW_OP_piece 0x1, DW_OP_fbreg -47, DW_OP_piece 0xf, DW_OP_piece 0x1, DW_OP_fbreg -54, DW_OP_piece 0x7)
+; CHECK: DW_AT_location [DW_FORM_block1]    (DW_OP_piece 0x1, DW_OP_fbreg -47, DW_OP_piece 0xf, DW_OP_piece 0x1, DW_OP_breg31 WSP+42, DW_OP_piece 0x7)
 ; CHECK: DW_AT_abstract_origin {{.*}} "p1"
 ;
 ; long a;
@@ -86,7 +86,7 @@ entry:
 define void @_Z3f16v() personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) !dbg !68 {
 entry:
   %agg.tmp.i.i = alloca %struct.A, align 8
-  %d = alloca %struct.B, align 1
+  %d = alloca %struct.B, align 8
   %agg.tmp.sroa.2 = alloca [15 x i8], align 1
   %agg.tmp.sroa.4 = alloca [7 x i8], align 1
   tail call void @llvm.dbg.declare(metadata [15 x i8]* %agg.tmp.sroa.2, metadata !56, metadata !74), !dbg !75

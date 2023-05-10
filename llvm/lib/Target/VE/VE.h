@@ -16,19 +16,22 @@
 
 #include "MCTargetDesc/VEMCTargetDesc.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/CodeGen/ISDOpcodes.h"
+#include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 
 namespace llvm {
-class FunctionPass;
-class VETargetMachine;
-class formatted_raw_ostream;
 class AsmPrinter;
+class FunctionPass;
 class MCInst;
 class MachineInstr;
+class PassRegistry;
+class VETargetMachine;
 
 FunctionPass *createVEISelDag(VETargetMachine &TM);
-FunctionPass *createVEPromoteToI1Pass();
+FunctionPass *createLVLGenPass();
+void initializeVEDAGToDAGISelPass(PassRegistry &);
 
 void LowerVEMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
                                  AsmPrinter &AP);
@@ -146,6 +149,10 @@ inline static VECC::CondCode stringToVEFCondCode(StringRef S) {
       .Default(VECC::UNKNOWN);
 }
 
+inline static bool isIntVECondCode(VECC::CondCode CC) {
+  return CC < VECC::CC_AF;
+}
+
 inline static unsigned VECondCodeToVal(VECC::CondCode CC) {
   switch (CC) {
   case VECC::CC_IG:
@@ -194,6 +201,80 @@ inline static unsigned VECondCodeToVal(VECC::CondCode CC) {
     return 15;
   default:
     llvm_unreachable("Invalid cond code");
+  }
+}
+
+/// Convert a DAG integer condition code to a VE ICC condition.
+inline static VECC::CondCode intCondCode2Icc(ISD::CondCode CC) {
+  switch (CC) {
+  default:
+    llvm_unreachable("Unknown integer condition code!");
+  case ISD::SETEQ:
+    return VECC::CC_IEQ;
+  case ISD::SETNE:
+    return VECC::CC_INE;
+  case ISD::SETLT:
+    return VECC::CC_IL;
+  case ISD::SETGT:
+    return VECC::CC_IG;
+  case ISD::SETLE:
+    return VECC::CC_ILE;
+  case ISD::SETGE:
+    return VECC::CC_IGE;
+  case ISD::SETULT:
+    return VECC::CC_IL;
+  case ISD::SETULE:
+    return VECC::CC_ILE;
+  case ISD::SETUGT:
+    return VECC::CC_IG;
+  case ISD::SETUGE:
+    return VECC::CC_IGE;
+  }
+}
+
+/// Convert a DAG floating point condition code to a VE FCC condition.
+inline static VECC::CondCode fpCondCode2Fcc(ISD::CondCode CC) {
+  switch (CC) {
+  default:
+    llvm_unreachable("Unknown fp condition code!");
+  case ISD::SETFALSE:
+    return VECC::CC_AF;
+  case ISD::SETEQ:
+  case ISD::SETOEQ:
+    return VECC::CC_EQ;
+  case ISD::SETNE:
+  case ISD::SETONE:
+    return VECC::CC_NE;
+  case ISD::SETLT:
+  case ISD::SETOLT:
+    return VECC::CC_L;
+  case ISD::SETGT:
+  case ISD::SETOGT:
+    return VECC::CC_G;
+  case ISD::SETLE:
+  case ISD::SETOLE:
+    return VECC::CC_LE;
+  case ISD::SETGE:
+  case ISD::SETOGE:
+    return VECC::CC_GE;
+  case ISD::SETO:
+    return VECC::CC_NUM;
+  case ISD::SETUO:
+    return VECC::CC_NAN;
+  case ISD::SETUEQ:
+    return VECC::CC_EQNAN;
+  case ISD::SETUNE:
+    return VECC::CC_NENAN;
+  case ISD::SETULT:
+    return VECC::CC_LNAN;
+  case ISD::SETUGT:
+    return VECC::CC_GNAN;
+  case ISD::SETULE:
+    return VECC::CC_LENAN;
+  case ISD::SETUGE:
+    return VECC::CC_GENAN;
+  case ISD::SETTRUE:
+    return VECC::CC_AT;
   }
 }
 
@@ -275,6 +356,68 @@ inline static const char *VERDToString(VERD::RoundingMode R) {
   }
 }
 
+inline static VERD::RoundingMode stringToVERD(StringRef S) {
+  return StringSwitch<VERD::RoundingMode>(S)
+      .Case("", VERD::RD_NONE)
+      .Case(".rz", VERD::RD_RZ)
+      .Case(".rp", VERD::RD_RP)
+      .Case(".rm", VERD::RD_RM)
+      .Case(".rn", VERD::RD_RN)
+      .Case(".ra", VERD::RD_RA)
+      .Default(VERD::UNKNOWN);
+}
+
+inline static unsigned VERDToVal(VERD::RoundingMode R) {
+  switch (R) {
+  case VERD::RD_NONE:
+  case VERD::RD_RZ:
+  case VERD::RD_RP:
+  case VERD::RD_RM:
+  case VERD::RD_RN:
+  case VERD::RD_RA:
+    return static_cast<unsigned>(R);
+  default:
+    break;
+  }
+  llvm_unreachable("Invalid branch predicates");
+}
+
+inline static VERD::RoundingMode VEValToRD(unsigned Val) {
+  switch (Val) {
+  case static_cast<unsigned>(VERD::RD_NONE):
+    return VERD::RD_NONE;
+  case static_cast<unsigned>(VERD::RD_RZ):
+    return VERD::RD_RZ;
+  case static_cast<unsigned>(VERD::RD_RP):
+    return VERD::RD_RP;
+  case static_cast<unsigned>(VERD::RD_RM):
+    return VERD::RD_RM;
+  case static_cast<unsigned>(VERD::RD_RN):
+    return VERD::RD_RN;
+  case static_cast<unsigned>(VERD::RD_RA):
+    return VERD::RD_RA;
+  default:
+    break;
+  }
+  llvm_unreachable("Invalid branch predicates");
+}
+
+/// getImmVal - get immediate representation of integer value
+inline static uint64_t getImmVal(const ConstantSDNode *N) {
+  return N->getSExtValue();
+}
+
+/// getFpImmVal - get immediate representation of floating point value
+inline static uint64_t getFpImmVal(const ConstantFPSDNode *N) {
+  const APInt &Imm = N->getValueAPF().bitcastToAPInt();
+  uint64_t Val = Imm.getZExtValue();
+  if (Imm.getBitWidth() == 32) {
+    // Immediate value of float place places at higher bits on VE.
+    Val <<= 32;
+  }
+  return Val;
+}
+
 // MImm - Special immediate value of sequential bit stream of 0 or 1.
 //   See VEInstrInfo.td for details.
 inline static bool isMImmVal(uint64_t Val) {
@@ -287,7 +430,7 @@ inline static bool isMImmVal(uint64_t Val) {
     return true;
   }
   // (m)1 patterns
-  return (Val & (1UL << 63)) && isShiftedMask_64(Val);
+  return (Val & (UINT64_C(1) << 63)) && isShiftedMask_64(Val);
 }
 
 inline static bool isMImm32Val(uint32_t Val) {
@@ -300,11 +443,32 @@ inline static bool isMImm32Val(uint32_t Val) {
     return true;
   }
   // (m)1 patterns
-  return (Val & (1 << 31)) && isShiftedMask_32(Val);
+  return (Val & (UINT32_C(1) << 31)) && isShiftedMask_32(Val);
+}
+
+/// val2MImm - Convert an integer immediate value to target MImm immediate.
+inline static uint64_t val2MImm(uint64_t Val) {
+  if (Val == 0)
+    return 0; // (0)1
+  if (Val & (UINT64_C(1) << 63))
+    return llvm::countl_one(Val);       // (m)1
+  return llvm::countl_zero(Val) | 0x40; // (m)0
+}
+
+/// mimm2Val - Convert a target MImm immediate to an integer immediate value.
+inline static uint64_t mimm2Val(uint64_t Val) {
+  if (Val == 0)
+    return 0; // (0)1
+  if ((Val & 0x40) == 0)
+    return (uint64_t)((INT64_C(1) << 63) >> (Val & 0x3f)); // (m)1
+  return ((uint64_t)INT64_C(-1) >> (Val & 0x3f));          // (m)0
 }
 
 inline unsigned M0(unsigned Val) { return Val + 64; }
 inline unsigned M1(unsigned Val) { return Val; }
+
+static const unsigned StandardVectorWidth = 256;
+static const unsigned PackedVectorWidth = 512;
 
 } // namespace llvm
 #endif

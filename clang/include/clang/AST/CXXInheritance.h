@@ -76,9 +76,8 @@ public:
 
   CXXBasePath() = default;
 
-  /// The set of declarations found inside this base class
-  /// subobject.
-  DeclContext::lookup_result Decls;
+  /// The declarations found inside this base class subobject.
+  DeclContext::lookup_iterator Decls;
 
   void clear() {
     SmallVectorImpl<CXXBasePathElement>::clear();
@@ -149,12 +148,6 @@ class CXXBasePaths {
   /// to help build the set of paths.
   CXXBasePath ScratchPath;
 
-  /// Array of the declarations that have been found. This
-  /// array is constructed only if needed, e.g., to iterate over the
-  /// results within LookupResult.
-  std::unique_ptr<NamedDecl *[]> DeclsFound;
-  unsigned NumDeclsFound = 0;
-
   /// FindAmbiguities - Whether Sema::IsDerivedFrom should try find
   /// ambiguous paths while it is looking for a path from a derived
   /// type to a base type.
@@ -169,8 +162,6 @@ class CXXBasePaths {
   /// if it finds a path that goes across a virtual base. The virtual class
   /// is also recorded.
   bool DetectVirtual;
-
-  void ComputeDeclsFound();
 
   bool lookupInBases(ASTContext &Context, const CXXRecordDecl *Record,
                      CXXRecordDecl::BaseMatchesCallback BaseMatches,
@@ -197,8 +188,6 @@ public:
   const CXXBasePath& front() const { return Paths.front(); }
 
   using decl_range = llvm::iterator_range<decl_iterator>;
-
-  decl_range found_decls();
 
   /// Determine whether the path from the most-derived type to the
   /// given base type is ambiguous (i.e., it refers to multiple subobjects of
@@ -326,7 +315,7 @@ public:
 /// virtual function; in abstract classes, the final overrider for at
 /// least one virtual function is a pure virtual function. Due to
 /// multiple, virtual inheritance, it is possible for a class to have
-/// more than one final overrider. Athough this is an error (per C++
+/// more than one final overrider. Although this is an error (per C++
 /// [class.virtual]p2), it is not considered an error here: the final
 /// overrider map can represent multiple final overriders for a
 /// method, and it is up to the client to determine whether they are

@@ -5,9 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// This file defines the SmallPtrSet class.  See the doxygen comment for
-// SmallPtrSetImplBase for more details on the algorithm used.
+///
+/// \file
+/// This file defines the SmallPtrSet class.  See the doxygen comment for
+/// SmallPtrSetImplBase for more details on the algorithm used.
 //
 //===----------------------------------------------------------------------===//
 
@@ -88,7 +89,7 @@ public:
 
   SmallPtrSetImplBase &operator=(const SmallPtrSetImplBase &) = delete;
 
-  LLVM_NODISCARD bool empty() const { return size() == 0; }
+  [[nodiscard]] bool empty() const { return size() == 0; }
   size_type size() const { return NumNonEmpty - NumTombstones; }
 
   void clear() {
@@ -366,6 +367,13 @@ public:
     return std::make_pair(makeIterator(p.first), p.second);
   }
 
+  /// Insert the given pointer with an iterator hint that is ignored. This is
+  /// identical to calling insert(Ptr), but allows SmallPtrSet to be used by
+  /// std::insert_iterator and std::inserter().
+  iterator insert(iterator, PtrType Ptr) {
+    return insert(Ptr).first;
+  }
+
   /// erase - If the set contains the specified pointer, remove it and return
   /// true, otherwise return false.
   bool erase(PtrType Ptr) {
@@ -377,6 +385,9 @@ public:
   }
   iterator find(ConstPtrType Ptr) const {
     return makeIterator(find_imp(ConstPtrTraits::getAsVoidPointer(Ptr)));
+  }
+  bool contains(ConstPtrType Ptr) const {
+    return find_imp(ConstPtrTraits::getAsVoidPointer(Ptr)) != EndPointer();
   }
 
   template <typename IterT>

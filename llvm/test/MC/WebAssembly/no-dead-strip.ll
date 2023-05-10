@@ -1,8 +1,8 @@
-; RUN: llc -filetype=obj -wasm-keep-registers %s -o - | llvm-readobj --symbols | FileCheck %s
+; RUN: llc -filetype=obj -wasm-keep-registers %s -o - | llvm-readobj --symbols - | FileCheck %s
 
 target triple = "wasm32-unknown-unknown"
 
-@llvm.used = appending global [1 x i8*] [i8* bitcast (i32 ()* @foo to i8*)], section "llvm.metadata"
+@llvm.used = appending global [1 x ptr] [ptr @foo], section "llvm.metadata"
 
 define i32 @foo() {
 entry:

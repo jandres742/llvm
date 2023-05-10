@@ -1,6 +1,6 @@
 ; RUN: llvm-as < %s -o %t.bc
 ; RUN: llvm-spirv %t.bc -o %t.spv
-; RUN: llvm-spirv -r %t.spv -o - | llvm-dis -o %t.ll
+; RUN: llvm-spirv -r -emit-opaque-pointers %t.spv -o - | llvm-dis -o %t.ll
 
 ; RUN: llc -mtriple=x86_64-apple-darwin -O0 -filetype=obj -o - < %t.ll | llvm-dwarfdump -v -debug-info - | FileCheck %s
 
@@ -15,7 +15,7 @@ target triple = "spir64-unknown-unknown"
 
 declare void @llvm.dbg.declare(metadata, metadata, metadata)
 
-define void @f(i32* byval %p, i1 %c) !dbg !5 {
+define void @f(i32* byval(i32) %p, i1 %c) !dbg !5 {
   br i1 %c, label %x, label %y
 
 x:

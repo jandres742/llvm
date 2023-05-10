@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CodeCompletionStrings.h"
+#include "TestTU.h"
 #include "clang/Sema/CodeCompleteConsumer.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -23,11 +24,13 @@ public:
 
 protected:
   void computeSignature(const CodeCompletionString &CCS,
-                        bool CompletingPattern = false) {
+                        CodeCompletionResult::ResultKind ResultKind =
+                            CodeCompletionResult::ResultKind::RK_Declaration) {
     Signature.clear();
     Snippet.clear();
-    getSignature(CCS, &Signature, &Snippet, /*RequiredQualifier=*/nullptr,
-                 CompletingPattern);
+    getSignature(CCS, &Signature, &Snippet, ResultKind,
+                 /*CursorKind=*/CXCursorKind::CXCursor_NotImplemented,
+                 /*RequiredQualifiers=*/nullptr);
   }
 
   std::shared_ptr<clang::GlobalCodeCompletionAllocator> Allocator;
@@ -54,6 +57,14 @@ TEST_F(CompletionStringTest, DocumentationWithAnnotation) {
   Builder.AddAnnotation("Ano");
   EXPECT_EQ(formatDocumentation(*Builder.TakeString(), "Is this brief?"),
             "Annotation: Ano\n\nIs this brief?");
+}
+
+TEST_F(CompletionStringTest, GetDeclCommentBadUTF8) {
+  // <ff> is not a valid byte here, should be replaced by encoded <U+FFFD>.
+  auto TU = TestTU::withCode("/*x\xffy*/ struct X;");
+  auto AST = TU.build();
+  EXPECT_EQ("x\xef\xbf\xbdy",
+            getDeclComment(AST.getASTContext(), findDecl(AST, "X")));
 }
 
 TEST_F(CompletionStringTest, MultipleAnnotations) {
@@ -136,12 +147,13 @@ TEST_F(CompletionStringTest, SnippetsInPatterns) {
     Builder.AddChunk(CodeCompletionString::CK_SemiColon);
     return *Builder.TakeString();
   };
-  computeSignature(MakeCCS(), /*CompletingPattern=*/false);
+  computeSignature(MakeCCS());
   EXPECT_EQ(Snippet, " ${1:name} = ${2:target};");
 
   // When completing a pattern, the last placeholder holds the cursor position.
-  computeSignature(MakeCCS(), /*CompletingPattern=*/true);
-  EXPECT_EQ(Snippet, " ${1:name} = ${0:target};");
+  computeSignature(MakeCCS(),
+                   /*ResultKind=*/CodeCompletionResult::ResultKind::RK_Pattern);
+  EXPECT_EQ(Snippet, " ${1:name} = $0;");
 }
 
 TEST_F(CompletionStringTest, IgnoreInformativeQualifier) {

@@ -6,17 +6,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "InputFiles.h"
 #include "Symbols.h"
 #include "SyntheticSections.h"
 #include "Target.h"
-#include "Thunks.h"
 #include "lld/Common/ErrorHandler.h"
-#include "llvm/Object/ELF.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Support/Endian.h"
 
 using namespace llvm;
 using namespace llvm::support::endian;
+using namespace llvm::support;
 using namespace llvm::ELF;
 using namespace lld;
 using namespace lld::elf;
@@ -52,13 +51,11 @@ ARM::ARM() {
   relativeRel = R_ARM_RELATIVE;
   iRelativeRel = R_ARM_IRELATIVE;
   gotRel = R_ARM_GLOB_DAT;
-  noneRel = R_ARM_NONE;
   pltRel = R_ARM_JUMP_SLOT;
   symbolicRel = R_ARM_ABS32;
   tlsGotRel = R_ARM_TLS_TPOFF32;
   tlsModuleIndexRel = R_ARM_TLS_DTPMOD32;
   tlsOffsetRel = R_ARM_TLS_DTPOFF32;
-  gotBaseSymInGotPlt = false;
   pltHeaderSize = 32;
   pltEntrySize = 16;
   ipltEntrySize = 16;
@@ -86,6 +83,13 @@ uint32_t ARM::calcEFlags() const {
 RelExpr ARM::getRelExpr(RelType type, const Symbol &s,
                         const uint8_t *loc) const {
   switch (type) {
+  case R_ARM_ABS32:
+  case R_ARM_MOVW_ABS_NC:
+  case R_ARM_MOVT_ABS:
+  case R_ARM_THM_MOVW_ABS_NC:
+  case R_ARM_THM_MOVT_ABS:
+    return R_ABS;
+  case R_ARM_THM_JUMP8:
   case R_ARM_THM_JUMP11:
     return R_PC;
   case R_ARM_CALL:
@@ -121,6 +125,8 @@ RelExpr ARM::getRelExpr(RelType type, const Symbol &s,
     return R_TLSGD_PC;
   case R_ARM_TLS_LDM32:
     return R_TLSLD_PC;
+  case R_ARM_TLS_LDO32:
+    return R_DTPREL;
   case R_ARM_BASE_PREL:
     // B(S) + A - P
     // FIXME: currently B(S) assumed to be .got, this may not hold for all
@@ -133,7 +139,16 @@ RelExpr ARM::getRelExpr(RelType type, const Symbol &s,
   case R_ARM_THM_MOVT_PREL:
     return R_PC;
   case R_ARM_ALU_PC_G0:
+  case R_ARM_ALU_PC_G0_NC:
+  case R_ARM_ALU_PC_G1:
+  case R_ARM_ALU_PC_G1_NC:
+  case R_ARM_ALU_PC_G2:
   case R_ARM_LDR_PC_G0:
+  case R_ARM_LDR_PC_G1:
+  case R_ARM_LDR_PC_G2:
+  case R_ARM_LDRS_PC_G0:
+  case R_ARM_LDRS_PC_G1:
+  case R_ARM_LDRS_PC_G2:
   case R_ARM_THM_ALU_PREL_11_0:
   case R_ARM_THM_PC8:
   case R_ARM_THM_PC12:
@@ -148,7 +163,7 @@ RelExpr ARM::getRelExpr(RelType type, const Symbol &s,
   case R_ARM_NONE:
     return R_NONE;
   case R_ARM_TLS_LE32:
-    return R_TLS;
+    return R_TPREL;
   case R_ARM_V4BX:
     // V4BX is just a marker to indicate there's a "bx rN" instruction at the
     // given address. It can be used to implement a special linker mode which
@@ -156,7 +171,9 @@ RelExpr ARM::getRelExpr(RelType type, const Symbol &s,
     // not ARMv4 output, we can just ignore it.
     return R_NONE;
   default:
-    return R_ABS;
+    error(getErrorLocation(loc) + "unknown relocation (" + Twine(type) +
+          ") against symbol " + toString(s));
+    return R_NONE;
   }
 }
 
@@ -167,33 +184,31 @@ RelType ARM::getDynRel(RelType type) const {
 }
 
 void ARM::writeGotPlt(uint8_t *buf, const Symbol &) const {
-  write32le(buf, in.plt->getVA());
+  write32(buf, in.plt->getVA());
 }
 
 void ARM::writeIgotPlt(uint8_t *buf, const Symbol &s) const {
   // An ARM entry is the address of the ifunc resolver function.
-  write32le(buf, s.getVA());
+  write32(buf, s.getVA());
 }
 
 // Long form PLT Header that does not have any restrictions on the displacement
-// of the .plt from the .plt.got.
+// of the .plt from the .got.plt.
 static void writePltHeaderLong(uint8_t *buf) {
-  const uint8_t pltData[] = {
-      0x04, 0xe0, 0x2d, 0xe5, //     str lr, [sp,#-4]!
-      0x04, 0xe0, 0x9f, 0xe5, //     ldr lr, L2
-      0x0e, 0xe0, 0x8f, 0xe0, // L1: add lr, pc, lr
-      0x08, 0xf0, 0xbe, 0xe5, //     ldr pc, [lr, #8]
-      0x00, 0x00, 0x00, 0x00, // L2: .word   &(.got.plt) - L1 - 8
-      0xd4, 0xd4, 0xd4, 0xd4, //     Pad to 32-byte boundary
-      0xd4, 0xd4, 0xd4, 0xd4, //     Pad to 32-byte boundary
-      0xd4, 0xd4, 0xd4, 0xd4};
-  memcpy(buf, pltData, sizeof(pltData));
+  write32(buf + 0, 0xe52de004);   //     str lr, [sp,#-4]!
+  write32(buf + 4, 0xe59fe004);   //     ldr lr, L2
+  write32(buf + 8, 0xe08fe00e);   // L1: add lr, pc, lr
+  write32(buf + 12, 0xe5bef008);  //     ldr pc, [lr, #8]
+  write32(buf + 16, 0x00000000);  // L2: .word   &(.got.plt) - L1 - 8
+  write32(buf + 20, 0xd4d4d4d4);  //     Pad to 32-byte boundary
+  write32(buf + 24, 0xd4d4d4d4);  //     Pad to 32-byte boundary
+  write32(buf + 28, 0xd4d4d4d4);
   uint64_t gotPlt = in.gotPlt->getVA();
   uint64_t l1 = in.plt->getVA() + 8;
-  write32le(buf + 16, gotPlt - l1 - 8);
+  write32(buf + 16, gotPlt - l1 - 8);
 }
 
-// The default PLT header requires the .plt.got to be within 128 Mb of the
+// The default PLT header requires the .got.plt to be within 128 Mb of the
 // .plt in the positive direction.
 void ARM::writePltHeader(uint8_t *buf) const {
   // Use a similar sequence to that in writePlt(), the difference is the calling
@@ -213,10 +228,10 @@ void ARM::writePltHeader(uint8_t *buf) const {
     writePltHeaderLong(buf);
     return;
   }
-  write32le(buf + 0, pltData[0]);
-  write32le(buf + 4, pltData[1] | ((offset >> 20) & 0xff));
-  write32le(buf + 8, pltData[2] | ((offset >> 12) & 0xff));
-  write32le(buf + 12, pltData[3] | (offset & 0xfff));
+  write32(buf + 0, pltData[0]);
+  write32(buf + 4, pltData[1] | ((offset >> 20) & 0xff));
+  write32(buf + 8, pltData[2] | ((offset >> 12) & 0xff));
+  write32(buf + 12, pltData[3] | (offset & 0xfff));
   memcpy(buf + 16, trapInstr.data(), 4); // Pad to 32-byte boundary
   memcpy(buf + 20, trapInstr.data(), 4);
   memcpy(buf + 24, trapInstr.data(), 4);
@@ -229,21 +244,18 @@ void ARM::addPltHeaderSymbols(InputSection &isec) const {
 }
 
 // Long form PLT entries that do not have any restrictions on the displacement
-// of the .plt from the .plt.got.
+// of the .plt from the .got.plt.
 static void writePltLong(uint8_t *buf, uint64_t gotPltEntryAddr,
                          uint64_t pltEntryAddr) {
-  const uint8_t pltData[] = {
-      0x04, 0xc0, 0x9f, 0xe5, //     ldr ip, L2
-      0x0f, 0xc0, 0x8c, 0xe0, // L1: add ip, ip, pc
-      0x00, 0xf0, 0x9c, 0xe5, //     ldr pc, [ip]
-      0x00, 0x00, 0x00, 0x00, // L2: .word   Offset(&(.plt.got) - L1 - 8
-  };
-  memcpy(buf, pltData, sizeof(pltData));
+  write32(buf + 0, 0xe59fc004);   //     ldr ip, L2
+  write32(buf + 4, 0xe08cc00f);   // L1: add ip, ip, pc
+  write32(buf + 8, 0xe59cf000);   //     ldr pc, [ip]
+  write32(buf + 12, 0x00000000);  // L2: .word   Offset(&(.got.plt) - L1 - 8
   uint64_t l1 = pltEntryAddr + 4;
-  write32le(buf + 12, gotPltEntryAddr - l1 - 8);
+  write32(buf + 12, gotPltEntryAddr - l1 - 8);
 }
 
-// The default PLT entries require the .plt.got to be within 128 Mb of the
+// The default PLT entries require the .got.plt to be within 128 Mb of the
 // .plt in the positive direction.
 void ARM::writePlt(uint8_t *buf, const Symbol &sym,
                    uint64_t pltEntryAddr) const {
@@ -253,9 +265,9 @@ void ARM::writePlt(uint8_t *buf, const Symbol &sym,
   // hard code the most compact rotations for simplicity. This saves a load
   // instruction over the long plt sequences.
   const uint32_t pltData[] = {
-      0xe28fc600, // L1: add ip, pc,  #0x0NN00000  Offset(&(.plt.got) - L1 - 8
-      0xe28cca00, //     add ip, ip,  #0x000NN000  Offset(&(.plt.got) - L1 - 8
-      0xe5bcf000, //     ldr pc, [ip, #0x00000NNN] Offset(&(.plt.got) - L1 - 8
+      0xe28fc600, // L1: add ip, pc,  #0x0NN00000  Offset(&(.got.plt) - L1 - 8
+      0xe28cca00, //     add ip, ip,  #0x000NN000  Offset(&(.got.plt) - L1 - 8
+      0xe5bcf000, //     ldr pc, [ip, #0x00000NNN] Offset(&(.got.plt) - L1 - 8
   };
 
   uint64_t offset = sym.getGotPltVA() - pltEntryAddr - 8;
@@ -264,9 +276,9 @@ void ARM::writePlt(uint8_t *buf, const Symbol &sym,
     writePltLong(buf, sym.getGotPltVA(), pltEntryAddr);
     return;
   }
-  write32le(buf + 0, pltData[0] | ((offset >> 20) & 0xff));
-  write32le(buf + 4, pltData[1] | ((offset >> 12) & 0xff));
-  write32le(buf + 8, pltData[2] | (offset & 0xfff));
+  write32(buf + 0, pltData[0] | ((offset >> 20) & 0xff));
+  write32(buf + 4, pltData[1] | ((offset >> 12) & 0xff));
+  write32(buf + 8, pltData[2] | (offset & 0xfff));
   memcpy(buf + 12, trapInstr.data(), 4); // Pad to 16-byte boundary
 }
 
@@ -277,10 +289,12 @@ void ARM::addPltSymbols(InputSection &isec, uint64_t off) const {
 
 bool ARM::needsThunk(RelExpr expr, RelType type, const InputFile *file,
                      uint64_t branchAddr, const Symbol &s,
-                     int64_t /*a*/) const {
-  // If S is an undefined weak symbol and does not have a PLT entry then it
-  // will be resolved as a branch to the next instruction.
-  if (s.isUndefWeak() && !s.isInPlt())
+                     int64_t a) const {
+  // If s is an undefined weak symbol and does not have a PLT entry then it will
+  // be resolved as a branch to the next instruction. If it is hidden, its
+  // binding has been converted to local, so we just check isUndefined() here. A
+  // undefined non-weak symbol will have been errored.
+  if (s.isUndefined() && !s.isInPlt())
     return false;
   // A state change from ARM to Thumb and vice versa must go through an
   // interworking thunk if the relocation type is not R_ARM_CALL or
@@ -293,10 +307,11 @@ bool ARM::needsThunk(RelExpr expr, RelType type, const InputFile *file,
     // Otherwise we need to interwork if STT_FUNC Symbol has bit 0 set (Thumb).
     if (s.isFunc() && expr == R_PC && (s.getVA() & 1))
       return true;
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case R_ARM_CALL: {
     uint64_t dst = (expr == R_PLT_PC) ? s.getPltVA() : s.getVA();
-    return !inBranchRange(type, branchAddr, dst);
+    return !inBranchRange(type, branchAddr, dst + a) ||
+        (!config->armHasBlx && (s.getVA() & 1));
   }
   case R_ARM_THM_JUMP19:
   case R_ARM_THM_JUMP24:
@@ -304,10 +319,11 @@ bool ARM::needsThunk(RelExpr expr, RelType type, const InputFile *file,
     // Otherwise we need to interwork if STT_FUNC Symbol has bit 0 clear (ARM).
     if (expr == R_PLT_PC || (s.isFunc() && (s.getVA() & 1) == 0))
       return true;
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case R_ARM_THM_CALL: {
     uint64_t dst = (expr == R_PLT_PC) ? s.getPltVA() : s.getVA();
-    return !inBranchRange(type, branchAddr, dst);
+    return !inBranchRange(type, branchAddr, dst + a) ||
+        (!config->armHasBlx && (s.getVA() & 1) == 0);;
   }
   }
   return false;
@@ -348,46 +364,31 @@ uint32_t ARM::getThunkSectionSpacing() const {
 }
 
 bool ARM::inBranchRange(RelType type, uint64_t src, uint64_t dst) const {
-  uint64_t range;
-  uint64_t instrSize;
-
-  switch (type) {
-  case R_ARM_PC24:
-  case R_ARM_PLT32:
-  case R_ARM_JUMP24:
-  case R_ARM_CALL:
-    range = 0x2000000;
-    instrSize = 4;
-    break;
-  case R_ARM_THM_JUMP19:
-    range = 0x100000;
-    instrSize = 2;
-    break;
-  case R_ARM_THM_JUMP24:
-  case R_ARM_THM_CALL:
-    range = config->armJ1J2BranchEncoding ? 0x1000000 : 0x400000;
-    instrSize = 2;
-    break;
-  default:
-    return true;
-  }
-  // PC at Src is 2 instructions ahead, immediate of branch is signed
-  if (src > dst)
-    range -= 2 * instrSize;
-  else
-    range += instrSize;
-
   if ((dst & 0x1) == 0)
     // Destination is ARM, if ARM caller then Src is already 4-byte aligned.
     // If Thumb Caller (BLX) the Src address has bottom 2 bits cleared to ensure
     // destination will be 4 byte aligned.
     src &= ~0x3;
   else
-    // Bit 0 == 1 denotes Thumb state, it is not part of the range
+    // Bit 0 == 1 denotes Thumb state, it is not part of the range.
     dst &= ~0x1;
 
-  uint64_t distance = (src > dst) ? src - dst : dst - src;
-  return distance <= range;
+  int64_t offset = dst - src;
+  switch (type) {
+  case R_ARM_PC24:
+  case R_ARM_PLT32:
+  case R_ARM_JUMP24:
+  case R_ARM_CALL:
+    return llvm::isInt<26>(offset);
+  case R_ARM_THM_JUMP19:
+    return llvm::isInt<21>(offset);
+  case R_ARM_THM_JUMP24:
+  case R_ARM_THM_CALL:
+    return config->armJ1J2BranchEncoding ? llvm::isInt<25>(offset)
+                                         : llvm::isInt<23>(offset);
+  default:
+    return true;
+  }
 }
 
 // Helper to produce message text when LLD detects that a CALL relocation to
@@ -395,25 +396,27 @@ bool ARM::inBranchRange(RelType type, uint64_t src, uint64_t dst) const {
 // or Thumb.
 static void stateChangeWarning(uint8_t *loc, RelType relt, const Symbol &s) {
   assert(!s.isFunc());
+  const ErrorPlace place = getErrorPlace(loc);
+  std::string hint;
+  if (!place.srcLoc.empty())
+    hint = "; " + place.srcLoc;
   if (s.isSection()) {
     // Section symbols must be defined and in a section. Users cannot change
     // the type. Use the section name as getName() returns an empty string.
-    warn(getErrorLocation(loc) + "branch and link relocation: " +
-         toString(relt) + " to STT_SECTION symbol " +
-         cast<Defined>(s).section->name + " ; interworking not performed");
+    warn(place.loc + "branch and link relocation: " + toString(relt) +
+         " to STT_SECTION symbol " + cast<Defined>(s).section->name +
+         " ; interworking not performed" + hint);
   } else {
     // Warn with hint on how to alter the symbol type.
     warn(getErrorLocation(loc) + "branch and link relocation: " +
          toString(relt) + " to non STT_FUNC symbol: " + s.getName() +
          " interworking not performed; consider using directive '.type " +
          s.getName() +
-         ", %function' to give symbol type STT_FUNC if"
-         " interworking between ARM and Thumb is required");
+         ", %function' to give symbol type STT_FUNC if interworking between "
+         "ARM and Thumb is required" +
+         hint);
   }
 }
-
-// Utility functions taken from ARMAddressingModes.h, only changes are LLD
-// coding style.
 
 // Rotate a 32-bit unsigned value right by a specified amt of bits.
 static uint32_t rotr32(uint32_t val, uint32_t amt) {
@@ -421,47 +424,77 @@ static uint32_t rotr32(uint32_t val, uint32_t amt) {
   return (val >> amt) | (val << ((32 - amt) & 31));
 }
 
-// Rotate a 32-bit unsigned value left by a specified amt of bits.
-static uint32_t rotl32(uint32_t val, uint32_t amt) {
-  assert(amt < 32 && "Invalid rotate amount");
-  return (val << amt) | (val >> ((32 - amt) & 31));
+static std::pair<uint32_t, uint32_t> getRemAndLZForGroup(unsigned group,
+                                                         uint32_t val) {
+  uint32_t rem, lz;
+  do {
+    lz = llvm::countl_zero(val) & ~1;
+    rem = val;
+    if (lz == 32) // implies rem == 0
+      break;
+    val &= 0xffffff >> lz;
+  } while (group--);
+  return {rem, lz};
 }
 
-// Try to encode a 32-bit unsigned immediate imm with an immediate shifter
-// operand, this form is an 8-bit immediate rotated right by an even number of
-// bits. We compute the rotate amount to use.  If this immediate value cannot be
-// handled with a single shifter-op, determine a good rotate amount that will
-// take a maximal chunk of bits out of the immediate.
-static uint32_t getSOImmValRotate(uint32_t imm) {
-  // 8-bit (or less) immediates are trivially shifter_operands with a rotate
-  // of zero.
-  if ((imm & ~255U) == 0)
-    return 0;
-
-  // Use CTZ to compute the rotate amount.
-  unsigned tz = llvm::countTrailingZeros(imm);
-
-  // Rotate amount must be even.  Something like 0x200 must be rotated 8 bits,
-  // not 9.
-  unsigned rotAmt = tz & ~1;
-
-  // If we can handle this spread, return it.
-  if ((rotr32(imm, rotAmt) & ~255U) == 0)
-    return (32 - rotAmt) & 31; // HW rotates right, not left.
-
-  // For values like 0xF000000F, we should ignore the low 6 bits, then
-  // retry the hunt.
-  if (imm & 63U) {
-    unsigned tz2 = countTrailingZeros(imm & ~63U);
-    unsigned rotAmt2 = tz2 & ~1;
-    if ((rotr32(imm, rotAmt2) & ~255U) == 0)
-      return (32 - rotAmt2) & 31; // HW rotates right, not left.
+static void encodeAluGroup(uint8_t *loc, const Relocation &rel, uint64_t val,
+                           int group, bool check) {
+  // ADD/SUB (immediate) add = bit23, sub = bit22
+  // immediate field carries is a 12-bit modified immediate, made up of a 4-bit
+  // even rotate right and an 8-bit immediate.
+  uint32_t opcode = 0x00800000;
+  if (val >> 63) {
+    opcode = 0x00400000;
+    val = -val;
   }
+  uint32_t imm, lz;
+  std::tie(imm, lz) = getRemAndLZForGroup(group, val);
+  uint32_t rot = 0;
+  if (lz < 24) {
+    imm = rotr32(imm, 24 - lz);
+    rot = (lz + 8) << 7;
+  }
+  if (check && imm > 0xff)
+    error(getErrorLocation(loc) + "unencodeable immediate " + Twine(val).str() +
+          " for relocation " + toString(rel.type));
+  write32(loc, (read32(loc) & 0xff3ff000) | opcode | rot | (imm & 0xff));
+}
 
-  // Otherwise, we have no way to cover this span of bits with a single
-  // shifter_op immediate.  Return a chunk of bits that will be useful to
-  // handle.
-  return (32 - rotAmt) & 31; // HW rotates right, not left.
+static void encodeLdrGroup(uint8_t *loc, const Relocation &rel, uint64_t val,
+                           int group) {
+  // R_ARM_LDR_PC_Gn is S + A - P, we have ((S + A) | T) - P, if S is a
+  // function then addr is 0 (modulo 2) and Pa is 0 (modulo 4) so we can clear
+  // bottom bit to recover S + A - P.
+  if (rel.sym->isFunc())
+    val &= ~0x1;
+  // LDR (literal) u = bit23
+  uint32_t opcode = 0x00800000;
+  if (val >> 63) {
+    opcode = 0x0;
+    val = -val;
+  }
+  uint32_t imm = getRemAndLZForGroup(group, val).first;
+  checkUInt(loc, imm, 12, rel);
+  write32(loc, (read32(loc) & 0xff7ff000) | opcode | imm);
+}
+
+static void encodeLdrsGroup(uint8_t *loc, const Relocation &rel, uint64_t val,
+                            int group) {
+  // R_ARM_LDRS_PC_Gn is S + A - P, we have ((S + A) | T) - P, if S is a
+  // function then addr is 0 (modulo 2) and Pa is 0 (modulo 4) so we can clear
+  // bottom bit to recover S + A - P.
+  if (rel.sym->isFunc())
+    val &= ~0x1;
+  // LDRD/LDRH/LDRSB/LDRSH (literal) u = bit23
+  uint32_t opcode = 0x00800000;
+  if (val >> 63) {
+    opcode = 0x0;
+    val = -val;
+  }
+  uint32_t imm = getRemAndLZForGroup(group, val).first;
+  checkUInt(loc, imm, 8, rel);
+  write32(loc, (read32(loc) & 0xff7ff0f0) | opcode | ((imm & 0xf0) << 4) |
+                     (imm & 0xf));
 }
 
 void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
@@ -483,11 +516,11 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_ARM_TLS_LE32:
   case R_ARM_TLS_TPOFF32:
   case R_ARM_TLS_DTPOFF32:
-    write32le(loc, val);
+    write32(loc, val);
     break;
   case R_ARM_PREL31:
     checkInt(loc, val, 31, rel);
-    write32le(loc, (read32le(loc) & 0x80000000) | (val & ~0x80000000));
+    write32(loc, (read32(loc) & 0x80000000) | (val & ~0x80000000));
     break;
   case R_ARM_CALL: {
     // R_ARM_CALL is used for BL and BLX instructions, for symbols of type
@@ -497,7 +530,7 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     // PLT entries are always ARM state so we know we don't need to interwork.
     assert(rel.sym); // R_ARM_CALL is always reached via relocate().
     bool bit0Thumb = val & 1;
-    bool isBlx = (read32le(loc) & 0xfe000000) == 0xfa000000;
+    bool isBlx = (read32(loc) & 0xfe000000) == 0xfa000000;
     // lld 10.0 and before always used bit0Thumb when deciding to write a BLX
     // even when type not STT_FUNC.
     if (!rel.sym->isFunc() && isBlx != bit0Thumb)
@@ -505,35 +538,41 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     if (rel.sym->isFunc() ? bit0Thumb : isBlx) {
       // The BLX encoding is 0xfa:H:imm24 where Val = imm24:H:'1'
       checkInt(loc, val, 26, rel);
-      write32le(loc, 0xfa000000 |                    // opcode
+      write32(loc, 0xfa000000 |                    // opcode
                          ((val & 2) << 23) |         // H
                          ((val >> 2) & 0x00ffffff)); // imm24
       break;
     }
     // BLX (always unconditional) instruction to an ARM Target, select an
     // unconditional BL.
-    write32le(loc, 0xeb000000 | (read32le(loc) & 0x00ffffff));
+    write32(loc, 0xeb000000 | (read32(loc) & 0x00ffffff));
     // fall through as BL encoding is shared with B
   }
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case R_ARM_JUMP24:
   case R_ARM_PC24:
   case R_ARM_PLT32:
     checkInt(loc, val, 26, rel);
-    write32le(loc, (read32le(loc) & ~0x00ffffff) | ((val >> 2) & 0x00ffffff));
+    write32(loc, (read32(loc) & ~0x00ffffff) | ((val >> 2) & 0x00ffffff));
+    break;
+  case R_ARM_THM_JUMP8:
+    // We do a 9 bit check because val is right-shifted by 1 bit.
+    checkInt(loc, val, 9, rel);
+    write16(loc, (read32(loc) & 0xff00) | ((val >> 1) & 0x00ff));
     break;
   case R_ARM_THM_JUMP11:
+    // We do a 12 bit check because val is right-shifted by 1 bit.
     checkInt(loc, val, 12, rel);
-    write16le(loc, (read32le(loc) & 0xf800) | ((val >> 1) & 0x07ff));
+    write16(loc, (read32(loc) & 0xf800) | ((val >> 1) & 0x07ff));
     break;
   case R_ARM_THM_JUMP19:
     // Encoding T3: Val = S:J2:J1:imm6:imm11:0
     checkInt(loc, val, 21, rel);
-    write16le(loc,
-              (read16le(loc) & 0xfbc0) |   // opcode cond
+    write16(loc,
+              (read16(loc) & 0xfbc0) |   // opcode cond
                   ((val >> 10) & 0x0400) | // S
                   ((val >> 12) & 0x003f)); // imm6
-    write16le(loc + 2,
+    write16(loc + 2,
               0x8000 |                    // opcode
                   ((val >> 8) & 0x0800) | // J2
                   ((val >> 5) & 0x2000) | // J1
@@ -547,7 +586,7 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
     // PLT entries are always ARM state so we know we need to interwork.
     assert(rel.sym); // R_ARM_THM_CALL is always reached via relocate().
     bool bit0Thumb = val & 1;
-    bool isBlx = (read16le(loc + 2) & 0x1000) == 0;
+    bool isBlx = (read16(loc + 2) & 0x1000) == 0;
     // lld 10.0 and before always used bit0Thumb when deciding to write a BLX
     // even when type not STT_FUNC. PLT entries generated by LLD are always ARM.
     if (!rel.sym->isFunc() && !rel.sym->isInPlt() && isBlx == bit0Thumb)
@@ -557,35 +596,35 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
       // the BLX instruction may only be two byte aligned. This must be done
       // before overflow check.
       val = alignTo(val, 4);
-      write16le(loc + 2, read16le(loc + 2) & ~0x1000);
+      write16(loc + 2, read16(loc + 2) & ~0x1000);
     } else {
-      write16le(loc + 2, (read16le(loc + 2) & ~0x1000) | 1 << 12);
+      write16(loc + 2, (read16(loc + 2) & ~0x1000) | 1 << 12);
     }
     if (!config->armJ1J2BranchEncoding) {
       // Older Arm architectures do not support R_ARM_THM_JUMP24 and have
       // different encoding rules and range due to J1 and J2 always being 1.
       checkInt(loc, val, 23, rel);
-      write16le(loc,
+      write16(loc,
                 0xf000 |                     // opcode
                     ((val >> 12) & 0x07ff)); // imm11
-      write16le(loc + 2,
-                (read16le(loc + 2) & 0xd000) | // opcode
+      write16(loc + 2,
+                (read16(loc + 2) & 0xd000) | // opcode
                     0x2800 |                   // J1 == J2 == 1
                     ((val >> 1) & 0x07ff));    // imm11
       break;
     }
   }
     // Fall through as rest of encoding is the same as B.W
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case R_ARM_THM_JUMP24:
     // Encoding B  T4, BL T1, BLX T2: Val = S:I1:I2:imm10:imm11:0
     checkInt(loc, val, 25, rel);
-    write16le(loc,
+    write16(loc,
               0xf000 |                     // opcode
                   ((val >> 14) & 0x0400) | // S
                   ((val >> 12) & 0x03ff)); // imm10
-    write16le(loc + 2,
-              (read16le(loc + 2) & 0xd000) |                  // opcode
+    write16(loc + 2,
+              (read16(loc + 2) & 0xd000) |                  // opcode
                   (((~(val >> 10)) ^ (val >> 11)) & 0x2000) | // J1
                   (((~(val >> 11)) ^ (val >> 13)) & 0x0800) | // J2
                   ((val >> 1) & 0x07ff));                     // imm11
@@ -593,25 +632,27 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_ARM_MOVW_ABS_NC:
   case R_ARM_MOVW_PREL_NC:
   case R_ARM_MOVW_BREL_NC:
-    write32le(loc, (read32le(loc) & ~0x000f0fff) | ((val & 0xf000) << 4) |
+    write32(loc, (read32(loc) & ~0x000f0fff) | ((val & 0xf000) << 4) |
                        (val & 0x0fff));
     break;
   case R_ARM_MOVT_ABS:
   case R_ARM_MOVT_PREL:
   case R_ARM_MOVT_BREL:
-    write32le(loc, (read32le(loc) & ~0x000f0fff) |
+    write32(loc, (read32(loc) & ~0x000f0fff) |
                        (((val >> 16) & 0xf000) << 4) | ((val >> 16) & 0xfff));
     break;
   case R_ARM_THM_MOVT_ABS:
   case R_ARM_THM_MOVT_PREL:
   case R_ARM_THM_MOVT_BREL:
     // Encoding T1: A = imm4:i:imm3:imm8
-    write16le(loc,
-              0xf2c0 |                     // opcode
-                  ((val >> 17) & 0x0400) | // i
-                  ((val >> 28) & 0x000f)); // imm4
-    write16le(loc + 2,
-              (read16le(loc + 2) & 0x8f00) | // opcode
+
+    write16(loc,
+            0xf2c0 |                     // opcode
+                ((val >> 17) & 0x0400) | // i
+                ((val >> 28) & 0x000f)); // imm4
+
+    write16(loc + 2,
+              (read16(loc + 2) & 0x8f00) | // opcode
                   ((val >> 12) & 0x7000) |   // imm3
                   ((val >> 16) & 0x00ff));   // imm8
     break;
@@ -619,54 +660,48 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
   case R_ARM_THM_MOVW_PREL_NC:
   case R_ARM_THM_MOVW_BREL_NC:
     // Encoding T3: A = imm4:i:imm3:imm8
-    write16le(loc,
+    write16(loc,
               0xf240 |                     // opcode
                   ((val >> 1) & 0x0400) |  // i
                   ((val >> 12) & 0x000f)); // imm4
-    write16le(loc + 2,
-              (read16le(loc + 2) & 0x8f00) | // opcode
+    write16(loc + 2,
+              (read16(loc + 2) & 0x8f00) | // opcode
                   ((val << 4) & 0x7000) |    // imm3
                   (val & 0x00ff));           // imm8
     break;
-  case R_ARM_ALU_PC_G0: {
-    // ADR (literal) add = bit23, sub = bit22
-    // literal is a 12-bit modified immediate, made up of a 4-bit even rotate
-    // right and an 8-bit immediate. The code-sequence here is derived from
-    // ARMAddressingModes.h in llvm/Target/ARM/MCTargetDesc. In our case we
-    // want to give an error if we cannot encode the constant.
-    uint32_t opcode = 0x00800000;
-    if (val >> 63) {
-      opcode = 0x00400000;
-      val = ~val + 1;
-    }
-    if ((val & ~255U) != 0) {
-      uint32_t rotAmt = getSOImmValRotate(val);
-      // Error if we cannot encode this with a single shift
-      if (rotr32(~255U, rotAmt) & val)
-        error(getErrorLocation(loc) + "unencodeable immediate " +
-              Twine(val).str() + " for relocation " + toString(rel.type));
-      val = rotl32(val, rotAmt) | ((rotAmt >> 1) << 8);
-    }
-    write32le(loc, (read32le(loc) & 0xff0ff000) | opcode | val);
+  case R_ARM_ALU_PC_G0:
+    encodeAluGroup(loc, rel, val, 0, true);
     break;
-  }
-  case R_ARM_LDR_PC_G0: {
-    // R_ARM_LDR_PC_G0 is S + A - P, we have ((S + A) | T) - P, if S is a
-    // function then addr is 0 (modulo 2) and Pa is 0 (modulo 4) so we can clear
-    // bottom bit to recover S + A - P.
-    if (rel.sym->isFunc())
-      val &= ~0x1;
-    // LDR (literal) u = bit23
-    int64_t imm = val;
-    uint32_t u = 0x00800000;
-    if (imm < 0) {
-      imm = -imm;
-      u = 0;
-    }
-    checkUInt(loc, imm, 12, rel);
-    write32le(loc, (read32le(loc) & 0xff7ff000) | u | imm);
+  case R_ARM_ALU_PC_G0_NC:
+    encodeAluGroup(loc, rel, val, 0, false);
     break;
-  }
+  case R_ARM_ALU_PC_G1:
+    encodeAluGroup(loc, rel, val, 1, true);
+    break;
+  case R_ARM_ALU_PC_G1_NC:
+    encodeAluGroup(loc, rel, val, 1, false);
+    break;
+  case R_ARM_ALU_PC_G2:
+    encodeAluGroup(loc, rel, val, 2, true);
+    break;
+  case R_ARM_LDR_PC_G0:
+    encodeLdrGroup(loc, rel, val, 0);
+    break;
+  case R_ARM_LDR_PC_G1:
+    encodeLdrGroup(loc, rel, val, 1);
+    break;
+  case R_ARM_LDR_PC_G2:
+    encodeLdrGroup(loc, rel, val, 2);
+    break;
+  case R_ARM_LDRS_PC_G0:
+    encodeLdrsGroup(loc, rel, val, 0);
+    break;
+  case R_ARM_LDRS_PC_G1:
+    encodeLdrsGroup(loc, rel, val, 1);
+    break;
+  case R_ARM_LDRS_PC_G2:
+    encodeLdrsGroup(loc, rel, val, 2);
+    break;
   case R_ARM_THM_ALU_PREL_11_0: {
     // ADR encoding T2 (sub), T3 (add) i:imm3:imm8
     int64_t imm = val;
@@ -676,9 +711,9 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
       sub = 0x00a0;
     }
     checkUInt(loc, imm, 12, rel);
-    write16le(loc, (read16le(loc) & 0xfb0f) | sub | (imm & 0x800) >> 1);
-    write16le(loc + 2,
-              (read16le(loc + 2) & 0x8f00) | (imm & 0x700) << 4 | (imm & 0xff));
+    write16(loc, (read16(loc) & 0xfb0f) | sub | (imm & 0x800) >> 1);
+    write16(loc + 2,
+              (read16(loc + 2) & 0x8f00) | (imm & 0x700) << 4 | (imm & 0xff));
     break;
   }
   case R_ARM_THM_PC8:
@@ -690,7 +725,7 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
       val &= ~0x1;
     checkUInt(loc, val, 10, rel);
     checkAlignment(loc, val, 4, rel);
-    write16le(loc, (read16le(loc) & 0xff00) | (val & 0x3fc) >> 2);
+    write16(loc, (read16(loc) & 0xff00) | (val & 0x3fc) >> 2);
     break;
   case R_ARM_THM_PC12: {
     // LDR (literal) encoding T2, add = (U == '1') imm12
@@ -707,47 +742,57 @@ void ARM::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
       u = 0;
     }
     checkUInt(loc, imm12, 12, rel);
-    write16le(loc, read16le(loc) | u);
-    write16le(loc + 2, (read16le(loc + 2) & 0xf000) | imm12);
+    write16(loc, read16(loc) | u);
+    write16(loc + 2, (read16(loc + 2) & 0xf000) | imm12);
     break;
   }
   default:
-    error(getErrorLocation(loc) + "unrecognized relocation " +
-          toString(rel.type));
+    llvm_unreachable("unknown relocation");
   }
 }
 
 int64_t ARM::getImplicitAddend(const uint8_t *buf, RelType type) const {
   switch (type) {
   default:
+    internalLinkerError(getErrorLocation(buf),
+                        "cannot read addend for relocation " + toString(type));
     return 0;
   case R_ARM_ABS32:
   case R_ARM_BASE_PREL:
+  case R_ARM_GLOB_DAT:
   case R_ARM_GOTOFF32:
   case R_ARM_GOT_BREL:
   case R_ARM_GOT_PREL:
+  case R_ARM_IRELATIVE:
   case R_ARM_REL32:
+  case R_ARM_RELATIVE:
+  case R_ARM_SBREL32:
   case R_ARM_TARGET1:
   case R_ARM_TARGET2:
+  case R_ARM_TLS_DTPMOD32:
+  case R_ARM_TLS_DTPOFF32:
   case R_ARM_TLS_GD32:
-  case R_ARM_TLS_LDM32:
-  case R_ARM_TLS_LDO32:
   case R_ARM_TLS_IE32:
+  case R_ARM_TLS_LDM32:
   case R_ARM_TLS_LE32:
-    return SignExtend64<32>(read32le(buf));
+  case R_ARM_TLS_LDO32:
+  case R_ARM_TLS_TPOFF32:
+    return SignExtend64<32>(read32(buf));
   case R_ARM_PREL31:
-    return SignExtend64<31>(read32le(buf));
+    return SignExtend64<31>(read32(buf));
   case R_ARM_CALL:
   case R_ARM_JUMP24:
   case R_ARM_PC24:
   case R_ARM_PLT32:
-    return SignExtend64<26>(read32le(buf) << 2);
+    return SignExtend64<26>(read32(buf) << 2);
+  case R_ARM_THM_JUMP8:
+    return SignExtend64<9>(read16(buf) << 1);
   case R_ARM_THM_JUMP11:
-    return SignExtend64<12>(read16le(buf) << 1);
+    return SignExtend64<12>(read16(buf) << 1);
   case R_ARM_THM_JUMP19: {
     // Encoding T3: A = S:J2:J1:imm10:imm6:0
-    uint16_t hi = read16le(buf);
-    uint16_t lo = read16le(buf + 2);
+    uint16_t hi = read16(buf);
+    uint16_t lo = read16(buf + 2);
     return SignExtend64<20>(((hi & 0x0400) << 10) | // S
                             ((lo & 0x0800) << 8) |  // J2
                             ((lo & 0x2000) << 5) |  // J1
@@ -758,18 +803,18 @@ int64_t ARM::getImplicitAddend(const uint8_t *buf, RelType type) const {
     if (!config->armJ1J2BranchEncoding) {
       // Older Arm architectures do not support R_ARM_THM_JUMP24 and have
       // different encoding rules and range due to J1 and J2 always being 1.
-      uint16_t hi = read16le(buf);
-      uint16_t lo = read16le(buf + 2);
+      uint16_t hi = read16(buf);
+      uint16_t lo = read16(buf + 2);
       return SignExtend64<22>(((hi & 0x7ff) << 12) | // imm11
                               ((lo & 0x7ff) << 1));  // imm11:0
       break;
     }
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case R_ARM_THM_JUMP24: {
     // Encoding B T4, BL T1, BLX T2: A = S:I1:I2:imm10:imm11:0
     // I1 = NOT(J1 EOR S), I2 = NOT(J2 EOR S)
-    uint16_t hi = read16le(buf);
-    uint16_t lo = read16le(buf + 2);
+    uint16_t hi = read16(buf);
+    uint16_t lo = read16(buf + 2);
     return SignExtend64<24>(((hi & 0x0400) << 14) |                    // S
                             (~((lo ^ (hi << 3)) << 10) & 0x00800000) | // I1
                             (~((lo ^ (hi << 1)) << 11) & 0x00400000) | // I2
@@ -784,7 +829,7 @@ int64_t ARM::getImplicitAddend(const uint8_t *buf, RelType type) const {
   case R_ARM_MOVT_PREL:
   case R_ARM_MOVW_BREL_NC:
   case R_ARM_MOVT_BREL: {
-    uint64_t val = read32le(buf) & 0x000f0fff;
+    uint64_t val = read32(buf) & 0x000f0fff;
     return SignExtend64<16>(((val & 0x000f0000) >> 4) | (val & 0x00fff));
   }
   case R_ARM_THM_MOVW_ABS_NC:
@@ -794,35 +839,51 @@ int64_t ARM::getImplicitAddend(const uint8_t *buf, RelType type) const {
   case R_ARM_THM_MOVW_BREL_NC:
   case R_ARM_THM_MOVT_BREL: {
     // Encoding T3: A = imm4:i:imm3:imm8
-    uint16_t hi = read16le(buf);
-    uint16_t lo = read16le(buf + 2);
+    uint16_t hi = read16(buf);
+    uint16_t lo = read16(buf + 2);
     return SignExtend64<16>(((hi & 0x000f) << 12) | // imm4
                             ((hi & 0x0400) << 1) |  // i
                             ((lo & 0x7000) >> 4) |  // imm3
                             (lo & 0x00ff));         // imm8
   }
-  case R_ARM_ALU_PC_G0: {
+  case R_ARM_ALU_PC_G0:
+  case R_ARM_ALU_PC_G0_NC:
+  case R_ARM_ALU_PC_G1:
+  case R_ARM_ALU_PC_G1_NC:
+  case R_ARM_ALU_PC_G2: {
     // 12-bit immediate is a modified immediate made up of a 4-bit even
     // right rotation and 8-bit constant. After the rotation the value
     // is zero-extended. When bit 23 is set the instruction is an add, when
     // bit 22 is set it is a sub.
-    uint32_t instr = read32le(buf);
+    uint32_t instr = read32(buf);
     uint32_t val = rotr32(instr & 0xff, ((instr & 0xf00) >> 8) * 2);
     return (instr & 0x00400000) ? -val : val;
   }
-  case R_ARM_LDR_PC_G0: {
+  case R_ARM_LDR_PC_G0:
+  case R_ARM_LDR_PC_G1:
+  case R_ARM_LDR_PC_G2: {
     // ADR (literal) add = bit23, sub = bit22
     // LDR (literal) u = bit23 unsigned imm12
-    bool u = read32le(buf) & 0x00800000;
-    uint32_t imm12 = read32le(buf) & 0xfff;
+    bool u = read32(buf) & 0x00800000;
+    uint32_t imm12 = read32(buf) & 0xfff;
     return u ? imm12 : -imm12;
+  }
+  case R_ARM_LDRS_PC_G0:
+  case R_ARM_LDRS_PC_G1:
+  case R_ARM_LDRS_PC_G2: {
+    // LDRD/LDRH/LDRSB/LDRSH (literal) u = bit23 unsigned imm8
+    uint32_t opcode = read32(buf);
+    bool u = opcode & 0x00800000;
+    uint32_t imm4l = opcode & 0xf;
+    uint32_t imm4h = (opcode & 0xf00) >> 4;
+    return u ? (imm4h | imm4l) : -(imm4h | imm4l);
   }
   case R_ARM_THM_ALU_PREL_11_0: {
     // Thumb2 ADR, which is an alias for a sub or add instruction with an
     // unsigned immediate.
     // ADR encoding T2 (sub), T3 (add) i:imm3:imm8
-    uint16_t hi = read16le(buf);
-    uint16_t lo = read16le(buf + 2);
+    uint16_t hi = read16(buf);
+    uint16_t lo = read16(buf + 2);
     uint64_t imm = (hi & 0x0400) << 1 | // i
                    (lo & 0x7000) >> 4 | // imm3
                    (lo & 0x00ff);       // imm8
@@ -834,13 +895,18 @@ int64_t ARM::getImplicitAddend(const uint8_t *buf, RelType type) const {
     // From ELF for the ARM Architecture the initial signed addend is formed
     // from an unsigned field using expression (((imm8:00 + 4) & 0x3ff) – 4)
     // this trick permits the PC bias of -4 to be encoded using imm8 = 0xff
-    return ((((read16le(buf) & 0xff) << 2) + 4) & 0x3ff) - 4;
+    return ((((read16(buf) & 0xff) << 2) + 4) & 0x3ff) - 4;
   case R_ARM_THM_PC12: {
     // LDR (literal) encoding T2, add = (U == '1') imm12
-    bool u = read16le(buf) & 0x0080;
-    uint64_t imm12 = read16le(buf + 2) & 0x0fff;
+    bool u = read16(buf) & 0x0080;
+    uint64_t imm12 = read16(buf + 2) & 0x0fff;
     return u ? imm12 : -imm12;
   }
+  case R_ARM_NONE:
+  case R_ARM_V4BX:
+  case R_ARM_JUMP_SLOT:
+    // These relocations are defined as not having an implicit addend.
+    return 0;
   }
 }
 
@@ -848,3 +914,4 @@ TargetInfo *elf::getARMTargetInfo() {
   static ARM target;
   return &target;
 }
+

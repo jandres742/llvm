@@ -1,7 +1,7 @@
-; RUN: llc -mtriple=amdgcn--amdhsa -mattr=-code-object-v3 -mcpu=fiji -filetype=obj < %s | llvm-objdump -d - --mcpu=fiji | FileCheck %s
+; RUN: llc -mtriple=amdgcn--amdhsa -mcpu=fiji -filetype=obj < %s | llvm-objdump -d - --mcpu=fiji | FileCheck %s
 
 ; CHECK: <kernel0>:
-; CHECK-NEXT: s_endpgm
+; CHECK: s_endpgm
 define amdgpu_kernel void @kernel0() align 256 {
 entry:
   ret void
@@ -80,8 +80,11 @@ entry:
 
 ; CHECK-EMPTY:
 ; CHECK-NEXT: <kernel1>:
-; CHECK-NEXT: s_endpgm
-define amdgpu_kernel void @kernel1(i32 addrspace(1)* addrspace(4)* %ptr.out) align 256 {
+; CHECK: s_endpgm
+define amdgpu_kernel void @kernel1(ptr addrspace(4) %ptr.out) align 256 {
 entry:
   ret void
 }
+
+!llvm.module.flags = !{!0}
+!0 = !{i32 1, !"amdgpu_code_object_version", i32 200}

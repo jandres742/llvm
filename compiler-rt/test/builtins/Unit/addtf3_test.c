@@ -1,16 +1,5 @@
 // RUN: %clang_builtins %s %librt -o %t && %run %t
 // REQUIRES: librt_has_addtf3
-//===--------------- addtf3_test.c - Test __addtf3 ------------------------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-//
-// This file tests __addtf3 for the compiler_rt library.
-//
-//===----------------------------------------------------------------------===//
 
 #include <fenv.h>
 #include <stdio.h>
@@ -77,7 +66,8 @@ int main()
         return 1;
 
 #if (defined(__arm__) || defined(__aarch64__)) && defined(__ARM_FP) || \
-    defined(i386) || defined(__x86_64__)
+    defined(i386) || defined(__x86_64__) || (defined(__loongarch__) && \
+    __loongarch_frlen != 0)
     // Rounding mode tests on supported architectures
     const long double m = 1234.0L, n = 0.01L;
 

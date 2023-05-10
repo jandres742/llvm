@@ -13,9 +13,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace bugprone {
+namespace clang::tidy::bugprone {
 
 MisplacedWideningCastCheck::MisplacedWideningCastCheck(
     StringRef Name, ClangTidyContext *Context)
@@ -40,8 +38,7 @@ void MisplacedWideningCastCheck::registerMatchers(MatchFinder *Finder) {
       implicitCastExpr(hasImplicitDestinationType(isInteger()),
                        has(ignoringParenImpCasts(Calc)));
   const auto Cast =
-      traverse(ast_type_traits::TK_AsIs,
-               expr(anyOf(ExplicitCast, ImplicitCast)).bind("Cast"));
+      traverse(TK_AsIs, expr(anyOf(ExplicitCast, ImplicitCast)).bind("Cast"));
 
   Finder->addMatcher(varDecl(hasInitializer(Cast)), this);
   Finder->addMatcher(returnStmt(hasReturnValue(Cast)), this);
@@ -227,6 +224,4 @@ void MisplacedWideningCastCheck::check(const MatchFinder::MatchResult &Result) {
       << CalcType << CastType;
 }
 
-} // namespace bugprone
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::bugprone

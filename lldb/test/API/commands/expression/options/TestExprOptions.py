@@ -17,8 +17,6 @@ from lldbsuite.test.lldbtest import *
 
 class ExprOptionsTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     def setUp(self):
         # Call super's setUp().
         TestBase.setUp(self)
@@ -46,14 +44,14 @@ class ExprOptionsTestCase(TestBase):
         # Make sure we can evaluate a C++11 expression.
         val = frame.EvaluateExpression('foo != nullptr')
         self.assertTrue(val.IsValid())
-        self.assertTrue(val.GetError().Success())
+        self.assertSuccess(val.GetError())
         self.DebugSBValue(val)
 
         # Make sure it still works if language is set to C++11:
         options.SetLanguage(lldb.eLanguageTypeC_plus_plus_11)
         val = frame.EvaluateExpression('foo != nullptr', options)
         self.assertTrue(val.IsValid())
-        self.assertTrue(val.GetError().Success())
+        self.assertSuccess(val.GetError())
         self.DebugSBValue(val)
 
         # Make sure it fails if language is set to C:
@@ -80,7 +78,7 @@ class ExprOptionsTestCase(TestBase):
         options.SetLanguage(lldb.eLanguageTypeC_plus_plus_11)
         val = frame.EvaluateExpression('id == 0', options)
         self.assertTrue(val.IsValid())
-        self.assertTrue(val.GetError().Success())
+        self.assertSuccess(val.GetError())
         self.DebugSBValue(val)
 
         # Make sure we can't retrieve `id` variable if language is set to ObjC:

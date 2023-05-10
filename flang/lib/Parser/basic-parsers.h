@@ -65,7 +65,10 @@ template <typename A = Success> inline constexpr auto fail(MessageFixedText t) {
 }
 
 // pure(x) returns a parser that always succeeds, does not advance the
-// parse, and returns a captured value whose type must be copy-constructible.
+// parse, and returns a captured value x whose type must be copy-constructible.
+//
+// pure<A>() is essentially pure(A{}); it returns a default-constructed A{},
+// and works even when A is not copy-constructible.
 template <typename A> class PureParser {
 public:
   using resultType = A;
@@ -81,6 +84,18 @@ template <typename A> inline constexpr auto pure(A x) {
   return PureParser<A>(std::move(x));
 }
 
+template <typename A> class PureDefaultParser {
+public:
+  using resultType = A;
+  constexpr PureDefaultParser(const PureDefaultParser &) = default;
+  constexpr PureDefaultParser() {}
+  std::optional<A> Parse(ParseState &) const { return std::make_optional<A>(); }
+};
+
+template <typename A> inline constexpr auto pure() {
+  return PureDefaultParser<A>();
+}
+
 // If a is a parser, attempt(a) is the same parser, but on failure
 // the ParseState is guaranteed to have been restored to its initial value.
 template <typename A> class BacktrackingParser {
@@ -93,7 +108,7 @@ public:
     ParseState backtrack{state};
     std::optional<resultType> result{parser_.Parse(state)};
     if (result) {
-      state.messages().Restore(std::move(messages));
+      state.messages().Annex(std::move(messages));
     } else {
       state = std::move(backtrack);
       state.messages() = std::move(messages);
@@ -193,26 +208,31 @@ public:
   constexpr WithMessageParser(MessageFixedText t, PA p)
       : text_{t}, parser_{p} {}
   std::optional<resultType> Parse(ParseState &state) const {
+    if (state.deferMessages()) { // fast path
+      std::optional<resultType> result{parser_.Parse(state)};
+      if (!result) {
+        state.set_anyDeferredMessages();
+      }
+      return result;
+    }
     Messages messages{std::move(state.messages())};
-    ParseState backtrack{state};
+    bool hadAnyTokenMatched{state.anyTokenMatched()};
     state.set_anyTokenMatched(false);
     std::optional<resultType> result{parser_.Parse(state)};
     bool emitMessage{false};
     if (result) {
       messages.Annex(std::move(state.messages()));
-      if (backtrack.anyTokenMatched()) {
+      if (hadAnyTokenMatched) {
         state.set_anyTokenMatched();
       }
     } else if (state.anyTokenMatched()) {
       emitMessage = state.messages().empty();
       messages.Annex(std::move(state.messages()));
-      backtrack.set_anyTokenMatched();
-      if (state.anyDeferredMessages()) {
-        backtrack.set_anyDeferredMessages(true);
-      }
-      state = std::move(backtrack);
     } else {
       emitMessage = true;
+      if (hadAnyTokenMatched) {
+        state.set_anyTokenMatched();
+      }
     }
     state.messages() = std::move(messages);
     if (emitMessage) {
@@ -239,10 +259,10 @@ template <typename PA, typename PB> class SequenceParser {
 public:
   using resultType = typename PB::resultType;
   constexpr SequenceParser(const SequenceParser &) = default;
-  constexpr SequenceParser(PA pa, PB pb) : pa_{pa}, pb_{pb} {}
+  constexpr SequenceParser(PA pa, PB pb) : pa_{pa}, pb2_{pb} {}
   std::optional<resultType> Parse(ParseState &state) const {
     if (pa_.Parse(state)) {
-      return pb_.Parse(state);
+      return pb2_.Parse(state);
     } else {
       return std::nullopt;
     }
@@ -250,7 +270,7 @@ public:
 
 private:
   const PA pa_;
-  const PB pb_;
+  const PB pb2_;
 };
 
 template <typename PA, typename PB>
@@ -296,7 +316,7 @@ public:
         ParseRest<1>(result, state, backtrack);
       }
     }
-    state.messages().Restore(std::move(messages));
+    state.messages().Annex(std::move(messages));
     return result;
   }
 
@@ -356,7 +376,7 @@ public:
     }
     Messages messages{std::move(state.messages())};
     if (std::optional<resultType> ax{pa_.Parse(state)}) {
-      state.messages().Restore(std::move(messages));
+      state.messages().Annex(std::move(messages));
       return ax;
     }
     messages.Annex(std::move(state.messages()));
@@ -621,14 +641,14 @@ private:
 
 template <typename RESULT, typename... PARSER>
 inline constexpr auto applyFunction(
-    ApplicableFunctionPointer<RESULT, PARSER...> f, const PARSER &... parser) {
+    ApplicableFunctionPointer<RESULT, PARSER...> f, const PARSER &...parser) {
   return ApplyFunction<ApplicableFunctionPointer, RESULT, PARSER...>{
       f, parser...};
 }
 
 template <typename RESULT, typename... PARSER>
 inline /* not constexpr */ auto applyLambda(
-    ApplicableFunctionObject<RESULT, PARSER...> f, const PARSER &... parser) {
+    ApplicableFunctionObject<RESULT, PARSER...> f, const PARSER &...parser) {
   return ApplyFunction<ApplicableFunctionObject, RESULT, PARSER...>{
       f, parser...};
 }
@@ -714,13 +734,7 @@ public:
       return RESULT{};
     } else {
       if constexpr (sizeof...(PARSER) == 1) {
-        if constexpr (std::is_same_v<Success, typename PARSER::resultType...>) {
-          if (std::get<0>(parsers_).Parse(state)) {
-            return RESULT{};
-          }
-        } else if (auto arg{std::get<0>(parsers_).Parse(state)}) {
-          return RESULT{std::move(*arg)};
-        }
+        return ParseOne(state);
       } else {
         ApplyArgs<PARSER...> results;
         using Sequence = std::index_sequence_for<PARSER...>;
@@ -734,6 +748,17 @@ public:
   }
 
 private:
+  std::optional<resultType> ParseOne(ParseState &state) const {
+    if constexpr (std::is_same_v<Success, typename PARSER::resultType...>) {
+      if (std::get<0>(parsers_).Parse(state)) {
+        return RESULT{};
+      }
+    } else if (auto arg{std::get<0>(parsers_).Parse(state)}) {
+      return RESULT{std::move(*arg)};
+    }
+    return std::nullopt;
+  }
+
   const std::tuple<PARSER...> parsers_;
 };
 
@@ -767,7 +792,8 @@ public:
   constexpr NonemptySeparated(const NonemptySeparated &) = default;
   constexpr NonemptySeparated(PA p, PB sep) : parser_{p}, separator_{sep} {}
   std::optional<resultType> Parse(ParseState &state) const {
-    return applyFunction(prepend<paType>, parser_, many(separator_ >> parser_))
+    return applyFunction<std::list<paType>>(
+        prepend<paType>, parser_, many(separator_ >> parser_))
         .Parse(state);
   }
 
@@ -785,31 +811,19 @@ inline constexpr auto nonemptySeparated(PA p, PB sep) {
 // must discard its result in order to be compatible in type with other
 // parsers in an alternative, e.g. "x >> ok || y >> ok" is type-safe even
 // when x and y have distinct result types.
-//
-// cut is a parser that always fails.  It is useful when a parser must
-// have its type implicitly set; one use is the idiom "defaulted(cut >> x)",
-// which is essentially what "pure(T{})" would be able to do for x's
-// result type T, but without requiring that T have a default constructor
-// or a non-trivial destructor.  The state is preserved.
-template <bool pass> struct FixedParser {
+struct OkParser {
   using resultType = Success;
-  constexpr FixedParser() {}
+  constexpr OkParser() {}
   static constexpr std::optional<Success> Parse(ParseState &) {
-    if constexpr (pass) {
-      return Success{};
-    } else {
-      return std::nullopt;
-    }
+    return Success{};
   }
 };
-
-constexpr FixedParser<true> ok;
-constexpr FixedParser<false> cut;
+constexpr OkParser ok;
 
 // A variant of recovery() above for convenience.
 template <typename PA, typename PB>
 inline constexpr auto localRecovery(MessageFixedText msg, PA pa, PB pb) {
-  return recovery(withMessage(msg, pa), pb >> defaulted(cut >> pa));
+  return recovery(withMessage(msg, pa), pb >> pure<typename PA::resultType>());
 }
 
 // nextCh is a parser that succeeds if the parsing state is not
@@ -836,7 +850,8 @@ template <LanguageFeature LF, typename PA> class NonstandardParser {
 public:
   using resultType = typename PA::resultType;
   constexpr NonstandardParser(const NonstandardParser &) = default;
-  constexpr NonstandardParser(PA parser) : parser_{parser} {}
+  constexpr NonstandardParser(PA parser, MessageFixedText msg)
+      : parser_{parser}, message_{msg} {}
   std::optional<resultType> Parse(ParseState &state) const {
     if (UserState * ustate{state.userState()}) {
       if (!ustate->features().IsEnabled(LF)) {
@@ -847,18 +862,19 @@ public:
     auto result{parser_.Parse(state)};
     if (result) {
       state.Nonstandard(
-          CharBlock{at, state.GetLocation()}, LF, "nonstandard usage"_en_US);
+          CharBlock{at, std::max(state.GetLocation(), at + 1)}, LF, message_);
     }
     return result;
   }
 
 private:
   const PA parser_;
+  const MessageFixedText message_;
 };
 
 template <LanguageFeature LF, typename PA>
-inline constexpr auto extension(PA parser) {
-  return NonstandardParser<LF, PA>(parser);
+inline constexpr auto extension(MessageFixedText feature, PA parser) {
+  return NonstandardParser<LF, PA>(parser, feature);
 }
 
 // If a is a parser for some deprecated or deleted language feature LF,
@@ -878,8 +894,8 @@ public:
     auto at{state.GetLocation()};
     auto result{parser_.Parse(state)};
     if (result) {
-      state.Nonstandard(
-          CharBlock{at, state.GetLocation()}, LF, "deprecated usage"_en_US);
+      state.Nonstandard(CharBlock{at, state.GetLocation()}, LF,
+          "deprecated usage"_port_en_US);
     }
     return result;
   }

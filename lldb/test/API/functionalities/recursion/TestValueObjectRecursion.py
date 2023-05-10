@@ -2,17 +2,13 @@
 Test lldb data formatter subsystem.
 """
 
-from __future__ import print_function
-
-
 import lldb
+from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 import lldbsuite.test.lldbutil as lldbutil
 
 
 class ValueObjectRecursionTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -20,6 +16,7 @@ class ValueObjectRecursionTestCase(TestBase):
         # Find the line number to break at.
         self.line = line_number('main.cpp', '// Set break point at this line.')
 
+    @no_debug_info_test
     def test_with_run_command(self):
         """Test that deeply nested ValueObjects still work."""
         self.build()
@@ -59,9 +56,9 @@ class ValueObjectRecursionTestCase(TestBase):
         self.assertTrue(
             child.GetChildAtIndex(0).IsValid(),
             "the deep ValueObject has no value")
-        self.assertTrue(
-            child.GetChildAtIndex(0).GetValueAsUnsigned() != 0,
+        self.assertNotEqual(
+            child.GetChildAtIndex(0).GetValueAsUnsigned(), 0,
             "the deep ValueObject has a zero value")
-        self.assertTrue(
-            child.GetChildAtIndex(1).GetValueAsUnsigned() != 0,
+        self.assertNotEqual(
+            child.GetChildAtIndex(1).GetValueAsUnsigned(), 0,
             "the deep ValueObject has no next")

@@ -14,6 +14,7 @@
 #include "clang/Driver/Util.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator_range.h"
@@ -57,9 +58,10 @@ public:
     InputClass = 0,
     BindArchClass,
     OffloadClass,
+    ForEachWrappingClass,
     PreprocessJobClass,
     PrecompileJobClass,
-    HeaderModulePrecompileJobClass,
+    ExtractAPIJobClass,
     AnalyzeJobClass,
     MigrateJobClass,
     CompileJobClass,
@@ -74,15 +76,21 @@ public:
     OffloadBundlingJobClass,
     OffloadUnbundlingJobClass,
     OffloadWrapperJobClass,
+    OffloadPackagerJobClass,
+    OffloadDepsJobClass,
     SPIRVTranslatorJobClass,
     SPIRCheckJobClass,
     SYCLPostLinkJobClass,
-    PartialLinkJobClass,
     BackendCompileJobClass,
     FileTableTformJobClass,
+    AppendFooterJobClass,
+    SpirvToIrWrapperJobClass,
+    LinkerWrapperJobClass,
+    StaticLibJobClass,
+    BinaryAnalyzeJobClass,
 
     JobClassFirst = PreprocessJobClass,
-    JobClassLast = FileTableTformJobClass
+    JobClassLast = BinaryAnalyzeJobClass
   };
 
   // The offloading kind determines if this action is binded to a particular
@@ -132,6 +140,9 @@ protected:
 
   /// The Offloading architecture associated with this action.
   const char *OffloadingArch = nullptr;
+
+  /// The Offloading toolchain associated with this device action.
+  const ToolChain *OffloadingToolChain = nullptr;
 
   Action(ActionClass Kind, types::ID Type) : Action(Kind, ActionList(), Type) {}
   Action(ActionClass Kind, Action *Input, types::ID Type)
@@ -189,11 +200,17 @@ public:
 
   /// Set the device offload info of this action and propagate it to its
   /// dependences.
-  void propagateDeviceOffloadInfo(OffloadKind OKind, const char *OArch);
+  void propagateDeviceOffloadInfo(OffloadKind OKind, const char *OArch,
+                                  const ToolChain *OToolChain);
 
   /// Append the host offload info of this action and propagate it to its
   /// dependences.
   void propagateHostOffloadInfo(unsigned OKinds, const char *OArch);
+
+  void setHostOffloadInfo(unsigned OKinds, const char *OArch) {
+    ActiveOffloadKindMask |= OKinds;
+    OffloadingArch = OArch;
+  }
 
   /// Set the offload info of this action to be the same as the provided action,
   /// and propagate it to its dependences.
@@ -205,10 +222,13 @@ public:
 
   OffloadKind getOffloadingDeviceKind() const { return OffloadingDeviceKind; }
   const char *getOffloadingArch() const { return OffloadingArch; }
+  const ToolChain *getOffloadingToolChain() const {
+    return OffloadingToolChain;
+  }
 
   /// Check if this action have any offload kinds. Note that host offload kinds
   /// are only set if the action is a dependence to a host offload action.
-  bool isHostOffloading(OffloadKind OKind) const {
+  bool isHostOffloading(unsigned int OKind) const {
     return ActiveOffloadKindMask & OKind;
   }
   bool isDeviceOffloading(OffloadKind OKind) const {
@@ -221,13 +241,17 @@ public:
 
 class InputAction : public Action {
   const llvm::opt::Arg &Input;
-
+  std::string Id;
   virtual void anchor();
 
 public:
-  InputAction(const llvm::opt::Arg &Input, types::ID Type);
+  InputAction(const llvm::opt::Arg &Input, types::ID Type,
+              StringRef Id = StringRef());
 
   const llvm::opt::Arg &getInputArg() const { return Input; }
+
+  void setId(StringRef _Id) { Id = _Id.str(); }
+  StringRef getId() const { return Id; }
 
   static bool classof(const Action *A) {
     return A->getKind() == InputClass;
@@ -285,10 +309,15 @@ public:
     OffloadKindList DeviceOffloadKinds;
 
   public:
-    /// Add a action along with the associated toolchain, bound arch, and
+    /// Add an action along with the associated toolchain, bound arch, and
     /// offload kind.
     void add(Action &A, const ToolChain &TC, const char *BoundArch,
              OffloadKind OKind);
+
+    /// Add an action along with the associated toolchain, bound arch, and
+    /// offload kinds.
+    void add(Action &A, const ToolChain &TC, const char *BoundArch,
+             unsigned OffloadKindMask);
 
     /// Get each of the individual arrays.
     const ActionList &getActions() const { return DeviceActions; }
@@ -415,29 +444,21 @@ public:
   PrecompileJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
-    return A->getKind() == PrecompileJobClass ||
-           A->getKind() == HeaderModulePrecompileJobClass;
+    return A->getKind() == PrecompileJobClass;
   }
 };
 
-class HeaderModulePrecompileJobAction : public PrecompileJobAction {
+class ExtractAPIJobAction : public JobAction {
   void anchor() override;
 
-  const char *ModuleName;
-
 public:
-  HeaderModulePrecompileJobAction(Action *Input, types::ID OutputType,
-                                  const char *ModuleName);
+  ExtractAPIJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
-    return A->getKind() == HeaderModulePrecompileJobClass;
+    return A->getKind() == ExtractAPIJobClass;
   }
 
-  void addModuleHeaderInput(Action *Input) {
-    getInputs().push_back(Input);
-  }
-
-  const char *getModuleName() const { return ModuleName; }
+  void addHeaderInput(Action *Input) { getInputs().push_back(Input); }
 };
 
 class AnalyzeJobAction : public JobAction {
@@ -617,6 +638,7 @@ private:
 public:
   // Offloading unbundling doesn't change the type of output.
   OffloadUnbundlingJobAction(Action *Input);
+  OffloadUnbundlingJobAction(Action *Input, types::ID Type);
   OffloadUnbundlingJobAction(ActionList &Inputs, types::ID Type);
 
   /// Register information about a dependent action.
@@ -638,12 +660,82 @@ public:
 class OffloadWrapperJobAction : public JobAction {
   void anchor() override;
 
+  bool EmbedIR;
+
 public:
   OffloadWrapperJobAction(ActionList &Inputs, types::ID Type);
-  OffloadWrapperJobAction(Action *Input, types::ID OutputType);
+  OffloadWrapperJobAction(Action *Input, types::ID OutputType,
+                          bool EmbedIR = false);
+
+  bool isEmbeddedIR() const { return EmbedIR; }
 
   static bool classof(const Action *A) {
     return A->getKind() == OffloadWrapperJobClass;
+  }
+};
+
+class OffloadPackagerJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  OffloadPackagerJobAction(ActionList &Inputs, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == OffloadPackagerJobClass;
+  }
+};
+
+class OffloadDepsJobAction final : public JobAction {
+  void anchor() override;
+
+public:
+  /// Type that provides information about the actions that depend on this
+  /// offload deps action.
+  struct DependentActionInfo final {
+    /// The tool chain of the dependent action.
+    const ToolChain *DependentToolChain = nullptr;
+
+    /// The bound architecture of the dependent action.
+    StringRef DependentBoundArch;
+
+    /// The offload kind of the dependent action.
+    const OffloadKind DependentOffloadKind = OFK_None;
+
+    DependentActionInfo(const ToolChain *DependentToolChain,
+                        StringRef DependentBoundArch,
+                        const OffloadKind DependentOffloadKind)
+        : DependentToolChain(DependentToolChain),
+          DependentBoundArch(DependentBoundArch),
+          DependentOffloadKind(DependentOffloadKind) {}
+  };
+
+private:
+  /// The host offloading toolchain that should be used with the action.
+  const ToolChain *HostTC = nullptr;
+
+  /// Container that keeps information about each dependence of this deps
+  /// action.
+  SmallVector<DependentActionInfo, 6> DependentActionInfoArray;
+
+public:
+  OffloadDepsJobAction(const OffloadAction::HostDependence &HDep,
+                       types::ID Type);
+
+  /// Register information about a dependent action.
+  void registerDependentActionInfo(const ToolChain *TC, StringRef BoundArch,
+                                   OffloadKind Kind) {
+    DependentActionInfoArray.push_back({TC, BoundArch, Kind});
+  }
+
+  /// Return the information about all depending actions.
+  ArrayRef<DependentActionInfo> getDependentActionsInfo() const {
+    return DependentActionInfoArray;
+  }
+
+  const ToolChain *getHostTC() const { return HostTC; }
+
+  static bool classof(const Action *A) {
+    return A->getKind() == OffloadDepsJobClass;
   }
 };
 
@@ -661,6 +753,7 @@ public:
 // Provides a check of the given input file for the existence of SPIR kernel
 // code.  This is currently only used for FPGA specific tool chains and can
 // be expanded to perform other SPIR checks if needed.
+// TODO: No longer being used for FPGA (or elsewhere), cleanup needed.
 class SPIRCheckJobAction : public JobAction {
   void anchor() override;
 
@@ -676,7 +769,15 @@ class SYCLPostLinkJobAction : public JobAction {
   void anchor() override;
 
 public:
-  SYCLPostLinkJobAction(Action *Input, types::ID OutputType);
+  // The tempfiletable management relies on shadowing the main file type by
+  // types::TY_Tempfiletable. The problem of shadowing is it prevents its
+  // integration with clang tools that relies on the file type to properly set
+  // args.
+  // We "trick" the driver by declaring the underlying file type and set a
+  // "true output type" which will be used by the SYCLPostLinkJobAction
+  // to properly set the job.
+  SYCLPostLinkJobAction(Action *Input, types::ID ShadowOutputType,
+                        types::ID TrueOutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == SYCLPostLinkJobClass;
@@ -686,20 +787,11 @@ public:
 
   bool getRTSetsSpecConstants() const { return RTSetsSpecConsts; }
 
+  types::ID getTrueType() const { return TrueOutputType; }
+
 private:
   bool RTSetsSpecConsts = true;
-};
-
-class PartialLinkJobAction : public JobAction {
-  void anchor() override;
-
-public:
-  PartialLinkJobAction(Action *Input, types::ID OutputType);
-  PartialLinkJobAction(ActionList &Input, types::ID OutputType);
-
-  static bool classof(const Action *A) {
-    return A->getKind() == PartialLinkJobClass;
-  }
+  types::ID TrueOutputType;
 };
 
 class BackendCompileJobAction : public JobAction {
@@ -722,12 +814,23 @@ class FileTableTformJobAction : public JobAction {
   void anchor() override;
 
 public:
+  static constexpr const char *COL_CODE = "Code";
+  static constexpr const char *COL_ZERO = "0";
+
   struct Tform {
-    enum Kind { EXTRACT, EXTRACT_DROP_TITLE, REPLACE };
+    enum Kind {
+      EXTRACT,
+      EXTRACT_DROP_TITLE,
+      REPLACE,
+      REPLACE_CELL,
+      RENAME,
+      COPY_SINGLE_FILE,
+      MERGE
+    };
 
     Tform() = default;
     Tform(Kind K, std::initializer_list<StringRef> Args) : TheKind(K) {
-      for (auto A : Args)
+      for (auto &A : Args)
         TheArgs.emplace_back(A.str());
     }
 
@@ -735,8 +838,10 @@ public:
     SmallVector<std::string, 2> TheArgs;
   };
 
-  FileTableTformJobAction(Action *Input, types::ID OutputType);
-  FileTableTformJobAction(ActionList &Inputs, types::ID OutputType);
+  FileTableTformJobAction(Action *Input, types::ID ShadowOutputType,
+                          types::ID TrueOutputType);
+  FileTableTformJobAction(ActionList &Inputs, types::ID ShadowOutputType,
+                          types::ID TrueOutputType);
 
   // Deletes all columns except the one with given name.
   void addExtractColumnTform(StringRef ColumnName, bool WithColTitle = true);
@@ -745,14 +850,124 @@ public:
   // <To> from another file table passed as input to this action.
   void addReplaceColumnTform(StringRef From, StringRef To);
 
+  // Replaces a cell in this table with column title <ColumnName> and row <Row>
+  // with the file name passed as input to this action.
+  void addReplaceCellTform(StringRef ColumnName, int Row);
+
+  // Renames a column with title <From> in this table with a column with title
+  // <To> passed as input to this action.
+  void addRenameColumnTform(StringRef From, StringRef To);
+
+  // Specifies that, instead of generating a new table, the transformation
+  // should copy the file at column <ColumnName> and row <Row> into the
+  // output file.
+  void addCopySingleFileTform(StringRef ColumnName, int Row);
+
+  // Merges all tables from filename listed at column <ColumnName> into a
+  // single output table.
+  void addMergeTform(StringRef ColumnName);
+
   static bool classof(const Action *A) {
     return A->getKind() == FileTableTformJobClass;
   }
 
   const ArrayRef<Tform> getTforms() const { return Tforms; }
 
+  types::ID getTrueType() const { return TrueOutputType; }
+
 private:
+  types::ID TrueOutputType;
   SmallVector<Tform, 2> Tforms; // transformation actions requested
+
+  // column to copy single file from if requested
+  std::string CopySingleFileColumnName;
+};
+
+class AppendFooterJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  AppendFooterJobAction(Action *Input, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == AppendFooterJobClass;
+  }
+};
+
+class SpirvToIrWrapperJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  SpirvToIrWrapperJobAction(Action *Input, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == SpirvToIrWrapperJobClass;
+  }
+};
+
+class LinkerWrapperJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  LinkerWrapperJobAction(ActionList &Inputs, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == LinkerWrapperJobClass;
+  }
+};
+
+class StaticLibJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  StaticLibJobAction(ActionList &Inputs, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == StaticLibJobClass;
+  }
+};
+
+/// Wrap all jobs performed between TFormInput (excluded) and Job (included)
+/// behind a `llvm-foreach` call.
+///
+/// Assumptions:
+///   - No change of toolchain, boundarch and offloading kind should occur
+///     within the sub-region;
+///   - No job should produce multiple outputs;
+///   - Results of action within the sub-region should not be used outside the
+///     wrapped region.
+/// Note: this doesn't bind to a tool directly and this need special casing
+/// anyhow. Hence why this is an Action and not a JobAction, even if there is a
+/// command behind.
+class ForEachWrappingAction : public Action {
+public:
+  ForEachWrappingAction(JobAction *TFormInput, JobAction *Job);
+
+  JobAction *getTFormInput() const;
+  JobAction *getJobAction() const;
+
+  static bool classof(const Action *A) {
+    return A->getKind() == ForEachWrappingClass;
+  }
+
+  void addSerialAction(const Action *A) { SerialActions.insert(A); }
+  const llvm::SmallSetVector<const Action *, 2> &getSerialActions() const {
+    return SerialActions;
+  }
+
+private:
+  llvm::SmallSetVector<const Action *, 2> SerialActions;
+};
+
+class BinaryAnalyzeJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  BinaryAnalyzeJobAction(Action *Input, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == BinaryAnalyzeJobClass;
+  }
 };
 
 } // namespace driver

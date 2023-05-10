@@ -9,6 +9,8 @@
 // This file defines the common interface used by the various execution engine
 // subclasses.
 //
+// FIXME: This file needs to be updated to support scalable vectors
+//
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
@@ -26,15 +28,15 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/ValueHandle.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/Host.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/TargetParser/Host.h"
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -48,11 +50,6 @@ STATISTIC(NumGlobals  , "Number of global vars initialized");
 ExecutionEngine *(*ExecutionEngine::MCJITCtor)(
     std::unique_ptr<Module> M, std::string *ErrorStr,
     std::shared_ptr<MCJITMemoryManager> MemMgr,
-    std::shared_ptr<LegacyJITSymbolResolver> Resolver,
-    std::unique_ptr<TargetMachine> TM) = nullptr;
-
-ExecutionEngine *(*ExecutionEngine::OrcMCJITReplacementCtor)(
-    std::string *ErrorStr, std::shared_ptr<MCJITMemoryManager> MemMgr,
     std::shared_ptr<LegacyJITSymbolResolver> Resolver,
     std::unique_ptr<TargetMachine> TM) = nullptr;
 
@@ -108,7 +105,7 @@ public:
     Type *ElTy = GV->getValueType();
     size_t GVSize = (size_t)TD.getTypeAllocSize(ElTy);
     void *RawMemory = ::operator new(
-        alignTo(sizeof(GVMemoryBlock), TD.getPreferredAlignment(GV)) + GVSize);
+        alignTo(sizeof(GVMemoryBlock), TD.getPreferredAlign(GV)) + GVSize);
     new(RawMemory) GVMemoryBlock(GV);
     return static_cast<char*>(RawMemory) + sizeof(GVMemoryBlock);
   }
@@ -398,7 +395,7 @@ void ExecutionEngine::runStaticConstructorsDestructors(Module &module,
 
     // Execute the ctor/dtor function!
     if (Function *F = dyn_cast<Function>(FP))
-      runFunction(F, None);
+      runFunction(F, std::nullopt);
 
     // FIXME: It is marginally lame that we just do nothing here if we see an
     // entry we don't recognize. It might not be unreasonable for the verifier
@@ -474,8 +471,7 @@ EngineBuilder::EngineBuilder() : EngineBuilder(nullptr) {}
 
 EngineBuilder::EngineBuilder(std::unique_ptr<Module> M)
     : M(std::move(M)), WhichEngine(EngineKind::Either), ErrorStr(nullptr),
-      OptLevel(CodeGenOpt::Default), MemMgr(nullptr), Resolver(nullptr),
-      UseOrcMCJITReplacement(false) {
+      OptLevel(CodeGenOpt::Default), MemMgr(nullptr), Resolver(nullptr) {
 // IR module verification is enabled by default in debug builds, and disabled
 // by default in release builds.
 #ifndef NDEBUG
@@ -538,12 +534,7 @@ ExecutionEngine *EngineBuilder::create(TargetMachine *TM) {
     }
 
     ExecutionEngine *EE = nullptr;
-    if (ExecutionEngine::OrcMCJITReplacementCtor && UseOrcMCJITReplacement) {
-      EE = ExecutionEngine::OrcMCJITReplacementCtor(ErrorStr, std::move(MemMgr),
-                                                    std::move(Resolver),
-                                                    std::move(TheTM));
-      EE->addModule(std::move(M));
-    } else if (ExecutionEngine::MCJITCtor)
+    if (ExecutionEngine::MCJITCtor)
       EE = ExecutionEngine::MCJITCtor(std::move(M), ErrorStr, std::move(MemMgr),
                                       std::move(Resolver), std::move(TheTM));
 
@@ -624,10 +615,12 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
         }
       }
       break;
-      case Type::FixedVectorTyID:
       case Type::ScalableVectorTyID:
+        report_fatal_error(
+            "Scalable vector support not yet implemented in ExecutionEngine");
+      case Type::FixedVectorTyID:
         // if the whole vector is 'undef' just reserve memory for the value.
-        auto *VTy = cast<VectorType>(C->getType());
+        auto *VTy = cast<FixedVectorType>(C->getType());
         Type *ElemTy = VTy->getElementType();
         unsigned int elemNum = VTy->getNumElements();
         Result.AggregateVal.resize(elemNum);
@@ -726,7 +719,7 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
         APFloat apf = APFloat(APFloat::x87DoubleExtended(), GV.IntVal);
         uint64_t v;
         bool ignored;
-        (void)apf.convertToInteger(makeMutableArrayRef(v), BitWidth,
+        (void)apf.convertToInteger(MutableArrayRef(v), BitWidth,
                                    CE->getOpcode()==Instruction::FPToSI,
                                    APFloat::rmTowardZero, &ignored);
         GV.IntVal = v; // endian?
@@ -915,8 +908,10 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
     else
       llvm_unreachable("Unknown constant pointer type!");
     break;
-  case Type::FixedVectorTyID:
-  case Type::ScalableVectorTyID: {
+  case Type::ScalableVectorTyID:
+    report_fatal_error(
+        "Scalable vector support not yet implemented in ExecutionEngine");
+  case Type::FixedVectorTyID: {
     unsigned elemNum;
     Type* ElemTy;
     const ConstantDataVector *CDV = dyn_cast<ConstantDataVector>(C);
@@ -927,9 +922,9 @@ GenericValue ExecutionEngine::getConstantValue(const Constant *C) {
         elemNum = CDV->getNumElements();
         ElemTy = CDV->getElementType();
     } else if (CV || CAZ) {
-        auto* VTy = cast<VectorType>(C->getType());
-        elemNum = VTy->getNumElements();
-        ElemTy = VTy->getElementType();
+      auto *VTy = cast<FixedVectorType>(C->getType());
+      elemNum = VTy->getNumElements();
+      ElemTy = VTy->getElementType();
     } else {
         llvm_unreachable("Unknown constant vector type!");
     }
@@ -1098,9 +1093,11 @@ void ExecutionEngine::LoadValueFromMemory(GenericValue &Result,
     Result.IntVal = APInt(80, y);
     break;
   }
-  case Type::FixedVectorTyID:
-  case Type::ScalableVectorTyID: {
-    auto *VT = cast<VectorType>(Ty);
+  case Type::ScalableVectorTyID:
+    report_fatal_error(
+        "Scalable vector support not yet implemented in ExecutionEngine");
+  case Type::FixedVectorTyID: {
+    auto *VT = cast<FixedVectorType>(Ty);
     Type *ElemT = VT->getElementType();
     const unsigned numElems = VT->getNumElements();
     if (ElemT->isFloatTy()) {
@@ -1259,8 +1256,7 @@ void ExecutionEngine::emitGlobals() {
     // If there are multiple modules, map the non-canonical globals to their
     // canonical location.
     if (!NonCanonicalGlobals.empty()) {
-      for (unsigned i = 0, e = NonCanonicalGlobals.size(); i != e; ++i) {
-        const GlobalValue *GV = NonCanonicalGlobals[i];
+      for (const GlobalValue *GV : NonCanonicalGlobals) {
         const GlobalValue *CGV = LinkedGlobalsMap[std::make_pair(
             std::string(GV->getName()), GV->getType())];
         void *Ptr = getPointerToGlobalIfAvailable(CGV);

@@ -12,8 +12,9 @@
 // Test that libc++ generates a warning diagnostic when the container is
 // provided a non-const callable comparator.
 
-#include <set>
 #include <map>
+#include <set>
+#include <type_traits> // for __invokable
 
 struct BadCompare {
   template <class T, class U>
@@ -22,7 +23,7 @@ struct BadCompare {
   }
 };
 
-int main(int, char**) {
+void f() {
   static_assert(!std::__invokable<BadCompare const&, int const&, int const&>::value, "");
   static_assert(std::__invokable<BadCompare&, int const&, int const&>::value, "");
 
@@ -44,6 +45,4 @@ int main(int, char**) {
     using C = std::multimap<long, int, BadCompare>;
     C s;
   }
-
-  return 0;
 }

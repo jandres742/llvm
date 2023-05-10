@@ -7,17 +7,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/DebugInfo/DWARF/DWARFDebugLine.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/DebugInfo/DWARF/DWARFDataExtractor.h"
+#include "llvm/DebugInfo/DWARF/DWARFDie.h"
 #include "llvm/DebugInfo/DWARF/DWARFFormValue.h"
-#include "llvm/DebugInfo/DWARF/DWARFRelocMap.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -77,6 +76,19 @@ bool DWARFDebugLine::Prologue::hasFileAtIndex(uint64_t FileIndex) const {
   if (DwarfVersion >= 5)
     return FileIndex < FileNames.size();
   return FileIndex != 0 && FileIndex <= FileNames.size();
+}
+
+std::optional<uint64_t>
+DWARFDebugLine::Prologue::getLastValidFileIndex() const {
+  if (FileNames.empty())
+    return std::nullopt;
+  uint16_t DwarfVersion = getVersion();
+  assert(DwarfVersion != 0 &&
+         "line table prologue has no dwarf version information");
+  // In DWARF v5 the file names are 0-indexed.
+  if (DwarfVersion >= 5)
+    return FileNames.size() - 1;
+  return FileNames.size();
 }
 
 const llvm::DWARFDebugLine::FileNameEntry &
@@ -169,14 +181,14 @@ void DWARFDebugLine::Prologue::dump(raw_ostream &OS,
 // Parse v2-v4 directory and file tables.
 static Error
 parseV2DirFileTables(const DWARFDataExtractor &DebugLineData,
-                     uint64_t *OffsetPtr, uint64_t EndPrologueOffset,
+                     uint64_t *OffsetPtr,
                      DWARFDebugLine::ContentTypeTracker &ContentTypes,
                      std::vector<DWARFFormValue> &IncludeDirectories,
                      std::vector<DWARFDebugLine::FileNameEntry> &FileNames) {
   while (true) {
     Error Err = Error::success();
     StringRef S = DebugLineData.getCStrRef(OffsetPtr, &Err);
-    if (Err || *OffsetPtr > EndPrologueOffset) {
+    if (Err) {
       consumeError(std::move(Err));
       return createStringError(errc::invalid_argument,
                                "include directories table was not null "
@@ -195,7 +207,7 @@ parseV2DirFileTables(const DWARFDataExtractor &DebugLineData,
   while (true) {
     Error Err = Error::success();
     StringRef Name = DebugLineData.getCStrRef(OffsetPtr, &Err);
-    if (!Err && *OffsetPtr <= EndPrologueOffset && Name.empty())
+    if (!Err && Name.empty())
       break;
 
     DWARFDebugLine::FileNameEntry FileEntry;
@@ -205,7 +217,7 @@ parseV2DirFileTables(const DWARFDataExtractor &DebugLineData,
     FileEntry.ModTime = DebugLineData.getULEB128(OffsetPtr, &Err);
     FileEntry.Length = DebugLineData.getULEB128(OffsetPtr, &Err);
 
-    if (Err || *OffsetPtr > EndPrologueOffset) {
+    if (Err) {
       consumeError(std::move(Err));
       return createStringError(
           errc::invalid_argument,
@@ -275,14 +287,14 @@ parseV5DirFileTables(const DWARFDataExtractor &DebugLineData,
         if (!Value.extractValue(DebugLineData, OffsetPtr, FormParams, &Ctx, U))
           return createStringError(errc::invalid_argument,
                                    "failed to parse directory entry because "
-                                   "extracting the form value failed.");
+                                   "extracting the form value failed");
         IncludeDirectories.push_back(Value);
         break;
       default:
         if (!Value.skipValue(DebugLineData, OffsetPtr, FormParams))
           return createStringError(errc::invalid_argument,
                                    "failed to parse directory entry because "
-                                   "skipping the form value failed.");
+                                   "skipping the form value failed");
       }
     }
   }
@@ -302,7 +314,7 @@ parseV5DirFileTables(const DWARFDataExtractor &DebugLineData,
       if (!Value.extractValue(DebugLineData, OffsetPtr, FormParams, &Ctx, U))
         return createStringError(errc::invalid_argument,
                                  "failed to parse file entry because "
-                                 "extracting the form value failed.");
+                                 "extracting the form value failed");
       switch (Descriptor.Type) {
       case DW_LNCT_path:
         FileEntry.Name = Value;
@@ -311,21 +323,21 @@ parseV5DirFileTables(const DWARFDataExtractor &DebugLineData,
         FileEntry.Source = Value;
         break;
       case DW_LNCT_directory_index:
-        FileEntry.DirIdx = Value.getAsUnsignedConstant().getValue();
+        FileEntry.DirIdx = *Value.getAsUnsignedConstant();
         break;
       case DW_LNCT_timestamp:
-        FileEntry.ModTime = Value.getAsUnsignedConstant().getValue();
+        FileEntry.ModTime = *Value.getAsUnsignedConstant();
         break;
       case DW_LNCT_size:
-        FileEntry.Length = Value.getAsUnsignedConstant().getValue();
+        FileEntry.Length = *Value.getAsUnsignedConstant();
         break;
       case DW_LNCT_MD5:
-        if (!Value.getAsBlock() || Value.getAsBlock().getValue().size() != 16)
+        if (!Value.getAsBlock() || Value.getAsBlock()->size() != 16)
           return createStringError(
               errc::invalid_argument,
               "failed to parse file entry because the MD5 hash is invalid");
-        std::uninitialized_copy_n(Value.getAsBlock().getValue().begin(), 16,
-                                  FileEntry.Checksum.Bytes.begin());
+        std::uninitialized_copy_n(Value.getAsBlock()->begin(), 16,
+                                  FileEntry.Checksum.begin());
         break;
       default:
         break;
@@ -345,52 +357,52 @@ uint64_t DWARFDebugLine::Prologue::getLength() const {
 }
 
 Error DWARFDebugLine::Prologue::parse(
-    const DWARFDataExtractor &DebugLineData, uint64_t *OffsetPtr,
+    DWARFDataExtractor DebugLineData, uint64_t *OffsetPtr,
     function_ref<void(Error)> RecoverableErrorHandler, const DWARFContext &Ctx,
     const DWARFUnit *U) {
   const uint64_t PrologueOffset = *OffsetPtr;
 
   clear();
-  Error Err = Error::success();
+  DataExtractor::Cursor Cursor(*OffsetPtr);
   std::tie(TotalLength, FormParams.Format) =
-      DebugLineData.getInitialLength(OffsetPtr, &Err);
-  if (Err)
-    return createStringError(
-        errc::invalid_argument,
-        "parsing line table prologue at offset 0x%8.8" PRIx64 ": %s",
-        PrologueOffset, toString(std::move(Err)).c_str());
+      DebugLineData.getInitialLength(Cursor);
 
-  FormParams.Version = DebugLineData.getU16(OffsetPtr);
-  if (!versionIsSupported(getVersion()))
+  DebugLineData =
+      DWARFDataExtractor(DebugLineData, Cursor.tell() + TotalLength);
+  FormParams.Version = DebugLineData.getU16(Cursor);
+  if (Cursor && !versionIsSupported(getVersion())) {
     // Treat this error as unrecoverable - we cannot be sure what any of
     // the data represents including the length field, so cannot skip it or make
     // any reasonable assumptions.
+    *OffsetPtr = Cursor.tell();
     return createStringError(
         errc::not_supported,
         "parsing line table prologue at offset 0x%8.8" PRIx64
         ": unsupported version %" PRIu16,
         PrologueOffset, getVersion());
+  }
 
   if (getVersion() >= 5) {
-    FormParams.AddrSize = DebugLineData.getU8(OffsetPtr);
-    assert((DebugLineData.getAddressSize() == 0 ||
+    FormParams.AddrSize = DebugLineData.getU8(Cursor);
+    assert((!Cursor || DebugLineData.getAddressSize() == 0 ||
             DebugLineData.getAddressSize() == getAddressSize()) &&
            "Line table header and data extractor disagree");
-    SegSelectorSize = DebugLineData.getU8(OffsetPtr);
+    SegSelectorSize = DebugLineData.getU8(Cursor);
   }
 
   PrologueLength =
-      DebugLineData.getRelocatedValue(sizeofPrologueLength(), OffsetPtr);
-  const uint64_t EndPrologueOffset = PrologueLength + *OffsetPtr;
-  MinInstLength = DebugLineData.getU8(OffsetPtr);
+      DebugLineData.getRelocatedValue(Cursor, sizeofPrologueLength());
+  const uint64_t EndPrologueOffset = PrologueLength + Cursor.tell();
+  DebugLineData = DWARFDataExtractor(DebugLineData, EndPrologueOffset);
+  MinInstLength = DebugLineData.getU8(Cursor);
   if (getVersion() >= 4)
-    MaxOpsPerInst = DebugLineData.getU8(OffsetPtr);
-  DefaultIsStmt = DebugLineData.getU8(OffsetPtr);
-  LineBase = DebugLineData.getU8(OffsetPtr);
-  LineRange = DebugLineData.getU8(OffsetPtr);
-  OpcodeBase = DebugLineData.getU8(OffsetPtr);
+    MaxOpsPerInst = DebugLineData.getU8(Cursor);
+  DefaultIsStmt = DebugLineData.getU8(Cursor);
+  LineBase = DebugLineData.getU8(Cursor);
+  LineRange = DebugLineData.getU8(Cursor);
+  OpcodeBase = DebugLineData.getU8(Cursor);
 
-  if (OpcodeBase == 0) {
+  if (Cursor && OpcodeBase == 0) {
     // If the opcode base is 0, we cannot read the standard opcode lengths (of
     // which there are supposed to be one fewer than the opcode base). Assume
     // there are no standard opcodes and continue parsing.
@@ -399,20 +411,30 @@ Error DWARFDebugLine::Prologue::parse(
         "parsing line table prologue at offset 0x%8.8" PRIx64
         " found opcode base of 0. Assuming no standard opcodes",
         PrologueOffset));
-  } else {
+  } else if (Cursor) {
     StandardOpcodeLengths.reserve(OpcodeBase - 1);
     for (uint32_t I = 1; I < OpcodeBase; ++I) {
-      uint8_t OpLen = DebugLineData.getU8(OffsetPtr);
+      uint8_t OpLen = DebugLineData.getU8(Cursor);
       StandardOpcodeLengths.push_back(OpLen);
     }
   }
+
+  *OffsetPtr = Cursor.tell();
+  // A corrupt file name or directory table does not prevent interpretation of
+  // the main line program, so check the cursor state now so that its errors can
+  // be handled separately.
+  if (!Cursor)
+    return createStringError(
+        errc::invalid_argument,
+        "parsing line table prologue at offset 0x%8.8" PRIx64 ": %s",
+        PrologueOffset, toString(Cursor.takeError()).c_str());
 
   Error E =
       getVersion() >= 5
           ? parseV5DirFileTables(DebugLineData, OffsetPtr, FormParams, Ctx, U,
                                  ContentTypes, IncludeDirectories, FileNames)
-          : parseV2DirFileTables(DebugLineData, OffsetPtr, EndPrologueOffset,
-                                 ContentTypes, IncludeDirectories, FileNames);
+          : parseV2DirFileTables(DebugLineData, OffsetPtr, ContentTypes,
+                                 IncludeDirectories, FileNames);
   if (E) {
     RecoverableErrorHandler(joinErrors(
         createStringError(
@@ -425,13 +447,14 @@ Error DWARFDebugLine::Prologue::parse(
     return Error::success();
   }
 
+  assert(*OffsetPtr <= EndPrologueOffset);
   if (*OffsetPtr != EndPrologueOffset) {
     RecoverableErrorHandler(createStringError(
         errc::invalid_argument,
-        "parsing line table prologue at 0x%8.8" PRIx64
-        " should have ended at 0x%8.8" PRIx64 " but it ended at 0x%8.8" PRIx64,
-        PrologueOffset, EndPrologueOffset, *OffsetPtr));
-    *OffsetPtr = EndPrologueOffset;
+        "unknown data in line table prologue at offset 0x%8.8" PRIx64
+        ": parsing ended (at offset 0x%8.8" PRIx64
+        ") before reaching the prologue end at offset 0x%8.8" PRIx64,
+        PrologueOffset, *OffsetPtr, EndPrologueOffset));
   }
   return Error::success();
 }
@@ -574,6 +597,10 @@ Expected<const DWARFDebugLine::LineTable *> DWARFDebugLine::getOrParseLineTable(
   return LT;
 }
 
+void DWARFDebugLine::clearLineTable(uint64_t Offset) {
+  LineTableMap.erase(Offset);
+}
+
 static StringRef getOpcodeName(uint8_t Opcode, uint8_t OpcodeBase) {
   assert(Opcode != 0);
   if (Opcode < OpcodeBase)
@@ -687,10 +714,23 @@ DWARFDebugLine::ParsingState::handleSpecialOpcode(uint8_t Opcode,
   return {AddrAdvanceResult.AddrDelta, LineOffset};
 }
 
+/// Parse a ULEB128 using the specified \p Cursor. \returns the parsed value on
+/// success, or std::nullopt if \p Cursor is in a failing state.
+template <typename T>
+static std::optional<T> parseULEB128(DWARFDataExtractor &Data,
+                                     DataExtractor::Cursor &Cursor) {
+  T Value = Data.getULEB128(Cursor);
+  if (Cursor)
+    return Value;
+  return std::nullopt;
+}
+
 Error DWARFDebugLine::LineTable::parse(
     DWARFDataExtractor &DebugLineData, uint64_t *OffsetPtr,
     const DWARFContext &Ctx, const DWARFUnit *U,
-    function_ref<void(Error)> RecoverableErrorHandler, raw_ostream *OS) {
+    function_ref<void(Error)> RecoverableErrorHandler, raw_ostream *OS,
+    bool Verbose) {
+  assert((OS || !Verbose) && "cannot have verbose output without stream");
   const uint64_t DebugLineOffset = *OffsetPtr;
 
   clear();
@@ -699,14 +739,18 @@ Error DWARFDebugLine::LineTable::parse(
       Prologue.parse(DebugLineData, OffsetPtr, RecoverableErrorHandler, Ctx, U);
 
   if (OS) {
-    // The presence of OS signals verbose dumping.
     DIDumpOptions DumpOptions;
-    DumpOptions.Verbose = true;
+    DumpOptions.Verbose = Verbose;
     Prologue.dump(*OS, DumpOptions);
   }
 
-  if (PrologueErr)
+  if (PrologueErr) {
+    // Ensure there is a blank line after the prologue to clearly delineate it
+    // from later dumps.
+    if (OS)
+      *OS << "\n";
     return PrologueErr;
+  }
 
   uint64_t ProgramLength = Prologue.TotalLength + Prologue.sizeofTotalLength();
   if (!DebugLineData.isValidOffsetForDataOfSize(DebugLineOffset,
@@ -741,33 +785,57 @@ Error DWARFDebugLine::LineTable::parse(
   *OffsetPtr = DebugLineOffset + Prologue.getLength();
   if (OS && *OffsetPtr < EndOffset) {
     *OS << '\n';
-    Row::dumpTableHeader(*OS, 12);
+    Row::dumpTableHeader(*OS, /*Indent=*/Verbose ? 12 : 0);
   }
+  bool TombstonedAddress = false;
+  auto EmitRow = [&] {
+    if (!TombstonedAddress) {
+      if (Verbose) {
+        *OS << "\n";
+        OS->indent(12);
+      }
+      if (OS)
+        State.Row.dump(*OS);
+      State.appendRowToMatrix();
+    }
+  };
   while (*OffsetPtr < EndOffset) {
-    if (OS)
+    DataExtractor::Cursor Cursor(*OffsetPtr);
+
+    if (Verbose)
       *OS << format("0x%08.08" PRIx64 ": ", *OffsetPtr);
 
     uint64_t OpcodeOffset = *OffsetPtr;
-    uint8_t Opcode = TableData.getU8(OffsetPtr);
+    uint8_t Opcode = TableData.getU8(Cursor);
+    size_t RowCount = Rows.size();
 
-    if (OS)
+    if (Cursor && Verbose)
       *OS << format("%02.02" PRIx8 " ", Opcode);
 
     if (Opcode == 0) {
       // Extended Opcodes always start with a zero opcode followed by
       // a uleb128 length so you can skip ones you don't know about
-      uint64_t Len = TableData.getULEB128(OffsetPtr);
-      uint64_t ExtOffset = *OffsetPtr;
+      uint64_t Len = TableData.getULEB128(Cursor);
+      uint64_t ExtOffset = Cursor.tell();
 
       // Tolerate zero-length; assume length is correct and soldier on.
       if (Len == 0) {
-        if (OS)
+        if (Cursor && Verbose)
           *OS << "Badly formed extended line op (length 0)\n";
+        if (!Cursor) {
+          if (Verbose)
+            *OS << "\n";
+          RecoverableErrorHandler(Cursor.takeError());
+        }
+        *OffsetPtr = Cursor.tell();
         continue;
       }
 
-      uint8_t SubOpcode = TableData.getU8(OffsetPtr);
-      if (OS)
+      uint8_t SubOpcode = TableData.getU8(Cursor);
+      // OperandOffset will be the same as ExtOffset, if it was not possible to
+      // read the SubOpcode.
+      uint64_t OperandOffset = Cursor.tell();
+      if (Verbose)
         *OS << LNExtendedString(SubOpcode);
       switch (SubOpcode) {
       case DW_LNE_end_sequence:
@@ -779,12 +847,10 @@ Error DWARFDebugLine::LineTable::parse(
         // address is that of the byte after the last target machine instruction
         // of the sequence.
         State.Row.EndSequence = true;
-        if (OS) {
-          *OS << "\n";
-          OS->indent(12);
-          State.Row.dump(*OS);
-        }
-        State.appendRowToMatrix();
+        // No need to test the Cursor is valid here, since it must be to get
+        // into this code path - if it were invalid, the default case would be
+        // followed.
+        EmitRow();
         State.resetRowAndSequence();
         break;
 
@@ -820,19 +886,26 @@ Error DWARFDebugLine::LineTable::parse(
                 " of DW_LNE_set_address opcode at offset 0x%8.8" PRIx64
                 " is unsupported",
                 OpcodeAddressSize, ExtOffset));
-            *OffsetPtr += OpcodeAddressSize;
+            TableData.skip(Cursor, OpcodeAddressSize);
           } else {
             TableData.setAddressSize(OpcodeAddressSize);
             State.Row.Address.Address = TableData.getRelocatedAddress(
-                OffsetPtr, &State.Row.Address.SectionIndex);
+                Cursor, &State.Row.Address.SectionIndex);
+
+            uint64_t Tombstone =
+                dwarf::computeTombstoneAddress(OpcodeAddressSize);
+            TombstonedAddress = State.Row.Address.Address == Tombstone;
 
             // Restore the address size if the extractor already had it.
             if (ExtractorAddressSize != 0)
               TableData.setAddressSize(ExtractorAddressSize);
           }
 
-          if (OS)
-            *OS << format(" (0x%16.16" PRIx64 ")", State.Row.Address.Address);
+          if (Cursor && Verbose) {
+            *OS << " (";
+            DWARFFormValue::dumpAddress(*OS, OpcodeAddressSize, State.Row.Address.Address);
+            *OS << ')';
+          }
         }
         break;
 
@@ -859,14 +932,14 @@ Error DWARFDebugLine::LineTable::parse(
         // the file register of the state machine.
         {
           FileNameEntry FileEntry;
-          const char *Name = TableData.getCStr(OffsetPtr);
+          const char *Name = TableData.getCStr(Cursor);
           FileEntry.Name =
               DWARFFormValue::createFromPValue(dwarf::DW_FORM_string, Name);
-          FileEntry.DirIdx = TableData.getULEB128(OffsetPtr);
-          FileEntry.ModTime = TableData.getULEB128(OffsetPtr);
-          FileEntry.Length = TableData.getULEB128(OffsetPtr);
+          FileEntry.DirIdx = TableData.getULEB128(Cursor);
+          FileEntry.ModTime = TableData.getULEB128(Cursor);
+          FileEntry.Length = TableData.getULEB128(Cursor);
           Prologue.FileNames.push_back(FileEntry);
-          if (OS)
+          if (Cursor && Verbose)
             *OS << " (" << Name << ", dir=" << FileEntry.DirIdx << ", mod_time="
                 << format("(0x%16.16" PRIx64 ")", FileEntry.ModTime)
                 << ", length=" << FileEntry.Length << ")";
@@ -874,57 +947,69 @@ Error DWARFDebugLine::LineTable::parse(
         break;
 
       case DW_LNE_set_discriminator:
-        State.Row.Discriminator = TableData.getULEB128(OffsetPtr);
-        if (OS)
+        State.Row.Discriminator = TableData.getULEB128(Cursor);
+        if (Cursor && Verbose)
           *OS << " (" << State.Row.Discriminator << ")";
         break;
 
       default:
-        if (OS)
+        if (Cursor && Verbose)
           *OS << format("Unrecognized extended op 0x%02.02" PRIx8, SubOpcode)
               << format(" length %" PRIx64, Len);
         // Len doesn't include the zero opcode byte or the length itself, but
         // it does include the sub_opcode, so we have to adjust for that.
-        (*OffsetPtr) += Len - 1;
+        TableData.skip(Cursor, Len - 1);
         break;
       }
       // Make sure the length as recorded in the table and the standard length
       // for the opcode match. If they don't, continue from the end as claimed
-      // by the table.
+      // by the table. Similarly, continue from the claimed end in the event of
+      // a parsing error.
       uint64_t End = ExtOffset + Len;
-      if (*OffsetPtr != End) {
+      if (Cursor && Cursor.tell() != End)
         RecoverableErrorHandler(createStringError(
             errc::illegal_byte_sequence,
             "unexpected line op length at offset 0x%8.8" PRIx64
             " expected 0x%2.2" PRIx64 " found 0x%2.2" PRIx64,
-            ExtOffset, Len, *OffsetPtr - ExtOffset));
-        *OffsetPtr = End;
+            ExtOffset, Len, Cursor.tell() - ExtOffset));
+      if (!Cursor && Verbose) {
+        DWARFDataExtractor::Cursor ByteCursor(OperandOffset);
+        uint8_t Byte = TableData.getU8(ByteCursor);
+        if (ByteCursor) {
+          *OS << " (<parsing error>";
+          do {
+            *OS << format(" %2.2" PRIx8, Byte);
+            Byte = TableData.getU8(ByteCursor);
+          } while (ByteCursor);
+          *OS << ")";
+        }
+
+        // The only parse failure in this case should be if the end was reached.
+        // In that case, throw away the error, as the main Cursor's error will
+        // be sufficient.
+        consumeError(ByteCursor.takeError());
       }
+      *OffsetPtr = End;
     } else if (Opcode < Prologue.OpcodeBase) {
-      if (OS)
+      if (Verbose)
         *OS << LNStandardString(Opcode);
       switch (Opcode) {
       // Standard Opcodes
       case DW_LNS_copy:
         // Takes no arguments. Append a row to the matrix using the
         // current values of the state-machine registers.
-        if (OS) {
-          *OS << "\n";
-          OS->indent(12);
-          State.Row.dump(*OS);
-          *OS << "\n";
-        }
-        State.appendRowToMatrix();
+        EmitRow();
         break;
 
       case DW_LNS_advance_pc:
         // Takes a single unsigned LEB128 operand, multiplies it by the
         // min_inst_length field of the prologue, and adds the
         // result to the address register of the state machine.
-        {
-          uint64_t AddrOffset = State.advanceAddr(
-              TableData.getULEB128(OffsetPtr), Opcode, OpcodeOffset);
-          if (OS)
+        if (std::optional<uint64_t> Operand =
+                parseULEB128<uint64_t>(TableData, Cursor)) {
+          uint64_t AddrOffset =
+              State.advanceAddr(*Operand, Opcode, OpcodeOffset);
+          if (Verbose)
             *OS << " (" << AddrOffset << ")";
         }
         break;
@@ -932,25 +1017,36 @@ Error DWARFDebugLine::LineTable::parse(
       case DW_LNS_advance_line:
         // Takes a single signed LEB128 operand and adds that value to
         // the line register of the state machine.
-        State.Row.Line += TableData.getSLEB128(OffsetPtr);
-        if (OS)
-          *OS << " (" << State.Row.Line << ")";
+        {
+          int64_t LineDelta = TableData.getSLEB128(Cursor);
+          if (Cursor) {
+            State.Row.Line += LineDelta;
+            if (Verbose)
+              *OS << " (" << State.Row.Line << ")";
+          }
+        }
         break;
 
       case DW_LNS_set_file:
         // Takes a single unsigned LEB128 operand and stores it in the file
         // register of the state machine.
-        State.Row.File = TableData.getULEB128(OffsetPtr);
-        if (OS)
-          *OS << " (" << State.Row.File << ")";
+        if (std::optional<uint16_t> File =
+                parseULEB128<uint16_t>(TableData, Cursor)) {
+          State.Row.File = *File;
+          if (Verbose)
+            *OS << " (" << State.Row.File << ")";
+        }
         break;
 
       case DW_LNS_set_column:
         // Takes a single unsigned LEB128 operand and stores it in the
         // column register of the state machine.
-        State.Row.Column = TableData.getULEB128(OffsetPtr);
-        if (OS)
-          *OS << " (" << State.Row.Column << ")";
+        if (std::optional<uint16_t> Column =
+                parseULEB128<uint16_t>(TableData, Cursor)) {
+          State.Row.Column = *Column;
+          if (Verbose)
+            *OS << " (" << State.Row.Column << ")";
+        }
         break;
 
       case DW_LNS_negate_stmt:
@@ -980,7 +1076,7 @@ Error DWARFDebugLine::LineTable::parse(
         {
           uint64_t AddrOffset =
               State.advanceAddrForOpcode(Opcode, OpcodeOffset).AddrDelta;
-          if (OS)
+          if (Verbose)
             *OS << format(" (0x%16.16" PRIx64 ")", AddrOffset);
         }
         break;
@@ -996,11 +1092,13 @@ Error DWARFDebugLine::LineTable::parse(
         // requires the use of DW_LNS_advance_pc. Such assemblers, however,
         // can use DW_LNS_fixed_advance_pc instead, sacrificing compression.
         {
-          uint16_t PCOffset = TableData.getRelocatedValue(2, OffsetPtr);
-          State.Row.Address.Address += PCOffset;
-          if (OS)
-            *OS
-                << format(" (0x%4.4" PRIx16 ")", PCOffset);
+          uint16_t PCOffset =
+              TableData.getRelocatedValue(Cursor, 2);
+          if (Cursor) {
+            State.Row.Address.Address += PCOffset;
+            if (Verbose)
+              *OS << format(" (0x%4.4" PRIx16 ")", PCOffset);
+          }
         }
         break;
 
@@ -1018,10 +1116,13 @@ Error DWARFDebugLine::LineTable::parse(
 
       case DW_LNS_set_isa:
         // Takes a single unsigned LEB128 operand and stores it in the
-        // column register of the state machine.
-        State.Row.Isa = TableData.getULEB128(OffsetPtr);
-        if (OS)
-          *OS << " (" << (uint64_t)State.Row.Isa << ")";
+        // ISA register of the state machine.
+        if (std::optional<uint8_t> Isa =
+                parseULEB128<uint8_t>(TableData, Cursor)) {
+          State.Row.Isa = *Isa;
+          if (Verbose)
+            *OS << " (" << (uint64_t)State.Row.Isa << ")";
+        }
         break;
 
       default:
@@ -1030,32 +1131,62 @@ Error DWARFDebugLine::LineTable::parse(
         // as a multiple of LEB128 operands for each opcode.
         {
           assert(Opcode - 1U < Prologue.StandardOpcodeLengths.size());
+          if (Verbose)
+            *OS << "Unrecognized standard opcode";
           uint8_t OpcodeLength = Prologue.StandardOpcodeLengths[Opcode - 1];
+          std::vector<uint64_t> Operands;
           for (uint8_t I = 0; I < OpcodeLength; ++I) {
-            uint64_t Value = TableData.getULEB128(OffsetPtr);
-            if (OS)
-              *OS << format("Skipping ULEB128 value: 0x%16.16" PRIx64 ")\n",
-                            Value);
+            if (std::optional<uint64_t> Value =
+                    parseULEB128<uint64_t>(TableData, Cursor))
+              Operands.push_back(*Value);
+            else
+              break;
+          }
+          if (Verbose && !Operands.empty()) {
+            *OS << " (operands: ";
+            bool First = true;
+            for (uint64_t Value : Operands) {
+              if (!First)
+                *OS << ", ";
+              First = false;
+              *OS << format("0x%16.16" PRIx64, Value);
+            }
+            if (Verbose)
+              *OS << ')';
           }
         }
         break;
       }
+
+      *OffsetPtr = Cursor.tell();
     } else {
       // Special Opcodes.
       ParsingState::AddrAndLineDelta Delta =
           State.handleSpecialOpcode(Opcode, OpcodeOffset);
 
-      if (OS) {
-        *OS << "address += " << Delta.Address << ",  line += " << Delta.Line
-            << "\n";
-        OS->indent(12);
-        State.Row.dump(*OS);
-      }
-
-      State.appendRowToMatrix();
+      if (Verbose)
+        *OS << "address += " << Delta.Address << ",  line += " << Delta.Line;
+      EmitRow();
+      *OffsetPtr = Cursor.tell();
     }
-    if(OS)
+
+    // When a row is added to the matrix, it is also dumped, which includes a
+    // new line already, so don't add an extra one.
+    if (Verbose && Rows.size() == RowCount)
       *OS << "\n";
+
+    // Most parse failures other than when parsing extended opcodes are due to
+    // failures to read ULEBs. Bail out of parsing, since we don't know where to
+    // continue reading from as there is no stated length for such byte
+    // sequences. Print the final trailing new line if needed before doing so.
+    if (!Cursor && Opcode != 0) {
+      if (Verbose)
+        *OS << "\n";
+      return Cursor.takeError();
+    }
+
+    if (!Cursor)
+      RecoverableErrorHandler(Cursor.takeError());
   }
 
   if (!State.Sequence.Empty)
@@ -1075,6 +1206,11 @@ Error DWARFDebugLine::LineTable::parse(
     // sometimes .so compiled from multiple object files contains a few
     // rudimentary sequences for address ranges [0x0, 0xsomething).
   }
+
+  // Terminate the table with a final blank line to clearly delineate it from
+  // later dumps.
+  if (OS)
+    *OS << "\n";
 
   return Error::success();
 }
@@ -1195,14 +1331,15 @@ bool DWARFDebugLine::LineTable::lookupAddressRangeImpl(
   return true;
 }
 
-Optional<StringRef> DWARFDebugLine::LineTable::getSourceByIndex(uint64_t FileIndex,
-                                                                FileLineInfoKind Kind) const {
+std::optional<StringRef>
+DWARFDebugLine::LineTable::getSourceByIndex(uint64_t FileIndex,
+                                            FileLineInfoKind Kind) const {
   if (Kind == FileLineInfoKind::None || !Prologue.hasFileAtIndex(FileIndex))
-    return None;
+    return std::nullopt;
   const FileNameEntry &Entry = Prologue.getFileNameEntry(FileIndex);
-  if (Optional<const char *> source = Entry.Source.getAsCString())
-    return StringRef(*source);
-  return None;
+  if (auto E = dwarf::toString(Entry.Source))
+    return StringRef(*E);
+  return std::nullopt;
 }
 
 static bool isPathAbsoluteOnWindowsOrPosix(const Twine &Path) {
@@ -1219,10 +1356,10 @@ bool DWARFDebugLine::Prologue::getFileNameByIndex(
   if (Kind == FileLineInfoKind::None || !hasFileAtIndex(FileIndex))
     return false;
   const FileNameEntry &Entry = getFileNameEntry(FileIndex);
-  Optional<const char *> Name = Entry.Name.getAsCString();
-  if (!Name)
+  auto E = dwarf::toString(Entry.Name);
+  if (!E)
     return false;
-  StringRef FileName = *Name;
+  StringRef FileName = *E;
   if (Kind == FileLineInfoKind::RawValue ||
       isPathAbsoluteOnWindowsOrPosix(FileName)) {
     Result = std::string(FileName);
@@ -1241,17 +1378,18 @@ bool DWARFDebugLine::Prologue::getFileNameByIndex(
     // relative names.
     if ((Entry.DirIdx != 0 || Kind != FileLineInfoKind::RelativeFilePath) &&
         Entry.DirIdx < IncludeDirectories.size())
-      IncludeDir = IncludeDirectories[Entry.DirIdx].getAsCString().getValue();
+      IncludeDir = dwarf::toStringRef(IncludeDirectories[Entry.DirIdx]);
   } else {
     if (0 < Entry.DirIdx && Entry.DirIdx <= IncludeDirectories.size())
-      IncludeDir =
-          IncludeDirectories[Entry.DirIdx - 1].getAsCString().getValue();
+      IncludeDir = dwarf::toStringRef(IncludeDirectories[Entry.DirIdx - 1]);
   }
 
-  // For absolute paths only, include the compilation directory of compile unit.
-  // We know that FileName is not absolute, the only way to have an absolute
-  // path at this point would be if IncludeDir is absolute.
-  if (Kind == FileLineInfoKind::AbsoluteFilePath && !CompDir.empty() &&
+  // For absolute paths only, include the compilation directory of compile unit,
+  // unless v5 DirIdx == 0 (IncludeDir indicates the compilation directory). We
+  // know that FileName is not absolute, the only way to have an absolute path
+  // at this point would be if IncludeDir is absolute.
+  if (Kind == FileLineInfoKind::AbsoluteFilePath &&
+      (getVersion() < 5 || Entry.DirIdx != 0) && !CompDir.empty() &&
       !isPathAbsoluteOnWindowsOrPosix(IncludeDir))
     sys::path::append(FilePath, Style, CompDir);
 
@@ -1283,30 +1421,43 @@ bool DWARFDebugLine::LineTable::getFileLineInfoForAddress(
   return true;
 }
 
+bool DWARFDebugLine::LineTable::getDirectoryForEntry(
+    const FileNameEntry &Entry, std::string &Directory) const {
+  if (Prologue.getVersion() >= 5) {
+    if (Entry.DirIdx < Prologue.IncludeDirectories.size()) {
+      Directory =
+          dwarf::toString(Prologue.IncludeDirectories[Entry.DirIdx], "");
+      return true;
+    }
+    return false;
+  }
+  if (0 < Entry.DirIdx && Entry.DirIdx <= Prologue.IncludeDirectories.size()) {
+    Directory =
+        dwarf::toString(Prologue.IncludeDirectories[Entry.DirIdx - 1], "");
+    return true;
+  }
+  return false;
+}
+
 // We want to supply the Unit associated with a .debug_line[.dwo] table when
 // we dump it, if possible, but still dump the table even if there isn't a Unit.
 // Therefore, collect up handles on all the Units that point into the
 // line-table section.
 static DWARFDebugLine::SectionParser::LineToUnitMap
-buildLineToUnitMap(DWARFDebugLine::SectionParser::cu_range CUs,
-                   DWARFDebugLine::SectionParser::tu_range TUs) {
+buildLineToUnitMap(DWARFUnitVector::iterator_range Units) {
   DWARFDebugLine::SectionParser::LineToUnitMap LineToUnit;
-  for (const auto &CU : CUs)
-    if (auto CUDIE = CU->getUnitDIE())
+  for (const auto &U : Units)
+    if (auto CUDIE = U->getUnitDIE())
       if (auto StmtOffset = toSectionOffset(CUDIE.find(DW_AT_stmt_list)))
-        LineToUnit.insert(std::make_pair(*StmtOffset, &*CU));
-  for (const auto &TU : TUs)
-    if (auto TUDIE = TU->getUnitDIE())
-      if (auto StmtOffset = toSectionOffset(TUDIE.find(DW_AT_stmt_list)))
-        LineToUnit.insert(std::make_pair(*StmtOffset, &*TU));
+        LineToUnit.insert(std::make_pair(*StmtOffset, &*U));
   return LineToUnit;
 }
 
-DWARFDebugLine::SectionParser::SectionParser(DWARFDataExtractor &Data,
-                                             const DWARFContext &C,
-                                             cu_range CUs, tu_range TUs)
+DWARFDebugLine::SectionParser::SectionParser(
+    DWARFDataExtractor &Data, const DWARFContext &C,
+    DWARFUnitVector::iterator_range Units)
     : DebugLineData(Data), Context(C) {
-  LineToUnit = buildLineToUnitMap(CUs, TUs);
+  LineToUnit = buildLineToUnitMap(Units);
   if (!DebugLineData.isValidOffset(Offset))
     Done = true;
 }
@@ -1317,14 +1468,15 @@ bool DWARFDebugLine::Prologue::totalLengthIsValid() const {
 
 DWARFDebugLine::LineTable DWARFDebugLine::SectionParser::parseNext(
     function_ref<void(Error)> RecoverableErrorHandler,
-    function_ref<void(Error)> UnrecoverableErrorHandler, raw_ostream *OS) {
+    function_ref<void(Error)> UnrecoverableErrorHandler, raw_ostream *OS,
+    bool Verbose) {
   assert(DebugLineData.isValidOffset(Offset) &&
          "parsing should have terminated");
   DWARFUnit *U = prepareToParse(Offset);
   uint64_t OldOffset = Offset;
   LineTable LT;
   if (Error Err = LT.parse(DebugLineData, &Offset, Context, U,
-                           RecoverableErrorHandler, OS))
+                           RecoverableErrorHandler, OS, Verbose))
     UnrecoverableErrorHandler(std::move(Err));
   moveToNextTable(OldOffset, LT.Prologue);
   return LT;
@@ -1353,6 +1505,21 @@ DWARFUnit *DWARFDebugLine::SectionParser::prepareToParse(uint64_t Offset) {
   return U;
 }
 
+bool DWARFDebugLine::SectionParser::hasValidVersion(uint64_t Offset) {
+  DataExtractor::Cursor Cursor(Offset);
+  auto [TotalLength, _] = DebugLineData.getInitialLength(Cursor);
+  DWARFDataExtractor HeaderData(DebugLineData, Cursor.tell() + TotalLength);
+  uint16_t Version = HeaderData.getU16(Cursor);
+  if (!Cursor) {
+    // Ignore any error here.
+    // If this is not the end of the section parseNext() will still be
+    // attempted, where this error will occur again (and can be handled).
+    consumeError(Cursor.takeError());
+    return false;
+  }
+  return versionIsSupported(Version);
+}
+
 void DWARFDebugLine::SectionParser::moveToNextTable(uint64_t OldOffset,
                                                     const Prologue &P) {
   // If the length field is not valid, we don't know where the next table is, so
@@ -1366,5 +1533,29 @@ void DWARFDebugLine::SectionParser::moveToNextTable(uint64_t OldOffset,
   Offset = OldOffset + P.TotalLength + P.sizeofTotalLength();
   if (!DebugLineData.isValidOffset(Offset)) {
     Done = true;
+    return;
+  }
+
+  // Heuristic: If the version is valid, then this is probably a line table.
+  // Otherwise, the offset might need alignment (to a 4 or 8 byte boundary).
+  if (hasValidVersion(Offset))
+    return;
+
+  // ARM C/C++ Compiler aligns each line table to word boundaries and pads out
+  // the .debug_line section to a word multiple. Note that in the specification
+  // this does not seem forbidden since each unit has a DW_AT_stmt_list.
+  for (unsigned Align : {4, 8}) {
+    uint64_t AlignedOffset = alignTo(Offset, Align);
+    if (!DebugLineData.isValidOffset(AlignedOffset)) {
+      // This is almost certainly not another line table but some alignment
+      // padding. This assumes the alignments tested are ordered, and are
+      // smaller than the header size (which is true for 4 and 8).
+      Done = true;
+      return;
+    }
+    if (hasValidVersion(AlignedOffset)) {
+      Offset = AlignedOffset;
+      break;
+    }
   }
 }

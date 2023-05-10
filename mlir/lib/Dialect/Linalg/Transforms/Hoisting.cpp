@@ -13,16 +13,28 @@
 
 #include "mlir/Dialect/Linalg/Transforms/Hoisting.h"
 #include "mlir/Analysis/SliceAnalysis.h"
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
-#include "mlir/Dialect/SCF/SCF.h"
-#include "mlir/Dialect/SCF/Utils.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/Dialect/Vector/VectorOps.h"
+#include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/IR/AffineValueMap.h"
+#include "mlir/Dialect/Affine/Utils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Vector/Utils/VectorUtils.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
-#include "mlir/IR/Function.h"
-#include "mlir/Transforms/LoopUtils.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/Debug.h"
+
+using llvm::dbgs;
 
 #define DEBUG_TYPE "linalg-hoisting"
 
@@ -31,87 +43,73 @@
 using namespace mlir;
 using namespace mlir::linalg;
 
-using llvm::dbgs;
-
-void mlir::linalg::hoistViewAllocOps(FuncOp func) {
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    func.walk([&changed](Operation *op) {
-      if (!isa<AllocOp>(op) && !isa<AllocaOp>(op) && !isa<DeallocOp>(op))
-        return;
-
-      LLVM_DEBUG(DBGS() << "Candidate for hoisting: " << *op << "\n");
-      auto loop = dyn_cast<scf::ForOp>(op->getParentOp());
-      LLVM_DEBUG(DBGS() << "Parent op: " << *op->getParentOp() << "\n");
-
-      // Only hoist out of immediately enclosing scf::ForOp.
-      if (!loop)
-        return;
-
-      // If any operand is defined inside the loop don't hoist.
-      if (llvm::any_of(op->getOperands(), [&](Value v) {
-            return !loop.isDefinedOutsideOfLoop(v);
-          }))
-        return;
-
-      LLVM_DEBUG(DBGS() << "All operands defined outside \n");
-
-      // If alloc has other uses than ViewLikeOp and DeallocOp don't hoist.
-      Value v;
-      if (op->getNumResults() > 0) {
-        assert(op->getNumResults() == 1 && "Unexpected multi-result alloc");
-        v = op->getResult(0);
-      }
-      if (v && !llvm::all_of(v.getUses(), [&](OpOperand &operand) {
-            return isa<ViewLikeOpInterface>(operand.getOwner()) ||
-                   isa<DeallocOp>(operand.getOwner());
-          })) {
-        LLVM_DEBUG(DBGS() << "Found non view-like or dealloc use: bail\n");
-        return;
-      }
-
-      // Move AllocOp before the loop.
-      if (isa<AllocOp>(op) || isa<AllocaOp>(op))
-        loop.moveOutOfLoop({op});
-      else // Move DeallocOp outside of the loop.
-        op->moveAfter(loop);
-      changed = true;
-    });
-  }
+void mlir::linalg::hoistRedundantVectorTransfersOnTensor(func::FuncOp func) {
+  IRRewriter rewriter(func->getContext());
+  // TODO: walking in some reverse / inside-out order would be more efficient
+  // and would capture more cases.
+  func.walk([&](scf::ForOp forOp) {
+    hoistRedundantSubsetExtractInsert(rewriter, forOp);
+  });
 }
 
-void mlir::linalg::hoistRedundantVectorTransfers(FuncOp func) {
+static bool noAliasingUseInLoop(vector::TransferReadOp transferRead,
+                                LoopLikeOpInterface loop) {
+  Value source = transferRead.getSource();
+  while (auto subView = source.getDefiningOp<memref::SubViewOp>())
+    source = subView.getSource();
+  llvm::SmallVector<Operation *, 32> users(source.getUsers().begin(),
+                                           source.getUsers().end());
+  llvm::SmallDenseSet<Operation *, 32> processed;
+  while (!users.empty()) {
+    Operation *user = users.pop_back_val();
+    // If the user has already been processed skip.
+    if (!processed.insert(user).second)
+      continue;
+    if (auto subView = dyn_cast<memref::SubViewOp>(user)) {
+      users.append(subView->getUsers().begin(), subView->getUsers().end());
+      continue;
+    }
+    if (isMemoryEffectFree(user) || isa<vector::TransferReadOp>(user))
+      continue;
+    return false;
+  }
+  return true;
+}
+
+void mlir::linalg::hoistRedundantVectorTransfers(func::FuncOp func) {
   bool changed = true;
   while (changed) {
     changed = false;
+    // First move loop invariant ops outside of their loop. This needs to be
+    // done before as we cannot move ops without interrupting the function walk.
+    func.walk(
+        [&](LoopLikeOpInterface loopLike) { moveLoopInvariantCode(loopLike); });
 
     func.walk([&](vector::TransferReadOp transferRead) {
-      LLVM_DEBUG(DBGS() << "Candidate for hoisting: "
-                        << *transferRead.getOperation() << "\n");
-      auto loop = dyn_cast<scf::ForOp>(transferRead.getParentOp());
-      LLVM_DEBUG(DBGS() << "Parent op: " << *transferRead.getParentOp()
-                        << "\n");
-      if (!loop)
+      if (!transferRead.getShapedType().isa<MemRefType>())
         return WalkResult::advance();
 
-      if (failed(moveLoopInvariantCode(
-              cast<LoopLikeOpInterface>(loop.getOperation()))))
-        llvm_unreachable(
-            "Unexpected failure to move invariant code out of loop");
+      LLVM_DEBUG(DBGS() << "Candidate for hoisting: "
+                        << *transferRead.getOperation() << "\n");
+      auto loop = dyn_cast<LoopLikeOpInterface>(transferRead->getParentOp());
+      LLVM_DEBUG(DBGS() << "Parent op: " << *transferRead->getParentOp()
+                        << "\n");
+      if (!isa_and_nonnull<scf::ForOp, affine::AffineForOp>(loop))
+        return WalkResult::advance();
 
       LLVM_DEBUG(DBGS() << "Candidate read: " << *transferRead.getOperation()
                         << "\n");
 
-      llvm::SetVector<Operation *> forwardSlice;
-      getForwardSlice(transferRead, &forwardSlice);
+      SetVector<Operation *> forwardSlice;
+      getForwardSlice(transferRead.getOperation(), &forwardSlice);
 
       // Look for the last TransferWriteOp in the forwardSlice of
       // `transferRead` that operates on the same memref.
       vector::TransferWriteOp transferWrite;
       for (auto *sliceOp : llvm::reverse(forwardSlice)) {
         auto candidateWrite = dyn_cast<vector::TransferWriteOp>(sliceOp);
-        if (!candidateWrite || candidateWrite.memref() != transferRead.memref())
+        if (!candidateWrite ||
+            candidateWrite.getSource() != transferRead.getSource())
           continue;
         transferWrite = candidateWrite;
       }
@@ -121,19 +119,26 @@ void mlir::linalg::hoistRedundantVectorTransfers(FuncOp func) {
         if (!loop.isDefinedOutsideOfLoop(operand))
           return WalkResult::advance();
 
-      // Only hoist transfer_read / transfer_write pairs for now.
-      if (!transferWrite)
+      // Only hoist transfer_read / transfer_write pairs and singleton
+      // transfer_reads for now.
+      if (!transferWrite) {
+        // Make sure there are no other accesses to the memref before
+        // hoisting transfer_read.
+        if (noAliasingUseInLoop(transferRead, loop))
+          loop.moveOutOfLoop(transferRead);
         return WalkResult::advance();
+      }
 
       LLVM_DEBUG(DBGS() << "Candidate: " << *transferWrite.getOperation()
                         << "\n");
 
       // Approximate aliasing by checking that:
       //   1. indices are the same,
-      //   2. no other use either dominates the transfer_read or is dominated
-      //   by the transfer_write (i.e. aliasing between the write and the read
-      //   across the loop).
-      if (transferRead.indices() != transferWrite.indices())
+      //   2. no other operations in the loop access the same memref except
+      //      for transfer_read/transfer_write accessing statically disjoint
+      //      slices.
+      if (transferRead.getIndices() != transferWrite.getIndices() &&
+          transferRead.getVectorType() == transferWrite.getVectorType())
         return WalkResult::advance();
 
       // TODO: may want to memoize this information for performance but it
@@ -141,35 +146,82 @@ void mlir::linalg::hoistRedundantVectorTransfers(FuncOp func) {
       DominanceInfo dom(loop);
       if (!dom.properlyDominates(transferRead.getOperation(), transferWrite))
         return WalkResult::advance();
-      for (auto &use : transferRead.memref().getUses())
-        if (dom.properlyDominates(use.getOwner(),
-                                  transferRead.getOperation()) ||
-            dom.properlyDominates(transferWrite, use.getOwner()))
+      for (auto &use : transferRead.getSource().getUses()) {
+        if (!loop->isAncestor(use.getOwner()))
+          continue;
+        if (use.getOwner() == transferRead.getOperation() ||
+            use.getOwner() == transferWrite.getOperation())
+          continue;
+        if (auto transferWriteUse =
+                dyn_cast<vector::TransferWriteOp>(use.getOwner())) {
+          if (!vector::isDisjointTransferSet(
+                  cast<VectorTransferOpInterface>(transferWrite.getOperation()),
+                  cast<VectorTransferOpInterface>(
+                      transferWriteUse.getOperation())))
+            return WalkResult::advance();
+        } else if (auto transferReadUse =
+                       dyn_cast<vector::TransferReadOp>(use.getOwner())) {
+          if (!vector::isDisjointTransferSet(
+                  cast<VectorTransferOpInterface>(transferWrite.getOperation()),
+                  cast<VectorTransferOpInterface>(
+                      transferReadUse.getOperation())))
+            return WalkResult::advance();
+        } else {
+          // Unknown use, we cannot prove that it doesn't alias with the
+          // transferRead/transferWrite operations.
           return WalkResult::advance();
+        }
+      }
 
       // Hoist read before.
-      if (failed(loop.moveOutOfLoop({transferRead})))
-        llvm_unreachable(
-            "Unexpected failure to move transfer read out of loop");
+      loop.moveOutOfLoop(transferRead);
 
       // Hoist write after.
-      transferWrite.getOperation()->moveAfter(loop);
+      transferWrite->moveAfter(loop);
 
       // Rewrite `loop` with new yields by cloning and erase the original loop.
       OpBuilder b(transferRead);
-      auto newForOp = cloneWithNewYields(b, loop, transferRead.vector(),
-                                         transferWrite.vector());
+      NewYieldValueFn yieldFn = [&](OpBuilder &b, Location loc,
+                                    ArrayRef<BlockArgument> newBBArgs) {
+        return SmallVector<Value>{transferWrite.getVector()};
+      };
 
-      // Transfer write has been hoisted, need to update the written value to
+      // Transfer write has been hoisted, need to update the written vector by
       // the value yielded by the newForOp.
-      transferWrite.vector().replaceAllUsesWith(
-          newForOp.getResults().take_back()[0]);
-
-      changed = true;
-      loop.erase();
-      // Need to interrupt and restart because erasing the loop messes up the
-      // walk.
-      return WalkResult::interrupt();
+      return TypeSwitch<Operation *, WalkResult>(loop)
+          .Case<scf::ForOp>([&](scf::ForOp scfForOp) {
+            auto newForOp = replaceLoopWithNewYields(
+                b, scfForOp, transferRead.getVector(), yieldFn);
+            transferWrite.getVectorMutable().assign(
+                newForOp.getResults().back());
+            changed = true;
+            loop.erase();
+            // Need to interrupt and restart because erasing the loop messes up
+            // the walk.
+            return WalkResult::interrupt();
+          })
+          .Case<affine::AffineForOp>([&](affine::AffineForOp affineForOp) {
+            auto newForOp = replaceForOpWithNewYields(
+                b, affineForOp, transferRead.getVector(),
+                SmallVector<Value>{transferWrite.getVector()},
+                transferWrite.getVector());
+            // Replace all uses of the `transferRead` with the corresponding
+            // basic block argument.
+            transferRead.getVector().replaceUsesWithIf(
+                newForOp.getLoopBody().getArguments().back(),
+                [&](OpOperand &use) {
+                  Operation *user = use.getOwner();
+                  return newForOp->isProperAncestor(user);
+                });
+            transferWrite.getVectorMutable().assign(
+                newForOp.getResults().back());
+            changed = true;
+            loop.erase();
+            // Need to interrupt and restart because erasing the loop messes up
+            // the walk.
+            return WalkResult::interrupt();
+          })
+          .Default([](Operation *) { return WalkResult::interrupt(); });
     });
   }
 }

@@ -15,7 +15,6 @@
 
 #include "llvm/Support/SpecialCaseList.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -64,7 +63,7 @@ unsigned SpecialCaseList::Matcher::match(StringRef Query) const {
     return It->second;
   if (Trigrams.isDefinitelyOut(Query))
     return false;
-  for (auto& RegExKV : RegExes)
+  for (const auto &RegExKV : RegExes)
     if (RegExKV.first->match(Query))
       return RegExKV.second;
   return 0;
@@ -93,7 +92,7 @@ SpecialCaseList::createOrDie(const std::vector<std::string> &Paths,
   std::string Error;
   if (auto SCL = create(Paths, FS, Error))
     return SCL;
-  report_fatal_error(Error);
+  report_fatal_error(Twine(Error));
 }
 
 bool SpecialCaseList::createInternal(const std::vector<std::string> &Paths,
@@ -126,7 +125,7 @@ bool SpecialCaseList::createInternal(const MemoryBuffer *MB,
 bool SpecialCaseList::parse(const MemoryBuffer *MB,
                             StringMap<size_t> &SectionsMap,
                             std::string &Error) {
-  // Iterate through each line in the blacklist file.
+  // Iterate through each line in the exclusion list file.
   SmallVector<StringRef, 16> Lines;
   MB->getBuffer().split(Lines, '\n');
 
@@ -176,7 +175,7 @@ bool SpecialCaseList::parse(const MemoryBuffer *MB,
     StringRef Category = SplitRegexp.second;
 
     // Create this section if it has not been seen before.
-    if (SectionsMap.find(Section) == SectionsMap.end()) {
+    if (!SectionsMap.contains(Section)) {
       std::unique_ptr<Matcher> M = std::make_unique<Matcher>();
       std::string REError;
       if (!M->insert(std::string(Section), LineNo, REError)) {
@@ -199,7 +198,7 @@ bool SpecialCaseList::parse(const MemoryBuffer *MB,
   return true;
 }
 
-SpecialCaseList::~SpecialCaseList() {}
+SpecialCaseList::~SpecialCaseList() = default;
 
 bool SpecialCaseList::inSection(StringRef Section, StringRef Prefix,
                                 StringRef Query, StringRef Category) const {
@@ -209,7 +208,7 @@ bool SpecialCaseList::inSection(StringRef Section, StringRef Prefix,
 unsigned SpecialCaseList::inSectionBlame(StringRef Section, StringRef Prefix,
                                          StringRef Query,
                                          StringRef Category) const {
-  for (auto &SectionIter : Sections)
+  for (const auto &SectionIter : Sections)
     if (SectionIter.SectionMatcher->match(Section)) {
       unsigned Blame =
           inSectionBlame(SectionIter.Entries, Prefix, Query, Category);

@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -arcmt-check -verify %s
-// RUN: not %clang_cc1 -arcmt-check -verify %t.invalid 2>&1 | FileCheck %s
+// RUN: %clang_cc1 -arcmt-action=check -verify %s
+// RUN: not %clang_cc1 -arcmt-action=check -verify %t.invalid 2>&1 | FileCheck %s
 
 #if 0
 // expected-error {{should be ignored}}
@@ -7,6 +7,9 @@
 
 #error should not be ignored
 // expected-error@-1 {{should not be ignored}}
+
+#error
+// expected-error@-1 {{}}
 
 //      CHECK: error: no expected directives found: consider use of 'expected-no-diagnostics'
 // CHECK-NEXT: error: 'error' diagnostics seen but not expected:

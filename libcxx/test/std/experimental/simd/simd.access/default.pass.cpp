@@ -26,7 +26,7 @@ template <typename SimdType>
 void test_access() {
   {
     SimdType a(42), b(4);
-    static_assert(std::is_convertible<decltype(a[0]), int8_t>::value, "");
+    static_assert(std::is_convertible<decltype(a[0]), std::int8_t>::value, "");
 
     assert(a[0] == 42);
     assert(!a[0] == !42);
@@ -40,12 +40,12 @@ void test_access() {
     assert(a[0] % b[0] == 42 % 4);
     assert(a[0] << b[0] == (42 << 4));
     assert(a[0] >> b[0] == (42 >> 4));
-    assert(a[0] < b[0] == false);
-    assert(a[0] <= b[0] == false);
-    assert(a[0] > b[0] == true);
-    assert(a[0] >= b[0] == true);
-    assert(a[0] == b[0] == false);
-    assert(a[0] != b[0] == true);
+    assert((a[0] < b[0]) == false);
+    assert((a[0] <= b[0]) == false);
+    assert((a[0] > b[0]) == true);
+    assert((a[0] >= b[0]) == true);
+    assert((a[0] == b[0]) == false);
+    assert((a[0] != b[0]) == true);
     assert((a[0] & b[0]) == (42 & 4));
     assert((a[0] | b[0]) == (42 | 4));
     assert((a[0] ^ b[0]) == (42 ^ 4));
@@ -198,12 +198,12 @@ void test_access() {
     assert(a[0] % b[0] == 42 % 4);
     assert(a[0] << b[0] == (42 << 4));
     assert(a[0] >> b[0] == (42 >> 4));
-    assert(a[0] < b[0] == false);
-    assert(a[0] <= b[0] == false);
-    assert(a[0] > b[0] == true);
-    assert(a[0] >= b[0] == true);
-    assert(a[0] == b[0] == false);
-    assert(a[0] != b[0] == true);
+    assert((a[0] < b[0]) == false);
+    assert((a[0] <= b[0]) == false);
+    assert((a[0] > b[0]) == true);
+    assert((a[0] >= b[0]) == true);
+    assert((a[0] == b[0]) == false);
+    assert((a[0] != b[0]) == true);
     assert((a[0] & b[0]) == (42 & 4));
     assert((a[0] | b[0]) == (42 | 4));
     assert((a[0] ^ b[0]) == (42 ^ 4));

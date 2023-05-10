@@ -34,13 +34,14 @@ class TestIntegratedTestKeywordParser(unittest.TestCase):
                                              debug=False,
                                              isWindows=(
                                                platform.system() == 'Windows'),
+                                             order='smart',
                                              params={})
         TestIntegratedTestKeywordParser.litConfig = lit_config
         # Perform test discovery.
         test_path = os.path.dirname(os.path.dirname(__file__))
         inputs = [os.path.join(test_path, 'Inputs/testrunner-custom-parsers/')]
         assert os.path.isdir(inputs[0])
-        tests = lit.discovery.find_tests_for_inputs(lit_config, inputs)
+        tests = lit.discovery.find_tests_for_inputs(lit_config, inputs, False)
         assert len(tests) == 1 and "there should only be one test"
         TestIntegratedTestKeywordParser.inputTestCase = tests[0]
 
@@ -61,7 +62,8 @@ class TestIntegratedTestKeywordParser(unittest.TestCase):
             IntegratedTestKeywordParser("MY_RUN:", ParserKind.COMMAND),
             IntegratedTestKeywordParser("MY_CUSTOM:", ParserKind.CUSTOM,
                                         custom_parse),
-
+            IntegratedTestKeywordParser("MY_DEFINE:", ParserKind.DEFINE),
+            IntegratedTestKeywordParser("MY_REDEFINE:", ParserKind.REDEFINE),
         ]
 
     @staticmethod
@@ -72,13 +74,16 @@ class TestIntegratedTestKeywordParser(unittest.TestCase):
         assert False and "parser not found"
 
     @staticmethod
-    def parse_test(parser_list):
+    def parse_test(parser_list, allow_result=False):
         script = parseIntegratedTestScript(
             TestIntegratedTestKeywordParser.inputTestCase,
             additional_parsers=parser_list, require_script=False)
-        assert not isinstance(script, lit.Test.Result)
-        assert isinstance(script, list)
-        assert len(script) == 0
+        if isinstance(script, lit.Test.Result):
+            assert allow_result
+        else:
+            assert isinstance(script, list)
+            assert len(script) == 0
+        return script
 
     def test_tags(self):
         parsers = self.make_parsers()
@@ -101,8 +106,10 @@ class TestIntegratedTestKeywordParser(unittest.TestCase):
         cmd_parser = self.get_parser(parsers, 'MY_RUN:')
         value = cmd_parser.getValue()
         self.assertEqual(len(value), 2)  # there are only two run lines
-        self.assertEqual(value[0].strip(), "%dbg(MY_RUN: at line 4)  baz")
-        self.assertEqual(value[1].strip(), "%dbg(MY_RUN: at line 7)  foo  bar")
+        self.assertEqual(value[0].command.strip(),
+                         "%dbg(MY_RUN: at line 4)  baz")
+        self.assertEqual(value[1].command.strip(),
+                         "%dbg(MY_RUN: at line 7)  foo  bar")
 
     def test_boolean(self):
         parsers = self.make_parsers()
@@ -124,15 +131,34 @@ class TestIntegratedTestKeywordParser(unittest.TestCase):
         self.assertEqual(type(value[1]), int)
         self.assertEqual(value[1], 6)
 
+    def test_bad_parser_type(self):
+        parsers = self.make_parsers() + ["BAD_PARSER_TYPE"]
+        script = self.parse_test(parsers, allow_result=True)
+        self.assertTrue(isinstance(script, lit.Test.Result))
+        self.assertEqual(script.code, lit.Test.UNRESOLVED)
+        self.assertEqual('Additional parser must be an instance of '
+                         'IntegratedTestKeywordParser',
+                         script.output)
+
+    def test_duplicate_keyword(self):
+        parsers = self.make_parsers() + \
+            [IntegratedTestKeywordParser("KEY:", ParserKind.BOOLEAN_EXPR),
+             IntegratedTestKeywordParser("KEY:", ParserKind.BOOLEAN_EXPR)]
+        script = self.parse_test(parsers, allow_result=True)
+        self.assertTrue(isinstance(script, lit.Test.Result))
+        self.assertEqual(script.code, lit.Test.UNRESOLVED)
+        self.assertEqual("Parser for keyword 'KEY:' already exists",
+                         script.output)
+
     def test_boolean_unterminated(self):
         parsers = self.make_parsers() + \
             [IntegratedTestKeywordParser("MY_BOOL_UNTERMINATED:", ParserKind.BOOLEAN_EXPR)]
-        try:
-            self.parse_test(parsers)
-            self.fail('expected exception')
-        except ValueError as e:
-            self.assertIn("Test has unterminated MY_BOOL_UNTERMINATED: lines", str(e))
-
+        script = self.parse_test(parsers, allow_result=True)
+        self.assertTrue(isinstance(script, lit.Test.Result))
+        self.assertEqual(script.code, lit.Test.UNRESOLVED)
+        self.assertEqual("Test has unterminated 'MY_BOOL_UNTERMINATED:' lines "
+                         "(with '\\')",
+                         script.output)
 
     def test_custom(self):
         parsers = self.make_parsers()
@@ -140,6 +166,26 @@ class TestIntegratedTestKeywordParser(unittest.TestCase):
         custom_parser = self.get_parser(parsers, 'MY_CUSTOM:')
         value = custom_parser.getValue()
         self.assertEqual(value, ['a', 'b', 'c'])
+
+    def test_defines(self):
+        parsers = self.make_parsers()
+        self.parse_test(parsers)
+        cmd_parser = self.get_parser(parsers, 'MY_DEFINE:')
+        value = cmd_parser.getValue()
+        self.assertEqual(len(value), 1) # there's only one MY_DEFINE directive
+        self.assertEqual(value[0].new_subst, True)
+        self.assertEqual(value[0].name, '%{name}')
+        self.assertEqual(value[0].value, 'value one')
+
+    def test_redefines(self):
+        parsers = self.make_parsers()
+        self.parse_test(parsers)
+        cmd_parser = self.get_parser(parsers, 'MY_REDEFINE:')
+        value = cmd_parser.getValue()
+        self.assertEqual(len(value), 1) # there's only one MY_REDEFINE directive
+        self.assertEqual(value[0].new_subst, False)
+        self.assertEqual(value[0].name, '%{name}')
+        self.assertEqual(value[0].value, 'value two')
 
     def test_bad_keywords(self):
         def custom_parse(line_number, line, output):

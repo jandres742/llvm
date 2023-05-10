@@ -12,8 +12,6 @@ from lldbsuite.test import lldbutil
 
 class NSArraySyntheticTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     def setUp(self):
         # Call super's setUp().
         TestBase.setUp(self)
@@ -51,6 +49,8 @@ class NSArraySyntheticTestCase(TestBase):
                     substrs=['@"6 elements"'])
         self.expect('frame variable other_arr',
                     substrs=['@"4 elements"'])
+        self.expect('frame variable empty_arr',
+                    substrs=['@"0 elements"'])
         self.expect(
             'frame variable arr --ptr-depth 1',
             substrs=[
@@ -70,7 +70,11 @@ class NSArraySyntheticTestCase(TestBase):
                 '[2] = 0x',
                 '[3] = 0x'])
         self.expect(
-            'frame variable arr --ptr-depth 1 -d no-run-target',
+            'frame variable empty_arr --ptr-depth 1',
+            substrs=[
+                '@"0 elements"'])
+        self.expect(
+            'frame variable arr --ptr-depth 1',
             substrs=[
                 '@"6 elements"',
                 '@"hello"',
@@ -80,14 +84,14 @@ class NSArraySyntheticTestCase(TestBase):
                 '@"me"',
                 '@"http://www.apple.com'])
         self.expect(
-            'frame variable other_arr --ptr-depth 1 -d no-run-target',
+            'frame variable other_arr --ptr-depth 1',
             substrs=[
                 '@"4 elements"',
                 '(int)5',
                 '@"a string"',
                 '@"6 elements"'])
         self.expect(
-            'frame variable other_arr --ptr-depth 2 -d no-run-target',
+            'frame variable other_arr --ptr-depth 2',
             substrs=[
                 '@"4 elements"',
                 '@"6 elements" {',
@@ -104,3 +108,6 @@ class NSArraySyntheticTestCase(TestBase):
         self.assertTrue(
             self.frame().FindVariable("other_arr").MightHaveChildren(),
             "arr says it does not have children!")
+        self.assertFalse(
+            self.frame().FindVariable("empty_arr").MightHaveChildren(),
+            "arr says it does have children!")

@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 #----------------------------------------------------------------------
 # Be sure to add the python path that points to the LLDB shared library.
@@ -7,8 +7,6 @@
 # On MacOSX sh, bash:
 #   export PYTHONPATH=/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/Python
 #----------------------------------------------------------------------
-
-from __future__ import print_function
 
 import optparse
 import os
@@ -255,6 +253,15 @@ class TestCase:
                                 select_thread = True
                                 if self.verbose:
                                     print("signal %d" % (thread.GetStopReasonDataAtIndex(0)))
+                            elif stop_reason == lldb.eStopReasonFork:
+                                if self.verbose:
+                                    print("fork pid = %d" % (thread.GetStopReasonDataAtIndex(0)))
+                            elif stop_reason == lldb.eStopReasonVFork:
+                                if self.verbose:
+                                    print("vfork pid = %d" % (thread.GetStopReasonDataAtIndex(0)))
+                            elif stop_reason == lldb.eStopReasonVForkDone:
+                                if self.verbose:
+                                    print("vfork done")
 
                             if select_thread and not selected_thread:
                                 self.thread = thread

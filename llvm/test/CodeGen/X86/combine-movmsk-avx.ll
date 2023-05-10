@@ -12,8 +12,7 @@ define i1 @movmskps_noneof_bitcast_v4f64(<4 x double> %a0) {
 ; CHECK:       # %bb.0:
 ; CHECK-NEXT:    vxorpd %xmm1, %xmm1, %xmm1
 ; CHECK-NEXT:    vcmpeqpd %ymm1, %ymm0, %ymm0
-; CHECK-NEXT:    vmovmskpd %ymm0, %eax
-; CHECK-NEXT:    testl %eax, %eax
+; CHECK-NEXT:    vtestpd %ymm0, %ymm0
 ; CHECK-NEXT:    sete %al
 ; CHECK-NEXT:    vzeroupper
 ; CHECK-NEXT:    retq
@@ -26,15 +25,25 @@ define i1 @movmskps_noneof_bitcast_v4f64(<4 x double> %a0) {
 }
 
 define i1 @movmskps_allof_bitcast_v4f64(<4 x double> %a0) {
-; CHECK-LABEL: movmskps_allof_bitcast_v4f64:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vxorpd %xmm1, %xmm1, %xmm1
-; CHECK-NEXT:    vcmpeqpd %ymm1, %ymm0, %ymm0
-; CHECK-NEXT:    vmovmskpd %ymm0, %eax
-; CHECK-NEXT:    cmpl $15, %eax
-; CHECK-NEXT:    sete %al
-; CHECK-NEXT:    vzeroupper
-; CHECK-NEXT:    retq
+; AVX1-LABEL: movmskps_allof_bitcast_v4f64:
+; AVX1:       # %bb.0:
+; AVX1-NEXT:    vxorpd %xmm1, %xmm1, %xmm1
+; AVX1-NEXT:    vcmpeqpd %ymm1, %ymm0, %ymm0
+; AVX1-NEXT:    vcmptrueps %ymm1, %ymm1, %ymm1
+; AVX1-NEXT:    vtestpd %ymm1, %ymm0
+; AVX1-NEXT:    setb %al
+; AVX1-NEXT:    vzeroupper
+; AVX1-NEXT:    retq
+;
+; AVX2-LABEL: movmskps_allof_bitcast_v4f64:
+; AVX2:       # %bb.0:
+; AVX2-NEXT:    vxorpd %xmm1, %xmm1, %xmm1
+; AVX2-NEXT:    vcmpeqpd %ymm1, %ymm0, %ymm0
+; AVX2-NEXT:    vpcmpeqd %ymm1, %ymm1, %ymm1
+; AVX2-NEXT:    vtestpd %ymm1, %ymm0
+; AVX2-NEXT:    setb %al
+; AVX2-NEXT:    vzeroupper
+; AVX2-NEXT:    retq
   %1 = fcmp oeq <4 x double> %a0, zeroinitializer
   %2 = sext <4 x i1> %1 to <4 x i64>
   %3 = bitcast <4 x i64> %2 to <8 x float>
@@ -93,7 +102,7 @@ define i32 @movmskps_sext_v4i64(<4 x i32> %a0)  {
 ; AVX1-LABEL: movmskps_sext_v4i64:
 ; AVX1:       # %bb.0:
 ; AVX1-NEXT:    vpmovsxdq %xmm0, %xmm1
-; AVX1-NEXT:    vpshufd {{.*#+}} xmm0 = xmm0[2,3,0,1]
+; AVX1-NEXT:    vpshufd {{.*#+}} xmm0 = xmm0[2,3,2,3]
 ; AVX1-NEXT:    vpmovsxdq %xmm0, %xmm0
 ; AVX1-NEXT:    vinsertf128 $1, %xmm0, %ymm1, %ymm0
 ; AVX1-NEXT:    vmovmskpd %ymm0, %eax
@@ -116,7 +125,7 @@ define i32 @movmskps_sext_v8i32(<8 x i16> %a0)  {
 ; AVX1-LABEL: movmskps_sext_v8i32:
 ; AVX1:       # %bb.0:
 ; AVX1-NEXT:    vpmovsxwd %xmm0, %xmm1
-; AVX1-NEXT:    vpshufd {{.*#+}} xmm0 = xmm0[2,3,0,1]
+; AVX1-NEXT:    vpshufd {{.*#+}} xmm0 = xmm0[2,3,2,3]
 ; AVX1-NEXT:    vpmovsxwd %xmm0, %xmm0
 ; AVX1-NEXT:    vinsertf128 $1, %xmm0, %ymm1, %ymm0
 ; AVX1-NEXT:    vmovmskps %ymm0, %eax
@@ -133,4 +142,37 @@ define i32 @movmskps_sext_v8i32(<8 x i16> %a0)  {
   %2 = bitcast <8 x i32> %1 to <8 x float>
   %3 = tail call i32 @llvm.x86.avx.movmsk.ps.256(<8 x float> %2)
   ret i32 %3
+}
+
+define i32 @movmskps_concat_v4f32(<4 x float> %a0, <4 x float> %a1)  {
+; CHECK-LABEL: movmskps_concat_v4f32:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    vorps %xmm1, %xmm0, %xmm0
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    vtestps %xmm0, %xmm0
+; CHECK-NEXT:    setne %al
+; CHECK-NEXT:    negl %eax
+; CHECK-NEXT:    retq
+  %1 = shufflevector <4 x float> %a0, <4 x float> %a1, <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
+  %2 = tail call i32 @llvm.x86.avx.movmsk.ps.256(<8 x float> %1)
+  %3 = icmp ne i32 %2, 0
+  %4 = sext i1 %3 to i32
+  ret i32 %4
+}
+
+define i32 @movmskps_demanded_concat_v4f32(<4 x float> %a0, <4 x float> %a1)  {
+; CHECK-LABEL: movmskps_demanded_concat_v4f32:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    vmovmskps %xmm0, %ecx
+; CHECK-NEXT:    andl $3, %ecx
+; CHECK-NEXT:    xorl %eax, %eax
+; CHECK-NEXT:    negl %ecx
+; CHECK-NEXT:    sbbl %eax, %eax
+; CHECK-NEXT:    retq
+  %1 = shufflevector <4 x float> %a0, <4 x float> %a1, <8 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7>
+  %2 = tail call i32 @llvm.x86.avx.movmsk.ps.256(<8 x float> %1)
+  %3 = and i32 %2, 3
+  %4 = icmp ne i32 %3, 0
+  %5 = sext i1 %4 to i32
+  ret i32 %5
 }

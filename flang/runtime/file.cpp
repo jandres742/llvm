@@ -1,4 +1,4 @@
-//===-- runtime/file.cpp ----------------------------------------*- C++ -*-===//
+//===-- runtime/file.cpp --------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,13 +7,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "file.h"
-#include "magic-numbers.h"
-#include "memory.h"
+#include "flang/Runtime/magic-numbers.h"
+#include "flang/Runtime/memory.h"
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #ifdef _WIN32
+#define NOMINMAX
 #include <io.h>
 #include <windows.h>
 #else
@@ -42,7 +45,8 @@ static int openfile_mkstemp(IoErrorHandler &handler) {
   if (::GetTempFileNameA(tempDirName, "Fortran", uUnique, tempFileName) == 0) {
     return -1;
   }
-  int fd{::_open(tempFileName, _O_CREAT | _O_TEMPORARY, _S_IREAD | _S_IWRITE)};
+  int fd{::_open(tempFileName, _O_CREAT | _O_BINARY | _O_TEMPORARY | _O_RDWR,
+      _S_IREAD | _S_IWRITE)};
 #else
   char path[]{"/tmp/Fortran-Scratch-XXXXXX"};
   int fd{::mkstemp(path)};
@@ -56,59 +60,99 @@ static int openfile_mkstemp(IoErrorHandler &handler) {
   return fd;
 }
 
-void OpenFile::Open(
-    OpenStatus status, Position position, IoErrorHandler &handler) {
-  int flags{mayRead_ ? mayWrite_ ? O_RDWR : O_RDONLY : O_WRONLY};
-  switch (status) {
-  case OpenStatus::Old:
-    if (fd_ >= 0) {
-      return;
-    }
-    break;
-  case OpenStatus::New:
-    flags |= O_CREAT | O_EXCL;
-    break;
-  case OpenStatus::Scratch:
+void OpenFile::Open(OpenStatus status, std::optional<Action> action,
+    Position position, IoErrorHandler &handler) {
+  if (fd_ >= 0 &&
+      (status == OpenStatus::Old || status == OpenStatus::Unknown)) {
+    return;
+  }
+  CloseFd(handler);
+  if (status == OpenStatus::Scratch) {
     if (path_.get()) {
       handler.SignalError("FILE= must not appear with STATUS='SCRATCH'");
       path_.reset();
     }
+    if (!action) {
+      action = Action::ReadWrite;
+    }
     fd_ = openfile_mkstemp(handler);
-    return;
-  case OpenStatus::Replace:
-    flags |= O_CREAT | O_TRUNC;
-    break;
-  case OpenStatus::Unknown:
-    if (fd_ >= 0) {
+  } else {
+    if (!path_.get()) {
+      handler.SignalError("FILE= is required");
       return;
     }
-    flags |= O_CREAT;
-    break;
-  }
-  // If we reach this point, we're opening a new file.
-  // TODO: Fortran shouldn't create a new file until the first WRITE.
-  if (fd_ >= 0) {
-    if (fd_ <= 2) {
-      // don't actually close a standard file descriptor, we might need it
-    } else if (::close(fd_) != 0) {
-      handler.SignalErrno();
+    int flags{0};
+#ifdef _WIN32
+    // We emit explicit CR+LF line endings and cope with them on input
+    // for formatted files, since we can't yet always know now at OPEN
+    // time whether the file is formatted or not.
+    flags |= O_BINARY;
+#endif
+    if (status != OpenStatus::Old) {
+      flags |= O_CREAT;
+    }
+    if (status == OpenStatus::New) {
+      flags |= O_EXCL;
+    } else if (status == OpenStatus::Replace) {
+      flags |= O_TRUNC;
+    }
+    if (!action) {
+      // Try to open read/write, back off to read-only or even write-only
+      // on failure
+      fd_ = ::open(path_.get(), flags | O_RDWR, 0600);
+      if (fd_ >= 0) {
+        action = Action::ReadWrite;
+      } else {
+        fd_ = ::open(path_.get(), flags | O_RDONLY, 0600);
+        if (fd_ >= 0) {
+          action = Action::Read;
+        } else {
+          action = Action::Write;
+        }
+      }
+    }
+    if (fd_ < 0) {
+      switch (*action) {
+      case Action::Read:
+        flags |= O_RDONLY;
+        break;
+      case Action::Write:
+        flags |= O_WRONLY;
+        break;
+      case Action::ReadWrite:
+        flags |= O_RDWR;
+        break;
+      }
+      fd_ = ::open(path_.get(), flags, 0600);
+      if (fd_ < 0) {
+        handler.SignalErrno();
+      }
     }
   }
-  if (!path_.get()) {
-    handler.SignalError(
-        "FILE= is required unless STATUS='OLD' and unit is connected");
-    return;
-  }
-  fd_ = ::open(path_.get(), flags, 0600);
-  if (fd_ < 0) {
-    handler.SignalErrno();
-  }
+  RUNTIME_CHECK(handler, action.has_value());
   pending_.reset();
-  knownSize_.reset();
   if (position == Position::Append && !RawSeekToEnd()) {
-    handler.SignalErrno();
+    handler.SignalError(IostatOpenBadAppend);
   }
-  isTerminal_ = ::isatty(fd_) == 1;
+  isTerminal_ = IsATerminal(fd_) == 1;
+  mayRead_ = *action != Action::Write;
+  mayWrite_ = *action != Action::Read;
+  if (status == OpenStatus::Old || status == OpenStatus::Unknown) {
+    knownSize_.reset();
+#ifndef _WIN32
+    struct stat buf;
+    if (::fstat(fd_, &buf) == 0) {
+      mayPosition_ = S_ISREG(buf.st_mode);
+      knownSize_ = buf.st_size;
+    }
+#else // TODO: _WIN32
+    mayPosition_ = true;
+#endif
+  } else {
+    knownSize_ = 0;
+    mayPosition_ = true;
+  }
+  openPosition_ = position; // for INQUIRE(POSITION=)
 }
 
 void OpenFile::Predefine(int fd) {
@@ -119,10 +163,16 @@ void OpenFile::Predefine(int fd) {
   knownSize_.reset();
   nextId_ = 0;
   pending_.reset();
+  isTerminal_ = IsATerminal(fd_) == 1;
+  mayRead_ = fd == 0;
+  mayWrite_ = fd != 0;
+  mayPosition_ = false;
+#ifdef _WIN32
+  isWindowsTextFile_ = true;
+#endif
 }
 
 void OpenFile::Close(CloseStatus status, IoErrorHandler &handler) {
-  CheckOpen(handler);
   pending_.reset();
   knownSize_.reset();
   switch (status) {
@@ -135,12 +185,7 @@ void OpenFile::Close(CloseStatus status, IoErrorHandler &handler) {
     break;
   }
   path_.reset();
-  if (fd_ >= 0) {
-    if (::close(fd_) != 0) {
-      handler.SignalErrno();
-    }
-    fd_ = -1;
-  }
+  CloseFd(handler);
 }
 
 std::size_t OpenFile::Read(FileOffset at, char *buffer, std::size_t minBytes,
@@ -152,24 +197,20 @@ std::size_t OpenFile::Read(FileOffset at, char *buffer, std::size_t minBytes,
   if (!Seek(at, handler)) {
     return 0;
   }
-  if (maxBytes < minBytes) {
-    minBytes = maxBytes;
-  }
+  minBytes = std::min(minBytes, maxBytes);
   std::size_t got{0};
   while (got < minBytes) {
     auto chunk{::read(fd_, buffer + got, maxBytes - got)};
     if (chunk == 0) {
-      handler.SignalEnd();
       break;
-    }
-    if (chunk < 0) {
+    } else if (chunk < 0) {
       auto err{errno};
       if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
         handler.SignalError(err);
         break;
       }
     } else {
-      position_ += chunk;
+      SetPosition(position_ + chunk);
       got += chunk;
     }
   }
@@ -189,7 +230,7 @@ std::size_t OpenFile::Write(FileOffset at, const char *buffer,
   while (put < bytes) {
     auto chunk{::write(fd_, buffer + put, bytes - put)};
     if (chunk >= 0) {
-      position_ += chunk;
+      SetPosition(position_ + chunk);
       put += chunk;
     } else {
       auto err{errno};
@@ -207,7 +248,7 @@ std::size_t OpenFile::Write(FileOffset at, const char *buffer,
 
 inline static int openfile_ftruncate(int fd, OpenFile::FileOffset at) {
 #ifdef _WIN32
-  return !::_chsize(fd, at);
+  return ::_chsize(fd, at);
 #else
   return ::ftruncate(fd, at);
 #endif
@@ -312,6 +353,20 @@ void OpenFile::WaitAll(IoErrorHandler &handler) {
   }
 }
 
+Position OpenFile::InquirePosition() const {
+  if (openPosition_) { // from OPEN statement
+    return *openPosition_;
+  } else { // unit has been repositioned since opening
+    if (position_ == knownSize_.value_or(position_ + 1)) {
+      return Position::Append;
+    } else if (position_ == 0 && mayPosition_) {
+      return Position::Rewind;
+    } else {
+      return Position::AsIs; // processor-dependent & no common behavior
+    }
+  }
+}
+
 void OpenFile::CheckOpen(const Terminator &terminator) {
   RUNTIME_CHECK(terminator, fd_ >= 0);
 }
@@ -320,10 +375,10 @@ bool OpenFile::Seek(FileOffset at, IoErrorHandler &handler) {
   if (at == position_) {
     return true;
   } else if (RawSeek(at)) {
-    position_ = at;
+    SetPosition(at);
     return true;
   } else {
-    handler.SignalErrno();
+    handler.SignalError(IostatCannotReposition);
     return false;
   }
 }
@@ -352,7 +407,53 @@ bool OpenFile::RawSeekToEnd() {
 
 int OpenFile::PendingResult(const Terminator &terminator, int iostat) {
   int id{nextId_++};
-  pending_.reset(&New<Pending>{}(terminator, id, iostat, std::move(pending_)));
+  pending_ = New<Pending>{terminator}(id, iostat, std::move(pending_));
   return id;
 }
+
+void OpenFile::CloseFd(IoErrorHandler &handler) {
+  if (fd_ >= 0) {
+    if (fd_ <= 2) {
+      // don't actually close a standard file descriptor, we might need it
+    } else {
+      if (::close(fd_) != 0) {
+        handler.SignalErrno();
+      }
+    }
+    fd_ = -1;
+  }
+}
+
+bool IsATerminal(int fd) { return ::isatty(fd); }
+
+#if defined(_WIN32) && !defined(F_OK)
+// Access flags are normally defined in unistd.h, which unavailable under
+// Windows. Instead, define the flags as documented at
+// https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/access-waccess
+// On Mingw, io.h does define these same constants - so check whether they
+// already are defined before defining these.
+#define F_OK 00
+#define W_OK 02
+#define R_OK 04
+#endif
+
+bool IsExtant(const char *path) { return ::access(path, F_OK) == 0; }
+bool MayRead(const char *path) { return ::access(path, R_OK) == 0; }
+bool MayWrite(const char *path) { return ::access(path, W_OK) == 0; }
+bool MayReadAndWrite(const char *path) {
+  return ::access(path, R_OK | W_OK) == 0;
+}
+
+std::int64_t SizeInBytes(const char *path) {
+#ifndef _WIN32
+  struct stat buf;
+  if (::stat(path, &buf) == 0) {
+    return buf.st_size;
+  }
+#else // TODO: _WIN32
+#endif
+  // No Fortran compiler signals an error
+  return -1;
+}
+
 } // namespace Fortran::runtime::io

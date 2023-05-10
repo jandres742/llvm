@@ -14,16 +14,17 @@
 #ifndef LLVM_TRANSFORMS_IPO_WHOLEPROGRAMDEVIRT_H
 #define LLVM_TRANSFORMS_IPO_WHOLEPROGRAMDEVIRT_H
 
-#include "llvm/IR/Module.h"
+#include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/Transforms/IPO/FunctionImport.h"
 #include <cassert>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <utility>
 #include <vector>
 
 namespace llvm {
+class Module;
 
 template <typename T> class ArrayRef;
 template <typename T> class MutableArrayRef;
@@ -117,14 +118,14 @@ struct TypeMemberInfo {
 
 // A virtual call target, i.e. an entry in a particular vtable.
 struct VirtualCallTarget {
-  VirtualCallTarget(Function *Fn, const TypeMemberInfo *TM);
+  VirtualCallTarget(GlobalValue *Fn, const TypeMemberInfo *TM);
 
   // For testing only.
   VirtualCallTarget(const TypeMemberInfo *TM, bool IsBigEndian)
       : Fn(nullptr), TM(TM), IsBigEndian(IsBigEndian), WasDevirt(false) {}
 
-  // The function stored in the vtable.
-  Function *Fn;
+  // The function (or an alias to a function) stored in the vtable.
+  GlobalValue *Fn;
 
   // A pointer to the type identifier member through which the pointer to Fn is
   // accessed.
@@ -223,6 +224,9 @@ void setAfterReturnValues(MutableArrayRef<VirtualCallTarget> Targets,
 struct WholeProgramDevirtPass : public PassInfoMixin<WholeProgramDevirtPass> {
   ModuleSummaryIndex *ExportSummary;
   const ModuleSummaryIndex *ImportSummary;
+  bool UseCommandLine = false;
+  WholeProgramDevirtPass()
+      : ExportSummary(nullptr), ImportSummary(nullptr), UseCommandLine(true) {}
   WholeProgramDevirtPass(ModuleSummaryIndex *ExportSummary,
                          const ModuleSummaryIndex *ImportSummary)
       : ExportSummary(ExportSummary), ImportSummary(ImportSummary) {
@@ -235,11 +239,15 @@ struct VTableSlotSummary {
   StringRef TypeID;
   uint64_t ByteOffset;
 };
-
-void updateVCallVisibilityInModule(Module &M,
-                                   bool WholeProgramVisibilityEnabledInLTO);
-void updateVCallVisibilityInIndex(ModuleSummaryIndex &Index,
-                                  bool WholeProgramVisibilityEnabledInLTO);
+bool hasWholeProgramVisibility(bool WholeProgramVisibilityEnabledInLTO);
+void updatePublicTypeTestCalls(Module &M,
+                               bool WholeProgramVisibilityEnabledInLTO);
+void updateVCallVisibilityInModule(
+    Module &M, bool WholeProgramVisibilityEnabledInLTO,
+    const DenseSet<GlobalValue::GUID> &DynamicExportSymbols);
+void updateVCallVisibilityInIndex(
+    ModuleSummaryIndex &Index, bool WholeProgramVisibilityEnabledInLTO,
+    const DenseSet<GlobalValue::GUID> &DynamicExportSymbols);
 
 /// Perform index-based whole program devirtualization on the \p Summary
 /// index. Any devirtualized targets used by a type test in another module

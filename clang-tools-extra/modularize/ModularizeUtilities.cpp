@@ -346,9 +346,8 @@ bool ModularizeUtilities::collectModuleHeaders(const clang::Module &Mod) {
   DependentsVector UmbrellaDependents;
 
   // Recursively do submodules.
-  for (auto MI = Mod.submodule_begin(), MIEnd = Mod.submodule_end();
-       MI != MIEnd; ++MI)
-    collectModuleHeaders(**MI);
+  for (auto *Submodule : Mod.submodules())
+    collectModuleHeaders(*Submodule);
 
   if (const FileEntry *UmbrellaHeader = Mod.getUmbrellaHeader().Entry) {
     std::string HeaderPath = getCanonicalPath(UmbrellaHeader->getName());
@@ -470,9 +469,9 @@ bool ModularizeUtilities::isHeader(StringRef FileName) {
   StringRef Extension = llvm::sys::path::extension(FileName);
   if (Extension.size() == 0)
     return true;
-  if (Extension.equals_lower(".h"))
+  if (Extension.equals_insensitive(".h"))
     return true;
-  if (Extension.equals_lower(".inc"))
+  if (Extension.equals_insensitive(".inc"))
     return true;
   return false;
 }

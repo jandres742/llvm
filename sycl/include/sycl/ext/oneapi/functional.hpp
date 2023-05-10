@@ -1,0 +1,107 @@
+//==----------- functional.hpp --- SYCL functional -------------------------==//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#pragma once
+#include <sycl/functional.hpp>
+#include <sycl/half_type.hpp>
+
+#include <complex>
+#include <functional>
+
+namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
+namespace ext::oneapi {
+
+template <typename T = void> using plus = std::plus<T>;
+template <typename T = void> using multiplies = std::multiplies<T>;
+template <typename T = void> using bit_or = std::bit_or<T>;
+template <typename T = void> using bit_xor = std::bit_xor<T>;
+template <typename T = void> using bit_and = std::bit_and<T>;
+template <typename T = void> using maximum = sycl::maximum<T>;
+template <typename T = void> using minimum = sycl::minimum<T>;
+
+} // namespace ext::oneapi
+
+#ifdef __SYCL_DEVICE_ONLY__
+namespace detail {
+
+struct GroupOpISigned {};
+struct GroupOpIUnsigned {};
+struct GroupOpFP {};
+struct GroupOpC {};
+
+template <typename T, typename = void> struct GroupOpTag;
+
+template <typename T>
+struct GroupOpTag<T, std::enable_if_t<detail::is_sigeninteger<T>::value>> {
+  using type = GroupOpISigned;
+};
+
+template <typename T>
+struct GroupOpTag<T, std::enable_if_t<detail::is_sugeninteger<T>::value>> {
+  using type = GroupOpIUnsigned;
+};
+
+template <typename T>
+struct GroupOpTag<T, std::enable_if_t<detail::is_sgenfloat<T>::value>> {
+  using type = GroupOpFP;
+};
+
+template <typename T>
+struct GroupOpTag<
+    T, std::enable_if_t<std::is_same<T, std::complex<half>>::value ||
+                        std::is_same<T, std::complex<float>>::value ||
+                        std::is_same<T, std::complex<double>>::value>> {
+  using type = GroupOpC;
+};
+
+#define __SYCL_CALC_OVERLOAD(GroupTag, SPIRVOperation, BinaryOperation)        \
+  template <__spv::GroupOperation O, typename Group, typename T>               \
+  static T calc(Group g, GroupTag, T x, BinaryOperation) {                     \
+    return sycl::detail::spirv::Group##SPIRVOperation<O>(g, x);                \
+  }
+
+// calc for sycl function objects
+__SYCL_CALC_OVERLOAD(GroupOpISigned, SMin, sycl::minimum<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, UMin, sycl::minimum<T>)
+__SYCL_CALC_OVERLOAD(GroupOpFP, FMin, sycl::minimum<T>)
+
+__SYCL_CALC_OVERLOAD(GroupOpISigned, SMax, sycl::maximum<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, UMax, sycl::maximum<T>)
+__SYCL_CALC_OVERLOAD(GroupOpFP, FMax, sycl::maximum<T>)
+
+__SYCL_CALC_OVERLOAD(GroupOpISigned, IAdd, sycl::plus<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, IAdd, sycl::plus<T>)
+__SYCL_CALC_OVERLOAD(GroupOpFP, FAdd, sycl::plus<T>)
+
+__SYCL_CALC_OVERLOAD(GroupOpISigned, IMulKHR, sycl::multiplies<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, IMulKHR, sycl::multiplies<T>)
+__SYCL_CALC_OVERLOAD(GroupOpFP, FMulKHR, sycl::multiplies<T>)
+__SYCL_CALC_OVERLOAD(GroupOpC, CMulINTEL, sycl::multiplies<T>)
+
+__SYCL_CALC_OVERLOAD(GroupOpISigned, BitwiseOrKHR, sycl::bit_or<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, BitwiseOrKHR, sycl::bit_or<T>)
+__SYCL_CALC_OVERLOAD(GroupOpISigned, BitwiseXorKHR, sycl::bit_xor<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, BitwiseXorKHR, sycl::bit_xor<T>)
+__SYCL_CALC_OVERLOAD(GroupOpISigned, BitwiseAndKHR, sycl::bit_and<T>)
+__SYCL_CALC_OVERLOAD(GroupOpIUnsigned, BitwiseAndKHR, sycl::bit_and<T>)
+
+#undef __SYCL_CALC_OVERLOAD
+
+template <__spv::GroupOperation O, typename Group, typename T,
+          template <typename> class BinaryOperation>
+static T calc(Group g, typename GroupOpTag<T>::type, T x,
+              BinaryOperation<void>) {
+  return calc<O>(g, typename GroupOpTag<T>::type(), x, BinaryOperation<T>());
+}
+
+} // namespace detail
+#endif // __SYCL_DEVICE_ONLY__
+
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
+} // namespace sycl

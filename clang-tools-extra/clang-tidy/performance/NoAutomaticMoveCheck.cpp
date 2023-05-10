@@ -14,9 +14,13 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace performance {
+namespace clang::tidy::performance {
+
+namespace {
+
+AST_MATCHER(VarDecl, isNRVOVariable) { return Node.isNRVOVariable(); }
+
+} // namespace
 
 NoAutomaticMoveCheck::NoAutomaticMoveCheck(StringRef Name,
                                            ClangTidyContext *Context)
@@ -25,8 +29,9 @@ NoAutomaticMoveCheck::NoAutomaticMoveCheck(StringRef Name,
           utils::options::parseStringList(Options.get("AllowedTypes", ""))) {}
 
 void NoAutomaticMoveCheck::registerMatchers(MatchFinder *Finder) {
-  const auto ConstLocalVariable =
+  const auto NonNrvoConstLocalVariable =
       varDecl(hasLocalStorage(), unless(hasType(lValueReferenceType())),
+              unless(isNRVOVariable()),
               hasType(qualType(
                   isConstQualified(),
                   hasCanonicalType(matchers::isExpensiveToCopy()),
@@ -44,13 +49,13 @@ void NoAutomaticMoveCheck::registerMatchers(MatchFinder *Finder) {
                               pointee(type(equalsBoundNode("SrcT")))))))))));
 
   Finder->addMatcher(
-      traverse(ast_type_traits::TK_AsIs,
+      traverse(TK_AsIs,
                returnStmt(hasReturnValue(
                    ignoringElidableConstructorCall(ignoringParenImpCasts(
                        cxxConstructExpr(
                            hasDeclaration(LValueRefCtor),
                            hasArgument(0, ignoringParenImpCasts(declRefExpr(
-                                              to(ConstLocalVariable)))))
+                                              to(NonNrvoConstLocalVariable)))))
                            .bind("ctor_call")))))),
       this);
 }
@@ -67,6 +72,4 @@ void NoAutomaticMoveCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
                 utils::options::serializeStringList(AllowedTypes));
 }
 
-} // namespace performance
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::performance

@@ -41,7 +41,8 @@
 #define SPIRV_LIBSPIRV_SPIRVOPCODE_H
 
 #include "SPIRVUtil.h"
-#include "spirv.hpp"
+#include "spirv/unified1/spirv.hpp"
+#include "spirv_internal.hpp"
 #include <string>
 
 using namespace spv;
@@ -49,16 +50,24 @@ namespace SPIRV {
 
 template <> inline void SPIRVMap<Op, std::string>::init() {
 #define _SPIRV_OP(x, ...) add(Op##x, #x);
+#define _SPIRV_OP_INTERNAL(x, ...) add(internal::Op##x, #x);
 #include "SPIRVOpCodeEnum.h"
+#include "SPIRVOpCodeEnumInternal.h"
+#undef _SPIRV_OP_INTERNAL
 #undef _SPIRV_OP
 }
 SPIRV_DEF_NAMEMAP(Op, OpCodeNameMap)
 
+inline bool isFPAtomicOpCode(Op OpCode) {
+  return OpCode == OpAtomicFAddEXT || OpCode == OpAtomicFMinEXT ||
+         OpCode == OpAtomicFMaxEXT;
+}
 inline bool isAtomicOpCode(Op OpCode) {
   static_assert(OpAtomicLoad < OpAtomicXor, "");
   return ((unsigned)OpCode >= OpAtomicLoad &&
           (unsigned)OpCode <= OpAtomicXor) ||
-         OpCode == OpAtomicFlagTestAndSet || OpCode == OpAtomicFlagClear;
+         OpCode == OpAtomicFlagTestAndSet || OpCode == OpAtomicFlagClear ||
+         isFPAtomicOpCode(OpCode);
 }
 inline bool isBinaryOpCode(Op OpCode) {
   return ((unsigned)OpCode >= OpIAdd && (unsigned)OpCode <= OpFMod) ||
@@ -96,7 +105,9 @@ inline bool isCmpOpCode(Op OpCode) {
 
 inline bool isCvtOpCode(Op OpCode) {
   return ((unsigned)OpCode >= OpConvertFToU && (unsigned)OpCode <= OpBitcast) ||
-         OpCode == OpSatConvertSToU || OpCode == OpSatConvertUToS;
+         OpCode == OpSatConvertSToU || OpCode == OpSatConvertUToS ||
+         OpCode == OpPtrCastToCrossWorkgroupINTEL ||
+         OpCode == OpCrossWorkgroupCastToPtrINTEL;
 }
 
 inline bool isCvtToUnsignedOpCode(Op OpCode) {
@@ -107,6 +118,10 @@ inline bool isCvtToUnsignedOpCode(Op OpCode) {
 inline bool isCvtFromUnsignedOpCode(Op OpCode) {
   return OpCode == OpConvertUToF || OpCode == OpUConvert ||
          OpCode == OpSatConvertUToS;
+}
+
+inline bool isSatCvtOpCode(Op OpCode) {
+  return OpCode == OpSatConvertUToS || OpCode == OpSatConvertSToU;
 }
 
 inline bool isOpaqueGenericTypeOpCode(Op OpCode) {
@@ -126,7 +141,9 @@ inline bool isAccessChainOpCode(Op OpCode) {
 inline bool hasExecScope(Op OpCode) {
   unsigned OC = OpCode;
   return (OpGroupWaitEvents <= OC && OC <= OpGroupSMax) ||
-         (OpGroupReserveReadPipePackets <= OC && OC <= OpGroupCommitWritePipe);
+         (OpGroupReserveReadPipePackets <= OC &&
+          OC <= OpGroupCommitWritePipe) ||
+         (OC == OpGroupNonUniformRotateKHR);
 }
 
 inline bool hasGroupOperation(Op OpCode) {
@@ -136,9 +153,31 @@ inline bool hasGroupOperation(Op OpCode) {
          (OpGroupNonUniformIAdd <= OC && OC <= OpGroupNonUniformLogicalXor);
 }
 
+inline bool isUniformArithmeticOpCode(Op OpCode) {
+  unsigned OC = OpCode;
+  return (OpGroupIAdd <= OC && OC <= OpGroupSMax);
+}
+
+inline bool isNonUniformArithmeticOpCode(Op OpCode) {
+  unsigned OC = OpCode;
+  return (OpGroupNonUniformIAdd <= OC && OC <= OpGroupNonUniformLogicalXor);
+}
+
+inline bool isGroupLogicalOpCode(Op OpCode) {
+  unsigned OC = OpCode;
+  return OC == OpGroupNonUniformLogicalAnd ||
+         OC == OpGroupNonUniformLogicalOr || OC == OpGroupNonUniformLogicalXor;
+}
+
 inline bool isGroupOpCode(Op OpCode) {
   unsigned OC = OpCode;
   return OpGroupAll <= OC && OC <= OpGroupSMax;
+}
+
+inline bool isGroupNonUniformOpcode(Op OpCode) {
+  unsigned OC = OpCode;
+  return (OpGroupNonUniformElect <= OC && OC <= OpGroupNonUniformQuadSwap) ||
+         (OC == OpGroupNonUniformRotateKHR);
 }
 
 inline bool isMediaBlockINTELOpcode(Op OpCode) {
@@ -173,10 +212,15 @@ inline bool isSubgroupAvcINTELEvaluateOpcode(Op OpCode) {
           OC <= OpSubgroupAvcSicEvaluateWithMultiReferenceInterlacedINTEL);
 }
 
+inline bool isVCOpCode(Op OpCode) { return OpCode == OpTypeBufferSurfaceINTEL; }
+
 inline bool isTypeOpCode(Op OpCode) {
   unsigned OC = OpCode;
   return (OpTypeVoid <= OC && OC <= OpTypePipe) || OC == OpTypePipeStorage ||
-         isSubgroupAvcINTELTypeOpCode(OpCode) || OC == OpTypeVmeImageINTEL;
+         isSubgroupAvcINTELTypeOpCode(OpCode) || OC == OpTypeVmeImageINTEL ||
+         isVCOpCode(OpCode) || OC == internal::OpTypeTokenINTEL ||
+         OC == internal::OpTypeJointMatrixINTEL ||
+         OC == internal::OpTypeJointMatrixINTELv2;
 }
 
 inline bool isSpecConstantOpCode(Op OpCode) {
@@ -187,7 +231,7 @@ inline bool isSpecConstantOpCode(Op OpCode) {
 inline bool isConstantOpCode(Op OpCode) {
   unsigned OC = OpCode;
   return (OpConstantTrue <= OC && OC <= OpSpecConstantOp) || OC == OpUndef ||
-         OC == OpConstantPipeStorage;
+         OC == OpConstantPipeStorage || OC == OpConstantFunctionPointerINTEL;
 }
 
 inline bool isModuleScopeAllowedOpCode(Op OpCode) {
@@ -198,6 +242,15 @@ inline bool isModuleScopeAllowedOpCode(Op OpCode) {
 inline bool isIntelSubgroupOpCode(Op OpCode) {
   unsigned OC = OpCode;
   return OpSubgroupShuffleINTEL <= OC && OC <= OpSubgroupImageBlockWriteINTEL;
+}
+
+inline bool isEventOpCode(Op OpCode) {
+  return OpRetainEvent <= OpCode && OpCode <= OpCaptureEventProfilingInfo;
+}
+
+inline bool isSplitBarrierINTELOpCode(Op OpCode) {
+  return OpCode == OpControlBarrierArriveINTEL ||
+         OpCode == OpControlBarrierWaitINTEL;
 }
 
 } // namespace SPIRV

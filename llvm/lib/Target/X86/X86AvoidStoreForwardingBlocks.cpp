@@ -154,7 +154,7 @@ static bool isPotentialBlockedMemCpyLd(unsigned Opcode) {
   return isXMMLoadOpcode(Opcode) || isYMMLoadOpcode(Opcode);
 }
 
-static bool isPotentialBlockedMemCpyPair(int LdOpcode, int StOpcode) {
+static bool isPotentialBlockedMemCpyPair(unsigned LdOpcode, unsigned StOpcode) {
   switch (LdOpcode) {
   case X86::MOVUPSrm:
   case X86::MOVAPSrm:
@@ -206,7 +206,7 @@ static bool isPotentialBlockedMemCpyPair(int LdOpcode, int StOpcode) {
   }
 }
 
-static bool isPotentialBlockingStoreInst(int Opcode, int LoadOpcode) {
+static bool isPotentialBlockingStoreInst(unsigned Opcode, unsigned LoadOpcode) {
   bool PBlock = false;
   PBlock |= Opcode == X86::MOV64mr || Opcode == X86::MOV64mi32 ||
             Opcode == X86::MOV32mr || Opcode == X86::MOV32mi ||
@@ -360,22 +360,17 @@ findPotentialBlockers(MachineInstr *LoadInst) {
   if (BlockCount < InspectionLimit) {
     MachineBasicBlock *MBB = LoadInst->getParent();
     int LimitLeft = InspectionLimit - BlockCount;
-    for (MachineBasicBlock::pred_iterator PB = MBB->pred_begin(),
-                                          PE = MBB->pred_end();
-         PB != PE; ++PB) {
-      MachineBasicBlock *PMBB = *PB;
+    for (MachineBasicBlock *PMBB : MBB->predecessors()) {
       int PredCount = 0;
-      for (MachineBasicBlock::reverse_iterator PBInst = PMBB->rbegin(),
-                                               PME = PMBB->rend();
-           PBInst != PME; ++PBInst) {
-        if (PBInst->isMetaInstruction())
+      for (MachineInstr &PBInst : llvm::reverse(*PMBB)) {
+        if (PBInst.isMetaInstruction())
           continue;
         PredCount++;
         if (PredCount >= LimitLeft)
           break;
-        if (PBInst->getDesc().isCall())
+        if (PBInst.getDesc().isCall())
           break;
-        PotentialBlockers.push_back(&*PBInst);
+        PotentialBlockers.push_back(&PBInst);
       }
     }
   }
@@ -529,10 +524,9 @@ bool X86AvoidSFBPass::alias(const MachineMemOperand &Op1,
   int64_t Overlapa = Op1.getSize() + Op1.getOffset() - MinOffset;
   int64_t Overlapb = Op2.getSize() + Op2.getOffset() - MinOffset;
 
-  AliasResult AAResult =
-      AA->alias(MemoryLocation(Op1.getValue(), Overlapa, Op1.getAAInfo()),
-                MemoryLocation(Op2.getValue(), Overlapb, Op2.getAAInfo()));
-  return AAResult != NoAlias;
+  return !AA->isNoAlias(
+      MemoryLocation(Op1.getValue(), Overlapa, Op1.getAAInfo()),
+      MemoryLocation(Op2.getValue(), Overlapb, Op2.getAAInfo()));
 }
 
 void X86AvoidSFBPass::findPotentiallylBlockedCopies(MachineFunction &MF) {
@@ -543,19 +537,15 @@ void X86AvoidSFBPass::findPotentiallylBlockedCopies(MachineFunction &MF) {
       int DefVR = MI.getOperand(0).getReg();
       if (!MRI->hasOneNonDBGUse(DefVR))
         continue;
-      for (auto UI = MRI->use_nodbg_begin(DefVR), UE = MRI->use_nodbg_end();
-           UI != UE;) {
-        MachineOperand &StoreMO = *UI++;
+      for (MachineOperand &StoreMO :
+           llvm::make_early_inc_range(MRI->use_nodbg_operands(DefVR))) {
         MachineInstr &StoreMI = *StoreMO.getParent();
         // Skip cases where the memcpy may overlap.
         if (StoreMI.getParent() == MI.getParent() &&
             isPotentialBlockedMemCpyPair(MI.getOpcode(), StoreMI.getOpcode()) &&
             isRelevantAddressingMode(&MI) &&
-            isRelevantAddressingMode(&StoreMI)) {
-          assert(MI.hasOneMemOperand() &&
-                 "Expected one memory operand for load instruction");
-          assert(StoreMI.hasOneMemOperand() &&
-                 "Expected one memory operand for store instruction");
+            isRelevantAddressingMode(&StoreMI) &&
+            MI.hasOneMemOperand() && StoreMI.hasOneMemOperand()) {
           if (!alias(**MI.memoperands_begin(), **StoreMI.memoperands_begin()))
             BlockedLoadsStoresPairs.push_back(std::make_pair(&MI, &StoreMI));
         }
@@ -695,10 +685,9 @@ bool X86AvoidSFBPass::runOnMachineFunction(MachineFunction &MF) {
     for (auto *PBInst : PotentialBlockers) {
       if (!isPotentialBlockingStoreInst(PBInst->getOpcode(),
                                         LoadInst->getOpcode()) ||
-          !isRelevantAddressingMode(PBInst))
+          !isRelevantAddressingMode(PBInst) || !PBInst->hasOneMemOperand())
         continue;
       int64_t PBstDispImm = getDispOperand(PBInst).getImm();
-      assert(PBInst->hasOneMemOperand() && "Expected One Memory Operand");
       unsigned PBstSize = (*PBInst->memoperands_begin())->getSize();
       // This check doesn't cover all cases, but it will suffice for now.
       // TODO: take branch probability into consideration, if the blocking

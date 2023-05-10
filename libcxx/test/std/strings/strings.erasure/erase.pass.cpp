@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+
 // UNSUPPORTED: c++03, c++11, c++14, c++17
 
 // <string>
@@ -21,7 +22,7 @@
 #include "min_allocator.h"
 
 template <class S, class U>
-void test0(S s, U val, S expected, size_t expected_erased_count) {
+void test0(S s, U val, S expected, std::size_t expected_erased_count) {
   ASSERT_SAME_TYPE(typename S::size_type, decltype(std::erase(s, val)));
   assert(expected_erased_count == std::erase(s, val));
   LIBCPP_ASSERT(s.__invariants());

@@ -26,7 +26,7 @@ using namespace llvm;
 
 Regex::Regex() : preg(nullptr), error(REG_BADPAT) {}
 
-Regex::Regex(StringRef regex, unsigned Flags) {
+Regex::Regex(StringRef regex, RegexFlags Flags) {
   unsigned flags = 0;
   preg = new llvm_regex();
   preg->re_endp = regex.end();
@@ -38,6 +38,9 @@ Regex::Regex(StringRef regex, unsigned Flags) {
     flags |= REG_EXTENDED;
   error = llvm_regcomp(preg, regex.data(), flags|REG_PEND);
 }
+
+Regex::Regex(StringRef regex, unsigned Flags)
+    : Regex(regex, static_cast<RegexFlags>(Flags)) {}
 
 Regex::Regex(Regex &&regex) {
   preg = regex.preg;
@@ -215,10 +218,10 @@ bool Regex::isLiteralERE(StringRef Str) {
 
 std::string Regex::escape(StringRef String) {
   std::string RegexStr;
-  for (unsigned i = 0, e = String.size(); i != e; ++i) {
-    if (strchr(RegexMetachars, String[i]))
+  for (char C : String) {
+    if (strchr(RegexMetachars, C))
       RegexStr += '\\';
-    RegexStr += String[i];
+    RegexStr += C;
   }
 
   return RegexStr;

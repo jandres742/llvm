@@ -20,10 +20,10 @@ namespace hexagon {
 // For Hexagon, we do not need to instantiate tools for PreProcess, PreCompile
 // and Compile.
 // We simply use "clang -cc1" for those actions.
-class LLVM_LIBRARY_VISIBILITY Assembler : public GnuTool {
+class LLVM_LIBRARY_VISIBILITY Assembler : public Tool {
 public:
   Assembler(const ToolChain &TC)
-      : GnuTool("hexagon::Assembler", "hexagon-as", TC) {}
+      : Tool("hexagon::Assembler", "hexagon-as", TC) {}
 
   bool hasIntegratedCPP() const override { return false; }
 
@@ -35,9 +35,9 @@ public:
                     const char *LinkingOutput) const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
+class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
 public:
-  Linker(const ToolChain &TC) : GnuTool("hexagon::Linker", "hexagon-ld", TC) {}
+  Linker(const ToolChain &TC) : Tool("hexagon::Linker", "hexagon-ld", TC) {}
 
   bool hasIntegratedCPP() const override { return false; }
   bool isLinkJob() const override { return true; }
@@ -94,9 +94,6 @@ public:
                            llvm::opt::ArgStringList &CmdArgs) const override;
 
   StringRef GetGCCLibAndIncVersion() const { return GCCLibAndIncVersion.Text; }
-  bool IsIntegratedAssemblerDefault() const override {
-    return true;
-  }
 
   std::string getHexagonTargetDir(
       const std::string &InstalledDir,
@@ -104,12 +101,14 @@ public:
   void getHexagonLibraryPaths(const llvm::opt::ArgList &Args,
       ToolChain::path_list &LibPaths) const;
 
-  static bool isAutoHVXEnabled(const llvm::opt::ArgList &Args);
-  static const StringRef GetDefaultCPU();
-  static const StringRef GetTargetCPUVersion(const llvm::opt::ArgList &Args);
+  std::string getCompilerRTPath() const override;
 
-  static Optional<unsigned> getSmallDataThreshold(
-      const llvm::opt::ArgList &Args);
+  static bool isAutoHVXEnabled(const llvm::opt::ArgList &Args);
+  static StringRef GetDefaultCPU();
+  static StringRef GetTargetCPUVersion(const llvm::opt::ArgList &Args);
+
+  static std::optional<unsigned>
+  getSmallDataThreshold(const llvm::opt::ArgList &Args);
 };
 
 } // end namespace toolchains

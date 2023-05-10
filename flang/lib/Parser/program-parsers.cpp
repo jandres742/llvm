@@ -9,7 +9,6 @@
 // Per-type parsers for program units
 
 #include "basic-parsers.h"
-#include "debug-parser.h"
 #include "expr-parsers.h"
 #include "misc-parsers.h"
 #include "stmt-parser.h"
@@ -19,20 +18,6 @@
 #include "flang/Parser/parse-tree.h"
 
 namespace Fortran::parser {
-
-// R501 program -> program-unit [program-unit]...
-// This is the top-level production for the Fortran language.
-// F'2018 6.3.1 defines a program unit as a sequence of one or more lines,
-// implying that a line can't be part of two distinct program units.
-// Consequently, a program unit END statement should be the last statement
-// on its line.  We parse those END statements via unterminatedStatement()
-// and then skip over the end of the line here.
-TYPE_PARSER(construct<Program>(
-    extension<LanguageFeature::EmptySourceFile>(skipStuffBeforeStatement >>
-        !nextCh >> defaulted(cut >> some(Parser<ProgramUnit>{}))) ||
-    some(StartNewSubprogram{} >> Parser<ProgramUnit>{} / skipMany(";"_tok) /
-            space / recovery(endOfLine, SkipPast<'\n'>{})) /
-        skipStuffBeforeStatement))
 
 // R502 program-unit ->
 //        main-program | external-subprogram | module | submodule | block-data
@@ -45,22 +30,43 @@ TYPE_PARSER(construct<Program>(
 // statement without an otherwise empty list of dummy arguments.  That
 // MODULE prefix is disallowed by a constraint (C1547) in this context,
 // so the standard language is not ambiguous, but disabling its misrecognition
-// here would require context-sensitive keyword recognition or (or via)
-// variant parsers for several productions; giving the "module" production
-// priority here is a cleaner solution, though regrettably subtle.  Enforcing
-// C1547 is done in semantics.
-TYPE_PARSER(construct<ProgramUnit>(indirect(Parser<Module>{})) ||
+// here would require context-sensitive keyword recognition or variant parsers
+// for several productions; giving the "module" production priority here is a
+// cleaner solution, though regrettably subtle.
+// Enforcing C1547 is done in semantics.
+static constexpr auto programUnit{
+    construct<ProgramUnit>(indirect(Parser<Module>{})) ||
     construct<ProgramUnit>(indirect(functionSubprogram)) ||
     construct<ProgramUnit>(indirect(subroutineSubprogram)) ||
     construct<ProgramUnit>(indirect(Parser<Submodule>{})) ||
     construct<ProgramUnit>(indirect(Parser<BlockData>{})) ||
-    construct<ProgramUnit>(indirect(Parser<MainProgram>{})))
+    construct<ProgramUnit>(indirect(Parser<MainProgram>{}))};
+static constexpr auto normalProgramUnit{StartNewSubprogram{} >> programUnit /
+        skipMany(";"_tok) / space / recovery(endOfLine, SkipPast<'\n'>{})};
+static constexpr auto globalCompilerDirective{
+    construct<ProgramUnit>(indirect(compilerDirective))};
+
+// R501 program -> program-unit [program-unit]...
+// This is the top-level production for the Fortran language.
+// F'2018 6.3.1 defines a program unit as a sequence of one or more lines,
+// implying that a line can't be part of two distinct program units.
+// Consequently, a program unit END statement should be the last statement
+// on its line.  We parse those END statements via unterminatedStatement()
+// and then skip over the end of the line here.
+TYPE_PARSER(
+    construct<Program>(extension<LanguageFeature::EmptySourceFile>(
+                           "nonstandard usage: empty source file"_port_en_US,
+                           skipStuffBeforeStatement >> !nextCh >>
+                               pure<std::list<ProgramUnit>>()) ||
+        some(globalCompilerDirective || normalProgramUnit) /
+            skipStuffBeforeStatement))
 
 // R504 specification-part ->
 //         [use-stmt]... [import-stmt]... [implicit-part]
 //         [declaration-construct]...
 TYPE_CONTEXT_PARSER("specification part"_en_US,
-    construct<SpecificationPart>(many(openmpDeclarativeConstruct),
+    construct<SpecificationPart>(many(openaccDeclarativeConstruct),
+        many(openmpDeclarativeConstruct), many(indirect(compilerDirective)),
         many(statement(indirect(Parser<UseStmt>{}))),
         many(unambiguousStatement(indirect(Parser<ImportStmt>{}))),
         implicitPart, many(declarationConstruct)))
@@ -76,7 +82,7 @@ TYPE_CONTEXT_PARSER("specification part"_en_US,
 // are allowed, and so we have a variant production for declaration-construct
 // that implements those constraints.
 constexpr auto execPartLookAhead{
-    first(actionStmt >> ok, ompEndLoopDirective >> ok, openmpConstruct >> ok,
+    first(actionStmt >> ok, openaccConstruct >> ok, openmpConstruct >> ok,
         "ASSOCIATE ("_tok, "BLOCK"_tok, "SELECT"_tok, "CHANGE TEAM"_sptok,
         "CRITICAL"_tok, "DO"_tok, "IF ("_tok, "WHERE ("_tok, "FORALL ("_tok)};
 constexpr auto declErrorRecovery{
@@ -126,7 +132,8 @@ constexpr auto limitedDeclarationConstruct{recovery(
 // specialized error recovery in the event of a spurious executable
 // statement.
 constexpr auto limitedSpecificationPart{inContext("specification part"_en_US,
-    construct<SpecificationPart>(many(openmpDeclarativeConstruct),
+    construct<SpecificationPart>(many(openaccDeclarativeConstruct),
+        many(openmpDeclarativeConstruct), many(indirect(compilerDirective)),
         many(statement(indirect(Parser<UseStmt>{}))),
         many(unambiguousStatement(indirect(Parser<ImportStmt>{}))),
         implicitPart, many(limitedDeclarationConstruct)))};
@@ -151,6 +158,8 @@ TYPE_CONTEXT_PARSER("specification construct"_en_US,
         construct<SpecificationConstruct>(
             statement(indirect(typeDeclarationStmt))),
         construct<SpecificationConstruct>(indirect(Parser<StructureDef>{})),
+        construct<SpecificationConstruct>(
+            indirect(openaccDeclarativeConstruct)),
         construct<SpecificationConstruct>(indirect(openmpDeclarativeConstruct)),
         construct<SpecificationConstruct>(indirect(compilerDirective))))
 
@@ -196,6 +205,7 @@ TYPE_CONTEXT_PARSER("main program"_en_US,
 TYPE_CONTEXT_PARSER("PROGRAM statement"_en_US,
     construct<ProgramStmt>("PROGRAM" >> name /
             maybe(extension<LanguageFeature::ProgramParentheses>(
+                "nonstandard usage: parentheses in PROGRAM statement"_port_en_US,
                 parenthesized(ok)))))
 
 // R1403 end-program-stmt -> END [PROGRAM [program-name]]
@@ -261,9 +271,9 @@ TYPE_PARSER(construct<Rename>("OPERATOR (" >>
 
 // R1412 only -> generic-spec | only-use-name | rename
 // R1413 only-use-name -> use-name
+// N.B. generic-spec and only-use-name are ambiguous; resolved with symbols
 TYPE_PARSER(construct<Only>(Parser<Rename>{}) ||
-    construct<Only>(indirect(genericSpec)) ||
-    construct<Only>(name)) // TODO: ambiguous, accepted by genericSpec
+    construct<Only>(indirect(genericSpec)) || construct<Only>(name))
 
 // R1416 submodule ->
 //         submodule-stmt [specification-part] [module-subprogram-part]
@@ -318,7 +328,9 @@ TYPE_PARSER(construct<InterfaceStmt>("INTERFACE" >> maybe(genericSpec)) ||
     construct<InterfaceStmt>(construct<Abstract>("ABSTRACT INTERFACE"_sptok)))
 
 // R1504 end-interface-stmt -> END INTERFACE [generic-spec]
-TYPE_PARSER(construct<EndInterfaceStmt>("END INTERFACE" >> maybe(genericSpec)))
+TYPE_PARSER(
+    construct<EndInterfaceStmt>(recovery("END INTERFACE" >> maybe(genericSpec),
+        constructEndStmtErrorRecovery >> pure<std::optional<GenericSpec>>())))
 
 // R1505 interface-body ->
 //         function-stmt [specification-part] end-function-stmt |
@@ -441,10 +453,14 @@ TYPE_PARSER(construct<ActualArgSpec>(
 // Semantics sorts it all out later.
 TYPE_PARSER(construct<ActualArg>(expr) ||
     construct<ActualArg>(Parser<AltReturnSpec>{}) ||
-    extension<LanguageFeature::PercentRefAndVal>(construct<ActualArg>(
-        construct<ActualArg::PercentRef>("%REF" >> parenthesized(variable)))) ||
-    extension<LanguageFeature::PercentRefAndVal>(construct<ActualArg>(
-        construct<ActualArg::PercentVal>("%VAL" >> parenthesized(expr)))))
+    extension<LanguageFeature::PercentRefAndVal>(
+        "nonstandard usage: %REF"_port_en_US,
+        construct<ActualArg>(construct<ActualArg::PercentRef>(
+            "%REF" >> parenthesized(variable)))) ||
+    extension<LanguageFeature::PercentRefAndVal>(
+        "nonstandard usage: %VAL"_port_en_US,
+        construct<ActualArg>(
+            construct<ActualArg::PercentVal>("%VAL" >> parenthesized(expr)))))
 
 // R1525 alt-return-spec -> * label
 TYPE_PARSER(construct<AltReturnSpec>(star >> label))
@@ -477,6 +493,7 @@ TYPE_CONTEXT_PARSER("FUNCTION statement"_en_US,
     construct<FunctionStmt>(many(prefixSpec), "FUNCTION" >> name,
         parenthesized(optionalList(name)), maybe(suffix)) ||
         extension<LanguageFeature::OmitFunctionDummies>(
+            "nonstandard usage: FUNCTION statement without dummy argument list"_port_en_US,
             construct<FunctionStmt>( // PGI & Intel accept "FUNCTION F"
                 many(prefixSpec), "FUNCTION" >> name,
                 construct<std::list<Name>>(),
@@ -509,8 +526,8 @@ TYPE_PARSER(
     construct<SubroutineStmt>(many(prefixSpec), "SUBROUTINE" >> name,
         parenthesized(optionalList(dummyArg)), maybe(languageBindingSpec)) ||
     construct<SubroutineStmt>(many(prefixSpec), "SUBROUTINE" >> name,
-        defaulted(cut >> many(dummyArg)),
-        defaulted(cut >> maybe(languageBindingSpec))))
+        pure<std::list<DummyArg>>(),
+        pure<std::optional<LanguageBindingSpec>>()))
 
 // R1536 dummy-arg -> dummy-arg-name | *
 TYPE_PARSER(construct<DummyArg>(name) || construct<DummyArg>(star))

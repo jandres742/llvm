@@ -9,13 +9,14 @@
 #ifndef LLDB_API_SBDEBUGGER_H
 #define LLDB_API_SBDEBUGGER_H
 
-#include <stdio.h>
+#include <cstdio>
 
 #include "lldb/API/SBDefines.h"
 #include "lldb/API/SBPlatform.h"
 
 namespace lldb {
 
+#ifndef SWIG
 class LLDB_API SBInputReader {
 public:
   SBInputReader() = default;
@@ -30,22 +31,84 @@ public:
   void SetIsDone(bool);
   bool IsActive() const;
 };
+#endif
 
 class LLDB_API SBDebugger {
 public:
+  FLAGS_ANONYMOUS_ENUM(){
+      eBroadcastBitProgress = (1 << 0),
+      eBroadcastBitWarning = (1 << 1),
+      eBroadcastBitError = (1 << 2),
+  };
+
   SBDebugger();
 
   SBDebugger(const lldb::SBDebugger &rhs);
 
+#ifndef SWIG
   SBDebugger(const lldb::DebuggerSP &debugger_sp);
+#endif
 
   ~SBDebugger();
+
+  static const char *GetBroadcasterClass();
+
+  lldb::SBBroadcaster GetBroadcaster();
+
+  /// Get progress data from a SBEvent whose type is eBroadcastBitProgress.
+  ///
+  /// \param [in] event
+  ///   The event to extract the progress information from.
+  ///
+  /// \param [out] progress_id
+  ///   The unique integer identifier for the progress to report.
+  ///
+  /// \param [out] completed
+  ///   The amount of work completed. If \a completed is zero, then this event
+  ///   is a progress started event. If \a completed is equal to \a total, then
+  ///   this event is a progress end event. Otherwise completed indicates the
+  ///   current progress update.
+  ///
+  /// \param [out] total
+  ///   The total amount of work units that need to be completed. If this value
+  ///   is UINT64_MAX, then an indeterminate progress indicator should be
+  ///   displayed.
+  ///
+  /// \param [out] is_debugger_specific
+  ///   Set to true if this progress is specific to this debugger only. Many
+  ///   progress events are not specific to a debugger instance, like any
+  ///   progress events for loading information in modules since LLDB has a
+  ///   global module cache that all debuggers use.
+  ///
+  /// \return The message for the progress. If the returned value is NULL, then
+  ///   \a event was not a eBroadcastBitProgress event.
+#ifdef SWIG
+  static const char *GetProgressFromEvent(const lldb::SBEvent &event,
+                                          uint64_t &OUTPUT,
+                                          uint64_t &OUTPUT, uint64_t &OUTPUT,
+                                          bool &OUTPUT);
+#else
+  static const char *GetProgressFromEvent(const lldb::SBEvent &event,
+                                          uint64_t &progress_id,
+                                          uint64_t &completed, uint64_t &total,
+                                          bool &is_debugger_specific);
+#endif
+
+  static lldb::SBStructuredData
+  GetProgressDataFromEvent(const lldb::SBEvent &event);
+
+  static lldb::SBStructuredData
+  GetDiagnosticFromEvent(const lldb::SBEvent &event);
 
   lldb::SBDebugger &operator=(const lldb::SBDebugger &rhs);
 
   static void Initialize();
 
   static lldb::SBError InitializeWithErrorHandling();
+
+  static void PrintStackTraceOnError();
+
+  static void PrintDiagnosticsOnError();
 
   static void Terminate();
 
@@ -68,6 +131,21 @@ public:
 
   void Clear();
 
+  /// Getting a specific setting value into SBStructuredData format.
+  /// Client can specify empty string or null to get all settings.
+  ///
+  /// Example usages:
+  /// lldb::SBStructuredData settings = debugger.GetSetting();
+  /// lldb::SBStructuredData settings = debugger.GetSetting(nullptr);
+  /// lldb::SBStructuredData settings = debugger.GetSetting("");
+  /// lldb::SBStructuredData settings = debugger.GetSetting("target.arg0");
+  /// lldb::SBStructuredData settings = debugger.GetSetting("target");
+  ///
+  /// \param[out] setting
+  ///   Property setting path to retrieve values. e.g "target.source-map"
+  ///
+  lldb::SBStructuredData GetSetting(const char *setting = nullptr);
+
   void SetAsync(bool b);
 
   bool GetAsync();
@@ -76,17 +154,23 @@ public:
 
   void SkipAppInitFiles(bool b);
 
+#ifndef SWIG
   void SetInputFileHandle(FILE *f, bool transfer_ownership);
 
   void SetOutputFileHandle(FILE *f, bool transfer_ownership);
 
   void SetErrorFileHandle(FILE *f, bool transfer_ownership);
+#endif
 
+#ifndef SWIG
   FILE *GetInputFileHandle();
 
   FILE *GetOutputFileHandle();
 
   FILE *GetErrorFileHandle();
+#endif
+
+  SBError SetInputString(const char *data);
 
   SBError SetInputFile(SBFile file);
 
@@ -113,18 +197,29 @@ public:
   lldb::SBCommandInterpreter GetCommandInterpreter();
 
   void HandleCommand(const char *command);
+  
+  void RequestInterrupt();
+  void CancelInterruptRequest();
+  bool InterruptRequested();
 
   lldb::SBListener GetListener();
 
+#ifndef SWIG
   void HandleProcessEvent(const lldb::SBProcess &process,
                           const lldb::SBEvent &event, FILE *out,
                           FILE *err); // DEPRECATED
+#endif
 
   void HandleProcessEvent(const lldb::SBProcess &process,
                           const lldb::SBEvent &event, SBFile out, SBFile err);
 
+#ifdef SWIG
+  void HandleProcessEvent(const lldb::SBProcess &process,
+                          const lldb::SBEvent &event, FileSP BORROWED, FileSP BORROWED);
+#else
   void HandleProcessEvent(const lldb::SBProcess &process,
                           const lldb::SBEvent &event, FileSP out, FileSP err);
+#endif
 
   lldb::SBTarget CreateTarget(const char *filename, const char *target_triple,
                               const char *platform_name,
@@ -209,6 +304,8 @@ public:
 
   lldb::ScriptLanguage GetScriptingLanguage(const char *script_language_name);
 
+  SBStructuredData GetScriptInterpreterInfo(ScriptLanguage);
+
   static const char *GetVersionString();
 
   static const char *StateAsCString(lldb::StateType state);
@@ -223,8 +320,13 @@ public:
 
   void SetLoggingCallback(lldb::LogOutputCallback log_callback, void *baton);
 
+  void SetDestroyCallback(lldb::SBDebuggerDestroyCallback destroy_callback,
+                          void *baton);
+
   // DEPRECATED
+#ifndef SWIG
   void DispatchInput(void *baton, const void *data, size_t data_len);
+#endif
 
   void DispatchInput(const void *data, size_t data_len);
 
@@ -232,7 +334,9 @@ public:
 
   void DispatchInputEndOfFile();
 
+#ifndef SWIG
   void PushInputReader(lldb::SBInputReader &reader);
+#endif
 
   const char *GetInstanceName();
 
@@ -264,6 +368,10 @@ public:
 
   void SetScriptLanguage(lldb::ScriptLanguage script_lang);
 
+  lldb::LanguageType GetREPLLanguage() const;
+
+  void SetREPLLanguage(lldb::LanguageType repl_lang);
+
   bool GetCloseInputOnEOF() const;
 
   void SetCloseInputOnEOF(bool b);
@@ -290,6 +398,7 @@ public:
 
   SBTypeSynthetic GetSyntheticForType(SBTypeNameSpecifier);
 
+#ifndef SWIG
   /// Run the command interpreter.
   ///
   /// \param[in] auto_handle_events
@@ -302,6 +411,7 @@ public:
   ///     and overrides the corresponding option in
   ///     SBCommandInterpreterRunOptions.
   void RunCommandInterpreter(bool auto_handle_events, bool spawn_thread);
+#endif
 
   /// Run the command interpreter.
   ///
@@ -326,15 +436,33 @@ public:
   ///
   /// \param[out] stopped_for_crash
   ///     Whether the interpreter stopped for a crash.
+#ifdef SWIG
+  %apply int& INOUT { int& num_errors };
+  %apply bool& INOUT { bool& quit_requested };
+  %apply bool& INOUT { bool& stopped_for_crash };
+#endif
   void RunCommandInterpreter(bool auto_handle_events, bool spawn_thread,
                              SBCommandInterpreterRunOptions &options,
                              int &num_errors, bool &quit_requested,
                              bool &stopped_for_crash);
 
+#ifndef SWIG
   SBCommandInterpreterRunResult
   RunCommandInterpreter(const SBCommandInterpreterRunOptions &options);
+#endif
 
   SBError RunREPL(lldb::LanguageType language, const char *repl_options);
+
+  /// Load a trace from a trace description file and create Targets,
+  /// Processes and Threads based on the contents of such file.
+  ///
+  /// \param[out] error
+  ///   An error if the trace could not be created.
+  ///
+  /// \param[in] trace_description_file
+  ///   The file containing the necessary information to load the trace.
+  SBTrace LoadTraceFromFile(SBError &error,
+                            const SBFileSpec &trace_description_file);
 
 private:
   friend class SBCommandInterpreter;
@@ -343,6 +471,7 @@ private:
   friend class SBProcess;
   friend class SBSourceManager;
   friend class SBTarget;
+  friend class SBTrace;
 
   lldb::SBTarget FindTargetWithLLDBProcess(const lldb::ProcessSP &processSP);
 

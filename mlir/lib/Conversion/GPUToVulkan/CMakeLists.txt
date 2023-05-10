@@ -1,4 +1,4 @@
-add_mlir_conversion_library(MLIRGPUtoVulkanTransforms
+add_mlir_conversion_library(MLIRGPUToVulkanTransforms
   ConvertLaunchFuncToVulkanCalls.cpp
   ConvertGPULaunchFuncToVulkanLaunchFunc.cpp
 
@@ -6,14 +6,14 @@ add_mlir_conversion_library(MLIRGPUtoVulkanTransforms
   MLIRConversionPassIncGen
 
   LINK_LIBS PUBLIC
-  MLIRGPU
+  MLIRFuncDialect
+  MLIRGPUOps
   MLIRIR
-  MLIRLLVMIR
+  MLIRLLVMDialect
   MLIRPass
-  MLIRSPIRV
+  MLIRSPIRVDialect
   MLIRSPIRVSerialization
-  MLIRStandardOps
   MLIRSupport
   MLIRTransforms
-  MLIRTranslation
+  MLIRTranslateLib
   )

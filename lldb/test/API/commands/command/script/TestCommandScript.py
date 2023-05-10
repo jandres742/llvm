@@ -10,17 +10,19 @@ from lldbsuite.test.lldbtest import *
 
 
 class CmdPythonTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
     NO_DEBUG_INFO_TESTCASE = True
 
-    @skipIfReproducer # FIXME: Unexpected packet during (active) replay
     def test(self):
         self.build()
         self.pycmd_tests()
 
     def pycmd_tests(self):
         self.runCmd("command source py_import")
+
+        # Test that we did indeed add these commands as user commands:
+        interp = self.dbg.GetCommandInterpreter()
+        self.assertTrue(interp.UserCommandExists("foobar"), "foobar exists")
+        self.assertFalse(interp.CommandExists("foobar"), "It is not a builtin.")
 
         # Test a bunch of different kinds of python callables with
         # both 4 and 5 positional arguments.
@@ -116,7 +118,7 @@ class CmdPythonTestCase(TestBase):
         self.expect("longwait",
                     substrs=['Done; if you saw the delays I am doing OK'])
 
-        self.runCmd("b main")
+        self.runCmd("break set -f main.cpp -l 48")
         self.runCmd("run")
         self.runCmd("mysto 3")
         self.expect("frame variable array",
@@ -148,7 +150,7 @@ class CmdPythonTestCase(TestBase):
         self.expect('my_command Blah', substrs=['Hello Blah, welcome to LLDB'])
 
         self.runCmd(
-            'command script add my_command --class welcome.TargetnameCommand')
+            'command script add my_command -o --class welcome.TargetnameCommand')
         self.expect('my_command', substrs=['a.out'])
 
         self.runCmd("command script clear")
@@ -166,3 +168,23 @@ class CmdPythonTestCase(TestBase):
         self.runCmd('command script add -f bug11569 bug11569')
         # This should not crash.
         self.runCmd('bug11569', check=False)
+
+        # Make sure that a reference to a non-existent class raises an error:
+        bad_class_name = "LLDBNoSuchModule.LLDBNoSuchClass"
+        self.expect("command script add wont-work --class {0}".format(bad_class_name), error=True, substrs = [bad_class_name])
+
+    def test_persistence(self):
+        """
+        Ensure that function arguments meaningfully persist (and do not crash!)
+        even after the function terminates.
+        """
+        self.runCmd("command script import persistence.py")
+        self.runCmd("command script add -f persistence.save_debugger save_debugger")
+        self.expect("save_debugger", substrs=[str(self.dbg)])
+
+        # After the command completes, the debugger object should still be
+        # valid.
+        self.expect("script str(persistence.debugger_copy)", substrs=[str(self.dbg)])
+        # The result object will be replaced by an empty result object (in the
+        # "Started" state).
+        self.expect("script str(persistence.result_copy)", substrs=["Started"])

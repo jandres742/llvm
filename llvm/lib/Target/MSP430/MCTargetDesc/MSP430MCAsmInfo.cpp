@@ -15,13 +15,17 @@ using namespace llvm;
 
 void MSP430MCAsmInfo::anchor() { }
 
-MSP430MCAsmInfo::MSP430MCAsmInfo(const Triple &TT,
-                                 const MCTargetOptions &Options) {
-  CodePointerSize = CalleeSaveStackSlotSize = 2;
+MSP430MCAsmInfo::MSP430MCAsmInfo(const Triple &TT) {
+  CodePointerSize = 2;
+  CalleeSaveStackSlotSize = 2;
 
   CommentString = ";";
   SeparatorString = "{";
 
   AlignmentIsInBytes = false;
   UsesELFSectionDirectiveForBSS = true;
+
+  SupportsDebugInformation = true;
+
+  ExceptionsType = ExceptionHandling::DwarfCFI;
 }

@@ -16,6 +16,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Endian.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace llvm {
@@ -31,13 +32,13 @@ inline void write(raw_ostream &os, value_type value, endianness endian) {
 
 template <>
 inline void write<float>(raw_ostream &os, float value, endianness endian) {
-  write(os, FloatToBits(value), endian);
+  write(os, llvm::bit_cast<uint32_t>(value), endian);
 }
 
 template <>
 inline void write<double>(raw_ostream &os, double value,
                           endianness endian) {
-  write(os, DoubleToBits(value), endian);
+  write(os, llvm::bit_cast<uint64_t>(value), endian);
 }
 
 template <typename value_type>

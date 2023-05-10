@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 #----------------------------------------------------------------------
 # Be sure to add the python path that points to the LLDB shared library.
@@ -7,8 +7,6 @@
 # On MacOSX sh, bash:
 #   export PYTHONPATH=/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/Python
 #----------------------------------------------------------------------
-
-from __future__ import print_function
 
 import optparse
 import os
@@ -199,7 +197,7 @@ def main(argv):
         type='string',
         metavar='DIR',
         dest='working_dir',
-        help='The the current working directory when launching a process.',
+        help='The current working directory when launching a process.',
         default=None)
     parser.add_option(
         '-p',

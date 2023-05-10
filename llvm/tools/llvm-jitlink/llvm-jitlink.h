@@ -6,32 +6,39 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Utilities for remote-JITing with LLI.
+// llvm-jitlink Session class and tool utilities.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_TOOLS_LLVM_JITLINK_LLVM_JITLINK_H
 #define LLVM_TOOLS_LLVM_JITLINK_LLVM_JITLINK_H
 
-#include "llvm/ADT/Triple.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/SimpleRemoteEPC.h"
 #include "llvm/ExecutionEngine/RuntimeDyldChecker.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/Regex.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <vector>
 
 namespace llvm {
 
-struct Session {
-  orc::ExecutionSession ES;
-  orc::JITDylib *MainJD;
-  orc::ObjectLinkingLayer ObjLayer;
-  std::vector<orc::JITDylib *> JDSearchOrder;
-  Triple TT;
+struct Session;
 
-  Session(Triple TT);
+struct Session {
+
+  orc::ExecutionSession ES;
+  orc::JITDylib *MainJD = nullptr;
+  orc::ObjectLinkingLayer ObjLayer;
+  orc::JITDylibSearchOrder JDSearchOrder;
+
+  ~Session();
+
   static Expected<std::unique_ptr<Session>> Create(Triple TT);
   void dumpSessionInfo(raw_ostream &OS);
   void modifyPassConfig(const Triple &FTT,
@@ -45,8 +52,12 @@ struct Session {
     StringMap<MemoryRegionInfo> GOTEntryInfos;
   };
 
+  using DynLibJDMap = std::map<std::string, orc::JITDylib *>;
   using SymbolInfoMap = StringMap<MemoryRegionInfo>;
   using FileInfoMap = StringMap<FileInfo>;
+
+  Expected<orc::JITDylib *> getOrLoadDynamicLibrary(StringRef LibPath);
+  Error loadAndLinkDynamicLibrary(orc::JITDylib &JD, StringRef LibPath);
 
   Expected<FileInfo &> findFileInfo(StringRef FileName);
   Expected<MemoryRegionInfo &> findSectionInfo(StringRef FileName,
@@ -60,13 +71,22 @@ struct Session {
   Expected<MemoryRegionInfo &> findSymbolInfo(StringRef SymbolName,
                                               Twine ErrorMsgStem);
 
+  DynLibJDMap DynLibJDs;
+
   SymbolInfoMap SymbolInfos;
   FileInfoMap FileInfos;
   uint64_t SizeBeforePruning = 0;
   uint64_t SizeAfterFixups = 0;
 
+  StringSet<> HarnessFiles;
+  StringSet<> HarnessExternals;
+  StringSet<> HarnessDefinitions;
+  DenseMap<StringRef, StringRef> CanonicalWeakDefs;
+
+  std::optional<Regex> ShowGraphsRegex;
+
 private:
-  Session(Triple TT, Error &Err);
+  Session(std::unique_ptr<orc::ExecutorProcessControl> EPC, Error &Err);
 };
 
 /// Record symbols, GOT entries, stubs, and sections for ELF file.
@@ -74,6 +94,9 @@ Error registerELFGraphInfo(Session &S, jitlink::LinkGraph &G);
 
 /// Record symbols, GOT entries, stubs, and sections for MachO file.
 Error registerMachOGraphInfo(Session &S, jitlink::LinkGraph &G);
+
+/// Record symbols, GOT entries, stubs, and sections for COFF file.
+Error registerCOFFGraphInfo(Session &S, jitlink::LinkGraph &G);
 
 } // end namespace llvm
 

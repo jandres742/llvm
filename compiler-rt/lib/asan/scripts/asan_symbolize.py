@@ -17,7 +17,7 @@ various parts of this script (see `--plugins`). This is useful for situations
 where it is necessary to handle site-specific quirks (e.g. binaries with debug
 symbols only accessible via a remote service) without having to modify the
 script itself.
-  
+
 """
 import argparse
 import bisect
@@ -26,9 +26,9 @@ import getopt
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
-from distutils.spawn import find_executable
 
 symbolizers = {}
 demangle = False
@@ -49,7 +49,8 @@ def fix_filename(file_name):
 
 def is_valid_arch(s):
   return s in ["i386", "x86_64", "x86_64h", "arm", "armv6", "armv7", "armv7s",
-               "armv7k", "arm64", "powerpc64", "powerpc64le", "s390x", "s390"]
+               "armv7k", "arm64", "powerpc64", "powerpc64le", "s390x", "s390",
+               "riscv64", "loongarch64"]
 
 def guess_arch(addr):
   # Guess which arch we're running. 10 = len('0x') + 8 hex digits.
@@ -89,10 +90,9 @@ class LLVMSymbolizer(Symbolizer):
 
   def open_llvm_symbolizer(self):
     cmd = [self.symbolizer_path,
-           '--use-symbol-table=true',
-           '--demangle=%s' % demangle,
+           ('--demangle' if demangle else '--no-demangle'),
            '--functions=linkage',
-           '--inlining=true',
+           '--inlines',
            '--default-arch=%s' % self.default_arch]
     if self.system == 'Darwin':
       for hint in self.dsym_hints:
@@ -155,7 +155,7 @@ class Addr2LineSymbolizer(Symbolizer):
     addr2line_tool = 'addr2line'
     if binutils_prefix:
       addr2line_tool = binutils_prefix + addr2line_tool
-    logging.debug('addr2line binary is %s' % find_executable(addr2line_tool))
+    logging.debug('addr2line binary is %s' % shutil.which(addr2line_tool))
     cmd = [addr2line_tool, '-fi']
     if demangle:
       cmd += ['--demangle']
@@ -208,7 +208,7 @@ class Addr2LineSymbolizer(Symbolizer):
       # EPIPE happens if addr2line exits early (which some implementations do
       # if an invalid file is passed).
       if e.errno == errno.EPIPE:
-        logging.debug("addr2line exited early (broken pipe), returncode=%d" % self.pipe.poll())
+        logging.debug(f"addr2line exited early (broken pipe) returncode={self.pipe.poll()}")
       else:
         logging.debug("unexpected I/O exception communicating with addr2line", exc_info=e)
       lines.append(('??', '??:0'))

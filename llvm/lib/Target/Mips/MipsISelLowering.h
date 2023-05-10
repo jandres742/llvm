@@ -21,6 +21,7 @@
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
+#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGNodes.h"
 #include "llvm/CodeGen/TargetLowering.h"
@@ -28,7 +29,6 @@
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Type.h"
-#include "llvm/Support/MachineValueType.h"
 #include "llvm/Target/TargetMachine.h"
 #include <algorithm>
 #include <cassert>
@@ -40,8 +40,6 @@
 namespace llvm {
 
 class Argument;
-class CCState;
-class CCValAssign;
 class FastISel;
 class FunctionLoweringInfo;
 class MachineBasicBlock;
@@ -101,6 +99,9 @@ class TargetRegisterClass;
       // Floating Point Compare
       FPCmp,
 
+      // Floating point Abs
+      FAbs,
+
       // Floating point select
       FSELECT,
 
@@ -159,7 +160,7 @@ class TargetRegisterClass;
       Ins,
       CIns,
 
-      // EXTR.W instrinsic nodes.
+      // EXTR.W intrinsic nodes.
       EXTP,
       EXTPDP,
       EXTR_S_H,
@@ -282,8 +283,9 @@ class TargetRegisterClass;
     EVT getTypeForExtReturn(LLVMContext &Context, EVT VT,
                             ISD::NodeType) const override;
 
-    bool isCheapToSpeculateCttz() const override;
-    bool isCheapToSpeculateCtlz() const override;
+    bool isCheapToSpeculateCttz(Type *Ty) const override;
+    bool isCheapToSpeculateCtlz(Type *Ty) const override;
+    bool hasBitTest(SDValue X, SDValue Y) const override;
     bool shouldFoldConstantShiftPairToMask(const SDNode *N,
                                            CombineLevel Level) const override;
 
@@ -305,7 +307,7 @@ class TargetRegisterClass;
 
     /// Return the correct alignment for the current calling convention.
     Align getABIAlignmentForCallingConv(Type *ArgTy,
-                                        DataLayout DL) const override {
+                                        const DataLayout &DL) const override {
       const Align ABIAlign = DL.getABITypeAlign(ArgTy);
       if (ArgTy->isVectorTy())
         return std::min(ABIAlign, Align(8));
@@ -315,10 +317,6 @@ class TargetRegisterClass;
     ISD::NodeType getExtendForAtomicOps() const override {
       return ISD::SIGN_EXTEND;
     }
-
-    void LowerOperationWrapper(SDNode *N,
-                               SmallVectorImpl<SDValue> &Results,
-                               SelectionDAG &DAG) const override;
 
     /// LowerOperation - Provide custom lowering hooks for some operations.
     SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
@@ -346,7 +344,7 @@ class TargetRegisterClass;
     void AdjustInstrPostInstrSelection(MachineInstr &MI,
                                        SDNode *Node) const override;
 
-    void HandleByVal(CCState *, unsigned &, unsigned) const override;
+    void HandleByVal(CCState *, unsigned &, Align) const override;
 
     Register getRegisterByName(const char* RegName, LLT VT,
                                const MachineFunction &MF) const override;
@@ -363,14 +361,6 @@ class TargetRegisterClass;
     Register
     getExceptionSelectorRegister(const Constant *PersonalityFn) const override {
       return ABI.IsN64() ? Mips::A1_64 : Mips::A1;
-    }
-
-    /// Returns true if a cast between SrcAS and DestAS is a noop.
-    bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
-      // Mips doesn't have any special address spaces so we just reserve
-      // the first 256 for software use (e.g. OpenCL) and treat casts
-      // between them as noops.
-      return SrcAS < 256 && DestAS < 256;
     }
 
     bool isJumpTableRelative() const override {
@@ -534,7 +524,7 @@ class TargetRegisterClass;
                           unsigned Flag) const;
 
     // Lower Operand helpers
-    SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
+    SDValue LowerCallResult(SDValue Chain, SDValue InGlue,
                             CallingConv::ID CallConv, bool isVarArg,
                             const SmallVectorImpl<ISD::InputArg> &Ins,
                             const SDLoc &dl, SelectionDAG &DAG,
@@ -554,6 +544,10 @@ class TargetRegisterClass;
     SDValue lowerVAARG(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFCOPYSIGN(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerFABS(SDValue Op, SelectionDAG &DAG) const;
+    SDValue lowerFABS32(SDValue Op, SelectionDAG &DAG,
+                        bool HasExtractInsert) const;
+    SDValue lowerFABS64(SDValue Op, SelectionDAG &DAG,
+                        bool HasExtractInsert) const;
     SDValue lowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
     SDValue lowerEH_RETURN(SDValue Op, SelectionDAG &DAG) const;

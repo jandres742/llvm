@@ -12,12 +12,12 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
+#include <optional>
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace bugprone {
+namespace clang::tidy::bugprone {
 
 constexpr llvm::StringLiteral FunctionExprName = "FunctionExpr";
 constexpr llvm::StringLiteral CastExprName = "CastExpr";
@@ -143,7 +143,7 @@ static StringRef exprToStr(const Expr *E,
 
   return Lexer::getSourceText(
       CharSourceRange::getTokenRange(E->getSourceRange()),
-      *Result.SourceManager, Result.Context->getLangOpts(), 0);
+      *Result.SourceManager, Result.Context->getLangOpts(), nullptr);
 }
 
 // Returns the proper token based end location of \p E.
@@ -231,7 +231,7 @@ isGivenLengthEqualToSrcLength(const MatchFinder::MatchResult &Result) {
     return true;
 
   if (const auto *LengthExpr = Result.Nodes.getNodeAs<Expr>(LengthExprName))
-    if (dyn_cast<BinaryOperator>(LengthExpr->IgnoreParenImpCasts()))
+    if (isa<BinaryOperator>(LengthExpr->IgnoreParenImpCasts()))
       return false;
 
   // Check the strlen()'s argument's 'VarDecl' is equal to the source 'VarDecl'.
@@ -476,7 +476,7 @@ static void insertNullTerminatorExpr(StringRef Name,
       FunctionExpr->getBeginLoc());
   StringRef SpaceBeforeStmtStr = Lexer::getSourceText(
       CharSourceRange::getCharRange(SpaceRange), *Result.SourceManager,
-      Result.Context->getLangOpts(), 0);
+      Result.Context->getLangOpts(), nullptr);
 
   SmallString<128> NewAddNullTermExprStr;
   NewAddNullTermExprStr =
@@ -507,8 +507,8 @@ void NotNullTerminatedResultCheck::storeOptions(
 }
 
 void NotNullTerminatedResultCheck::registerPPCallbacks(
-    const SourceManager &SM, Preprocessor *pp, Preprocessor *ModuleExpanderPP) {
-  PP = pp;
+    const SourceManager &SM, Preprocessor *Pp, Preprocessor *ModuleExpanderPP) {
+  PP = Pp;
 }
 
 namespace {
@@ -528,10 +528,10 @@ AST_MATCHER_P(Expr, hasDefinition, ast_matchers::internal::Matcher<Expr>,
 
   const char *const VarDeclName = "variable-declaration";
   auto DREHasDefinition = ignoringImpCasts(declRefExpr(
-      allOf(to(varDecl().bind(VarDeclName)),
-            hasAncestor(compoundStmt(hasDescendant(binaryOperator(
-                hasLHS(declRefExpr(to(varDecl(equalsBoundNode(VarDeclName))))),
-                hasRHS(ignoringImpCasts(InnerMatcher)))))))));
+      to(varDecl().bind(VarDeclName)),
+      hasAncestor(compoundStmt(hasDescendant(binaryOperator(
+          hasLHS(declRefExpr(to(varDecl(equalsBoundNode(VarDeclName))))),
+          hasRHS(ignoringImpCasts(InnerMatcher))))))));
 
   if (DREHasDefinition.matches(*SimpleNode, Finder, Builder))
     return true;
@@ -581,9 +581,8 @@ void NotNullTerminatedResultCheck::registerMatchers(MatchFinder *Finder) {
 
   // - Example:  std::string str = "foo";  str.size();
   auto SizeOrLength =
-      cxxMemberCallExpr(
-          allOf(on(expr(AnyOfStringTy).bind("Foo")),
-                has(memberExpr(member(hasAnyName("size", "length"))))))
+      cxxMemberCallExpr(on(expr(AnyOfStringTy).bind("Foo")),
+                        has(memberExpr(member(hasAnyName("size", "length")))))
           .bind(WrongLengthExprName);
 
   // - Example:  char src[] = "foo";       sizeof(src);
@@ -641,8 +640,8 @@ void NotNullTerminatedResultCheck::registerMatchers(MatchFinder *Finder) {
 
   // - Example:  foo[bar[baz]].qux; (or just ParmVarDecl)
   auto DestUnknownDecl =
-      declRefExpr(allOf(to(varDecl(AnyOfCharTy).bind(DestVarDeclName)),
-                        expr().bind(UnknownDestName)))
+      declRefExpr(to(varDecl(AnyOfCharTy).bind(DestVarDeclName)),
+                  expr().bind(UnknownDestName))
           .bind(DestExprName);
 
   auto AnyOfDestDecl = ignoringImpCasts(
@@ -659,10 +658,10 @@ void NotNullTerminatedResultCheck::registerMatchers(MatchFinder *Finder) {
       hasRHS(ignoringImpCasts(
           anyOf(characterLiteral(equals(0U)), integerLiteral(equals(0))))));
 
-  auto SrcDecl = declRefExpr(
-      allOf(to(decl().bind(SrcVarDeclName)),
-            anyOf(hasAncestor(cxxMemberCallExpr().bind(SrcExprName)),
-                  expr().bind(SrcExprName))));
+  auto SrcDecl =
+      declRefExpr(to(decl().bind(SrcVarDeclName)),
+                  anyOf(hasAncestor(cxxMemberCallExpr().bind(SrcExprName)),
+                        expr().bind(SrcExprName)));
 
   auto AnyOfSrcDecl =
       ignoringImpCasts(anyOf(stringLiteral().bind(SrcExprName),
@@ -674,15 +673,15 @@ void NotNullTerminatedResultCheck::registerMatchers(MatchFinder *Finder) {
   //===--------------------------------------------------------------------===//
 
   struct CallContext {
-    CallContext(StringRef Name, Optional<unsigned> DestinationPos,
-                Optional<unsigned> SourcePos, unsigned LengthPos,
+    CallContext(StringRef Name, std::optional<unsigned> DestinationPos,
+                std::optional<unsigned> SourcePos, unsigned LengthPos,
                 bool WithIncrease)
         : Name(Name), DestinationPos(DestinationPos), SourcePos(SourcePos),
           LengthPos(LengthPos), WithIncrease(WithIncrease){};
 
     StringRef Name;
-    Optional<unsigned> DestinationPos;
-    Optional<unsigned> SourcePos;
+    std::optional<unsigned> DestinationPos;
+    std::optional<unsigned> SourcePos;
     unsigned LengthPos;
     bool WithIncrease;
   };
@@ -749,29 +748,29 @@ void NotNullTerminatedResultCheck::registerMatchers(MatchFinder *Finder) {
   auto Memcpy = Match({"memcpy", 0, 1, 2, false});
 
   // errno_t memcpy_s(void *dest, size_t ds, const void *src, size_t count)
-  auto Memcpy_s = Match({"memcpy_s", 0, 2, 3, false});
+  auto MemcpyS = Match({"memcpy_s", 0, 2, 3, false});
 
   // void *memchr(const void *src, int c, size_t count)
-  auto Memchr = Match({"memchr", None, 0, 2, false});
+  auto Memchr = Match({"memchr", std::nullopt, 0, 2, false});
 
   // void *memmove(void *dest, const void *src, size_t count)
   auto Memmove = Match({"memmove", 0, 1, 2, false});
 
   // errno_t memmove_s(void *dest, size_t ds, const void *src, size_t count)
-  auto Memmove_s = Match({"memmove_s", 0, 2, 3, false});
+  auto MemmoveS = Match({"memmove_s", 0, 2, 3, false});
 
   // int strncmp(const char *str1, const char *str2, size_t count);
-  auto StrncmpRHS = Match({"strncmp", None, 1, 2, true});
-  auto StrncmpLHS = Match({"strncmp", None, 0, 2, true});
+  auto StrncmpRHS = Match({"strncmp", std::nullopt, 1, 2, true});
+  auto StrncmpLHS = Match({"strncmp", std::nullopt, 0, 2, true});
 
   // size_t strxfrm(char *dest, const char *src, size_t count);
   auto Strxfrm = Match({"strxfrm", 0, 1, 2, false});
 
   // errno_t strerror_s(char *buffer, size_t bufferSize, int errnum);
-  auto Strerror_s = Match({"strerror_s", 0, None, 1, false});
+  auto StrerrorS = Match({"strerror_s", 0, std::nullopt, 1, false});
 
-  auto AnyOfMatchers = anyOf(Memcpy, Memcpy_s, Memmove, Memmove_s, StrncmpRHS,
-                             StrncmpLHS, Strxfrm, Strerror_s);
+  auto AnyOfMatchers = anyOf(Memcpy, MemcpyS, Memmove, MemmoveS, StrncmpRHS,
+                             StrncmpLHS, Strxfrm, StrerrorS);
 
   Finder->addMatcher(callExpr(AnyOfMatchers).bind(FunctionExprName), this);
 
@@ -795,24 +794,29 @@ void NotNullTerminatedResultCheck::check(
     return;
 
   if (WantToUseSafeFunctions && PP->isMacroDefined("__STDC_LIB_EXT1__")) {
-    Optional<bool> AreSafeFunctionsWanted;
+    std::optional<bool> AreSafeFunctionsWanted;
 
     Preprocessor::macro_iterator It = PP->macro_begin();
-    while (It != PP->macro_end() && !AreSafeFunctionsWanted.hasValue()) {
+    while (It != PP->macro_end() && !AreSafeFunctionsWanted) {
       if (It->first->getName() == "__STDC_WANT_LIB_EXT1__") {
         const auto *MI = PP->getMacroInfo(It->first);
-        const auto &T = MI->tokens().back();
-        StringRef ValueStr = StringRef(T.getLiteralData(), T.getLength());
-        llvm::APInt IntValue;
-        ValueStr.getAsInteger(10, IntValue);
-        AreSafeFunctionsWanted = IntValue.getZExtValue();
+        // PP->getMacroInfo() returns nullptr if macro has no definition.
+        if (MI) {
+          const auto &T = MI->tokens().back();
+          if (T.isLiteral() && T.getLiteralData()) {
+            StringRef ValueStr = StringRef(T.getLiteralData(), T.getLength());
+            llvm::APInt IntValue;
+            ValueStr.getAsInteger(10, IntValue);
+            AreSafeFunctionsWanted = IntValue.getZExtValue();
+          }
+        }
       }
 
       ++It;
     }
 
-    if (AreSafeFunctionsWanted.hasValue())
-      UseSafeFunctions = AreSafeFunctionsWanted.getValue();
+    if (AreSafeFunctionsWanted)
+      UseSafeFunctions = *AreSafeFunctionsWanted;
   }
 
   StringRef Name = FunctionExpr->getDirectCallee()->getName();
@@ -914,7 +918,7 @@ void NotNullTerminatedResultCheck::memcpy_sFix(
 void NotNullTerminatedResultCheck::memchrFix(
     StringRef Name, const MatchFinder::MatchResult &Result) {
   const auto *FunctionExpr = Result.Nodes.getNodeAs<CallExpr>(FunctionExprName);
-  if (const auto GivenCL = dyn_cast<CharacterLiteral>(FunctionExpr->getArg(1)))
+  if (const auto *GivenCL = dyn_cast<CharacterLiteral>(FunctionExpr->getArg(1)))
     if (GivenCL->getValue() != 0)
       return;
 
@@ -1003,6 +1007,4 @@ void NotNullTerminatedResultCheck::xfrmFix(
   lengthArgHandle(LengthHandleKind::Increase, Result, Diag);
 }
 
-} // namespace bugprone
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::bugprone

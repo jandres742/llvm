@@ -19,7 +19,9 @@ public:
 
   SBTypeSummaryOptions(const lldb::SBTypeSummaryOptions &rhs);
 
-  SBTypeSummaryOptions(const lldb_private::TypeSummaryOptions *lldb_object_ptr);
+#ifndef SWIG
+  SBTypeSummaryOptions(const lldb_private::TypeSummaryOptions &lldb_object);
+#endif
 
   ~SBTypeSummaryOptions();
 
@@ -48,8 +50,6 @@ protected:
 
   const lldb_private::TypeSummaryOptions &ref() const;
 
-  void SetOptions(const lldb_private::TypeSummaryOptions *lldb_object_ptr);
-
 private:
   std::unique_ptr<lldb_private::TypeSummaryOptions> m_opaque_up;
 };
@@ -73,9 +73,11 @@ public:
   CreateWithScriptCode(const char *data,
                        uint32_t options = 0); // see lldb::eTypeOption values
 
+#ifndef SWIG
   static SBTypeSummary CreateWithCallback(FormatCallback cb,
                                           uint32_t options = 0,
                                           const char *description = nullptr);
+#endif
 
   SBTypeSummary(const lldb::SBTypeSummary &rhs);
 

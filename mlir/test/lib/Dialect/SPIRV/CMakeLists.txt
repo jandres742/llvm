@@ -1,6 +1,8 @@
 # Exclude tests from libMLIR.so
 add_mlir_library(MLIRSPIRVTestPasses
   TestAvailability.cpp
+  TestEntryPointAbi.cpp
+  TestModuleCombiner.cpp
 
   EXCLUDE_FROM_LIBMLIR
 
@@ -9,8 +11,11 @@ add_mlir_library(MLIRSPIRVTestPasses
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/IR
 
   LINK_LIBS PUBLIC
+  MLIRGPUOps
   MLIRIR
   MLIRPass
-  MLIRSPIRV
+  MLIRSPIRVDialect
+  MLIRSPIRVConversion
+  MLIRSPIRVModuleCombiner
   MLIRSupport
   )

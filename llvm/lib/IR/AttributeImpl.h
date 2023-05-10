@@ -24,6 +24,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -64,6 +65,7 @@ public:
 
   Attribute::AttrKind getKindAsEnum() const;
   uint64_t getValueAsInt() const;
+  bool getValueAsBool() const;
 
   StringRef getKindAsString() const;
   StringRef getValueAsString() const;
@@ -75,7 +77,7 @@ public:
 
   void Profile(FoldingSetNodeID &ID) const {
     if (isEnumAttribute())
-      Profile(ID, getKindAsEnum(), static_cast<uint64_t>(0));
+      Profile(ID, getKindAsEnum());
     else if (isIntAttribute())
       Profile(ID, getKindAsEnum(), getValueAsInt());
     else if (isStringAttribute())
@@ -84,10 +86,16 @@ public:
       Profile(ID, getKindAsEnum(), getValueAsType());
   }
 
+  static void Profile(FoldingSetNodeID &ID, Attribute::AttrKind Kind) {
+    assert(Attribute::isEnumAttrKind(Kind) && "Expected enum attribute");
+    ID.AddInteger(Kind);
+  }
+
   static void Profile(FoldingSetNodeID &ID, Attribute::AttrKind Kind,
                       uint64_t Val) {
+    assert(Attribute::isIntAttrKind(Kind) && "Expected int attribute");
     ID.AddInteger(Kind);
-    if (Val) ID.AddInteger(Val);
+    ID.AddInteger(Val);
   }
 
   static void Profile(FoldingSetNodeID &ID, StringRef Kind, StringRef Values) {
@@ -121,7 +129,10 @@ protected:
 
 public:
   EnumAttributeImpl(Attribute::AttrKind Kind)
-      : AttributeImpl(EnumAttrEntry), Kind(Kind) {}
+      : AttributeImpl(EnumAttrEntry), Kind(Kind) {
+    assert(Kind != Attribute::AttrKind::None &&
+           "Can't create a None attribute!");
+  }
 
   Attribute::AttrKind getEnumKind() const { return Kind; }
 };
@@ -132,7 +143,7 @@ class IntAttributeImpl : public EnumAttributeImpl {
 public:
   IntAttributeImpl(Attribute::AttrKind Kind, uint64_t Val)
       : EnumAttributeImpl(IntAttrEntry, Kind), Val(Val) {
-    assert(Attribute::doesAttrKindHaveArgument(Kind) &&
+    assert(Attribute::isIntAttrKind(Kind) &&
            "Wrong kind for int attribute!");
   }
 
@@ -185,6 +196,22 @@ public:
   Type *getTypeValue() const { return Ty; }
 };
 
+class AttributeBitSet {
+  /// Bitset with a bit for each available attribute Attribute::AttrKind.
+  uint8_t AvailableAttrs[12] = {};
+  static_assert(Attribute::EndAttrKinds <= sizeof(AvailableAttrs) * CHAR_BIT,
+                "Too many attributes");
+
+public:
+  bool hasAttribute(Attribute::AttrKind Kind) const {
+    return AvailableAttrs[Kind / 8] & (1 << (Kind % 8));
+  }
+
+  void addAttribute(Attribute::AttrKind Kind) {
+    AvailableAttrs[Kind / 8] |= 1 << (Kind % 8);
+  }
+};
+
 //===----------------------------------------------------------------------===//
 /// \class
 /// This class represents a group of attributes that apply to one
@@ -195,8 +222,7 @@ class AttributeSetNode final
   friend TrailingObjects;
 
   unsigned NumAttrs; ///< Number of attributes in this node.
-  /// Bitset with a bit for each available attribute Attribute::AttrKind.
-  uint8_t AvailableAttrs[12] = {};
+  AttributeBitSet AvailableAttrs; ///< Available enum attributes.
 
   DenseMap<StringRef, Attribute> StringAttrs;
 
@@ -204,7 +230,7 @@ class AttributeSetNode final
 
   static AttributeSetNode *getSorted(LLVMContext &C,
                                      ArrayRef<Attribute> SortedAttrs);
-  Optional<Attribute> findEnumAttribute(Attribute::AttrKind Kind) const;
+  std::optional<Attribute> findEnumAttribute(Attribute::AttrKind Kind) const;
 
 public:
   // AttributesSetNode is uniqued, these should not be available.
@@ -221,7 +247,7 @@ public:
   unsigned getNumAttributes() const { return NumAttrs; }
 
   bool hasAttribute(Attribute::AttrKind Kind) const {
-    return AvailableAttrs[Kind / 8] & ((uint64_t)1) << (Kind % 8);
+    return AvailableAttrs.hasAttribute(Kind);
   }
   bool hasAttribute(StringRef Kind) const;
   bool hasAttributes() const { return NumAttrs != 0; }
@@ -233,10 +259,16 @@ public:
   MaybeAlign getStackAlignment() const;
   uint64_t getDereferenceableBytes() const;
   uint64_t getDereferenceableOrNullBytes() const;
-  std::pair<unsigned, Optional<unsigned>> getAllocSizeArgs() const;
+  std::optional<std::pair<unsigned, std::optional<unsigned>>> getAllocSizeArgs()
+      const;
+  unsigned getVScaleRangeMin() const;
+  std::optional<unsigned> getVScaleRangeMax() const;
+  UWTableKind getUWTableKind() const;
+  AllocFnKind getAllocKind() const;
+  MemoryEffects getMemoryEffects() const;
+  FPClassTest getNoFPClass() const;
   std::string getAsString(bool InAttrGrp) const;
-  Type *getByValType() const;
-  Type *getPreallocatedType() const;
+  Type *getAttributeType(Attribute::AttrKind Kind) const;
 
   using iterator = const Attribute *;
 
@@ -244,7 +276,7 @@ public:
   iterator end() const { return begin() + NumAttrs; }
 
   void Profile(FoldingSetNodeID &ID) const {
-    Profile(ID, makeArrayRef(begin(), end()));
+    Profile(ID, ArrayRef(begin(), end()));
   }
 
   static void Profile(FoldingSetNodeID &ID, ArrayRef<Attribute> AttrList) {
@@ -252,8 +284,6 @@ public:
       Attr.Profile(ID);
   }
 };
-
-using IndexAttrPair = std::pair<unsigned, AttributeSet>;
 
 //===----------------------------------------------------------------------===//
 /// \class
@@ -267,8 +297,10 @@ class AttributeListImpl final
 
 private:
   unsigned NumAttrSets; ///< Number of entries in this set.
-  /// Bitset with a bit for each available attribute Attribute::AttrKind.
-  uint8_t AvailableFunctionAttrs[12] = {};
+  /// Available enum function attributes.
+  AttributeBitSet AvailableFunctionAttrs;
+  /// Union of enum attributes available at any index.
+  AttributeBitSet AvailableSomewhereAttrs;
 
   // Helper fn for TrailingObjects class.
   size_t numTrailingObjects(OverloadToken<AttributeSet>) { return NumAttrSets; }
@@ -283,8 +315,14 @@ public:
   /// Return true if the AttributeSet or the FunctionIndex has an
   /// enum attribute of the given kind.
   bool hasFnAttribute(Attribute::AttrKind Kind) const {
-    return AvailableFunctionAttrs[Kind / 8] & ((uint64_t)1) << (Kind % 8);
+    return AvailableFunctionAttrs.hasAttribute(Kind);
   }
+
+  /// Return true if the specified attribute is set for at least one
+  /// parameter or for the return value. If Index is not nullptr, the index
+  /// of a parameter with the specified attribute is provided.
+  bool hasAttrSomewhere(Attribute::AttrKind Kind,
+                        unsigned *Index = nullptr) const;
 
   using iterator = const AttributeSet *;
 

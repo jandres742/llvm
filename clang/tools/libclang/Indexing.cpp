@@ -261,9 +261,9 @@ public:
 
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
-                          CharSourceRange FilenameRange, const FileEntry *File,
-                          StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported,
+                          CharSourceRange FilenameRange,
+                          OptionalFileEntryRef File, StringRef SearchPath,
+                          StringRef RelativePath, const Module *Imported,
                           SrcMgr::CharacteristicKind FileType) override {
     bool isImport = (IncludeTok.is(tok::identifier) &&
             IncludeTok.getIdentifierInfo()->getPPKeywordID() == tok::pp_import);
@@ -508,8 +508,11 @@ static CXErrorCode clang_indexSourceFile_Impl(
   if (source_filename)
     Args->push_back(source_filename);
 
+  CreateInvocationOptions CIOpts;
+  CIOpts.Diags = Diags;
+  CIOpts.ProbePrecompiled = true; // FIXME: historical default. Needed?
   std::shared_ptr<CompilerInvocation> CInvok =
-      createInvocationFromCommandLine(*Args, Diags);
+      createInvocation(*Args, std::move(CIOpts));
 
   if (!CInvok)
     return CXError_Failure;
@@ -549,7 +552,7 @@ static CXErrorCode clang_indexSourceFile_Impl(
 
   // Make sure to use the raw module format.
   CInvok->getHeaderSearchOpts().ModuleFormat = std::string(
-      CXXIdx->getPCHContainerOperations()->getRawReader().getFormat());
+      CXXIdx->getPCHContainerOperations()->getRawReader().getFormats().front());
 
   auto Unit = ASTUnit::create(CInvok, Diags, CaptureDiagnostics,
                               /*UserFilesAreVolatile=*/true);
@@ -617,9 +620,7 @@ static CXErrorCode clang_indexSourceFile_Impl(
       std::move(CInvok), CXXIdx->getPCHContainerOperations(), Diags,
       IndexAction.get(), UPtr, Persistent, CXXIdx->getClangResourcesPath(),
       OnlyLocalDecls, CaptureDiagnostics, PrecompilePreambleAfterNParses,
-      CacheCodeCompletionResults,
-      /*IncludeBriefCommentsInCodeCompletion=*/false,
-      /*UserFilesAreVolatile=*/true);
+      CacheCodeCompletionResults, /*UserFilesAreVolatile=*/true);
   if (DiagTrap.hasErrorOccurred() && CXXIdx->getDisplayDiagnostics())
     printDiagsToStderr(UPtr);
 
@@ -902,9 +903,8 @@ int clang_indexSourceFileFullArgv(
     result = clang_indexSourceFile_Impl(
         idxAction, client_data, index_callbacks, index_callbacks_size,
         index_options, source_filename, command_line_args,
-        num_command_line_args,
-        llvm::makeArrayRef(unsaved_files, num_unsaved_files), out_TU,
-        TU_options);
+        num_command_line_args, llvm::ArrayRef(unsaved_files, num_unsaved_files),
+        out_TU, TU_options);
   };
 
   llvm::CrashRecoveryContext CRC;

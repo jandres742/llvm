@@ -40,4 +40,22 @@ enum FPRoundingMode {
   SPV_RTN = 3,
 };
 
+enum GroupOperation {
+  Reduce = 0,
+  InclusiveScan = 1,
+  ExclusiveScan = 2,
+};
+
+typedef struct {
+  float real, imag;
+} complex_float;
+
+typedef struct {
+  double real, imag;
+} complex_double;
+
+typedef struct {
+  half real, imag;
+} complex_half;
+
 #endif // CLC_SPIRV_TYPES

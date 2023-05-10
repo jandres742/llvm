@@ -8,15 +8,19 @@
 
 #pragma once
 
-#include <CL/sycl/detail/pi.hpp>
-#include <CL/sycl/stl.hpp>
-#include <detail/device_info.hpp>
 #include <detail/platform_impl.hpp>
+#include <sycl/aspects.hpp>
+#include <sycl/detail/cl.h>
+#include <sycl/detail/pi.hpp>
+#include <sycl/kernel_bundle.hpp>
+#include <sycl/stl.hpp>
 
 #include <memory>
+#include <mutex>
+#include <utility>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 
 // Forward declaration
 class platform;
@@ -60,7 +64,7 @@ public:
   RT::PiDevice &getHandleRef() {
     if (MIsHostDevice)
       throw invalid_object_error("This instance of device is a host instance",
-                                 PI_INVALID_DEVICE);
+                                 PI_ERROR_INVALID_DEVICE);
 
     return MDevice;
   }
@@ -73,7 +77,7 @@ public:
   const RT::PiDevice &getHandleRef() const {
     if (MIsHostDevice)
       throw invalid_object_error("This instance of device is a host instance",
-                                 PI_INVALID_DEVICE);
+                                 PI_ERROR_INVALID_DEVICE);
 
     return MDevice;
   }
@@ -100,6 +104,11 @@ public:
     return (!is_host() && (MType == PI_DEVICE_TYPE_ACC));
   }
 
+  /// Return device type
+  ///
+  /// \return the type of the device
+  RT::PiDeviceType get_device_type() const { return MType; }
+
   /// Get associated SYCL platform
   ///
   /// If this SYCL device is an OpenCL device then the SYCL platform
@@ -119,9 +128,9 @@ public:
   ///
   /// \param ExtensionName is a name of queried extension.
   /// \return true if SYCL device supports the extension.
-  bool has_extension(const string_class &ExtensionName) const;
+  bool has_extension(const std::string &ExtensionName) const;
 
-  vector_class<device>
+  std::vector<device>
   create_sub_devices(const cl_device_partition_property *Properties,
                      size_t SubDevicesCount) const;
 
@@ -135,7 +144,7 @@ public:
   /// device.
   /// \return A vector class of sub devices partitioned equally from this
   /// SYCL device based on the ComputeUnits parameter.
-  vector_class<device> create_sub_devices(size_t ComputeUnits) const;
+  std::vector<device> create_sub_devices(size_t ComputeUnits) const;
 
   /// Partition device into sub devices
   ///
@@ -143,11 +152,11 @@ public:
   /// info::partition_property::partition_by_counts a feature_not_supported
   /// exception must be thrown.
   ///
-  /// \param Counts is a vector_class of desired compute units in sub devices.
-  /// \return a vector_class of sub devices partitioned from this SYCL device
+  /// \param Counts is a std::vector of desired compute units in sub devices.
+  /// \return a std::vector of sub devices partitioned from this SYCL device
   /// by count sizes based on the Counts parameter.
-  vector_class<device>
-  create_sub_devices(const vector_class<size_t> &Counts) const;
+  std::vector<device>
+  create_sub_devices(const std::vector<size_t> &Counts) const;
 
   /// Partition device into sub devices
   ///
@@ -160,8 +169,18 @@ public:
   /// SYCL Spec
   /// \return a vector class of sub devices partitioned from this SYCL device
   /// by affinity domain based on the AffinityDomain parameter
-  vector_class<device>
+  std::vector<device>
   create_sub_devices(info::partition_affinity_domain AffinityDomain) const;
+
+  /// Partition device into sub devices
+  ///
+  /// If this SYCL device does not support
+  /// info::partition_property::ext_intel_partition_by_cslice a
+  /// feature_not_supported exception must be thrown.
+  ///
+  /// \return a vector class of sub devices partitioned from this SYCL
+  /// device at a granularity of "cslice" (compute slice).
+  std::vector<device> create_sub_devices() const;
 
   /// Check if desired partition property supported by device
   ///
@@ -178,16 +197,7 @@ public:
   /// returning the type associated with the param parameter.
   ///
   /// \return device info of type described in Table 4.20.
-  template <info::device param>
-  typename info::param_traits<info::device, param>::return_type
-  get_info() const {
-    if (is_host()) {
-      return get_device_info_host<param>();
-    }
-    return get_device_info<
-        typename info::param_traits<info::device, param>::return_type,
-        param>::get(this->getHandleRef(), this->getPlugin());
-  }
+  template <typename Param> typename Param::return_type get_info() const;
 
   /// Check if affinity partitioning by specified domain is supported by
   /// device
@@ -203,16 +213,53 @@ public:
   /// \return a native handle.
   pi_native_handle getNative() const;
 
+  /// Indicates if the SYCL device has the given feature.
+  ///
+  /// \param Aspect is one of the values in Table 4.20 of the SYCL 2020
+  /// Provisional Spec.
+  //
+  /// \return true if the SYCL device has the given feature.
+  bool has(aspect Aspect) const;
+
+  /// Gets the single instance of the Host Device
+  ///
+  /// \return the host device_impl singleton
+  static std::shared_ptr<device_impl> getHostDeviceImpl();
+
+  bool isAssertFailSupported() const;
+
+  bool isRootDevice() const { return MRootDevice == nullptr; }
+
+  std::string getDeviceName() const;
+
+  /// Gets the current device timestamp
+  /// @throw sycl::feature_not_supported if feature is not supported on device
+  uint64_t getCurrentDeviceTime();
+
+  /// Get the backend of this device
+  backend getBackend() const { return MPlatform->getBackend(); }
+
+  /// @brief  Get the platform impl serving this device
+  /// @return PlatformImplPtr
+  PlatformImplPtr getPlatformImpl() const { return MPlatform; }
+
+  /// Get device info string
+  std::string get_device_info_string(RT::PiDeviceInfo InfoCode) const;
+
 private:
   explicit device_impl(pi_native_handle InteropDevice, RT::PiDevice Device,
                        PlatformImplPtr Platform, const plugin &Plugin);
   RT::PiDevice MDevice = 0;
   RT::PiDeviceType MType;
-  bool MIsRootDevice = false;
+  RT::PiDevice MRootDevice = nullptr;
   bool MIsHostDevice;
   PlatformImplPtr MPlatform;
+  bool MIsAssertFailSupported = false;
+  mutable std::string MDeviceName;
+  mutable std::once_flag MDeviceNameFlag;
+  std::pair<uint64_t, uint64_t> MDeviceHostBaseTime;
 }; // class device_impl
 
 } // namespace detail
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

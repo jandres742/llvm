@@ -53,8 +53,8 @@ ARMELFObjectWriter::ARMELFObjectWriter(uint8_t OSABI)
 
 bool ARMELFObjectWriter::needsRelocateWithSymbol(const MCSymbol &Sym,
                                                  unsigned Type) const {
-  // FIXME: This is extremely conservative. This really needs to use a
-  // whitelist with a clear explanation for why each realocation needs to
+  // FIXME: This is extremely conservative. This really needs to use an
+  // explicit list with a clear explanation for why each realocation needs to
   // point to the symbol, not to the section.
   switch (Type) {
   default:
@@ -87,7 +87,7 @@ unsigned ARMELFObjectWriter::GetRelocTypeInner(const MCValue &Target,
   if (IsPCRel) {
     switch (Fixup.getTargetKind()) {
     default:
-      Ctx.reportFatalError(Fixup.getLoc(), "unsupported relocation on symbol");
+      Ctx.reportError(Fixup.getLoc(), "unsupported relocation on symbol");
       return ELF::R_ARM_NONE;
     case FK_Data_4:
       switch (Modifier) {
@@ -159,7 +159,7 @@ unsigned ARMELFObjectWriter::GetRelocTypeInner(const MCValue &Target,
   }
   switch (Kind) {
   default:
-    Ctx.reportFatalError(Fixup.getLoc(), "unsupported relocation on symbol");
+    Ctx.reportError(Fixup.getLoc(), "unsupported relocation on symbol");
     return ELF::R_ARM_NONE;
   case FK_Data_1:
     switch (Modifier) {

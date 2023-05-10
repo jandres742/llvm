@@ -15,9 +15,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace readability {
+namespace clang::tidy::readability {
 
 namespace {
 
@@ -222,7 +220,7 @@ bool isCastAllowedInCondition(const ImplicitCastExpr *Cast,
   std::queue<const Stmt *> Q;
   Q.push(Cast);
 
-  TraversalKindScope RAII(Context, ast_type_traits::TK_AsIs);
+  TraversalKindScope RAII(Context, TK_AsIs);
 
   while (!Q.empty()) {
     for (const auto &N : Context.getParents(*Q.front())) {
@@ -260,23 +258,27 @@ void ImplicitBoolConversionCheck::storeOptions(
 }
 
 void ImplicitBoolConversionCheck::registerMatchers(MatchFinder *Finder) {
-  auto exceptionCases =
+  auto ExceptionCases =
       expr(anyOf(allOf(isMacroExpansion(), unless(isNULLMacroExpansion())),
-                 has(ignoringImplicit(memberExpr(hasDeclaration(fieldDecl(hasBitWidth(1)))))),
-                 hasParent(explicitCastExpr())));
-  auto implicitCastFromBool = implicitCastExpr(
+                 has(ignoringImplicit(
+                     memberExpr(hasDeclaration(fieldDecl(hasBitWidth(1)))))),
+                 hasParent(explicitCastExpr()),
+                 expr(hasType(qualType().bind("type")),
+                      hasParent(initListExpr(hasParent(explicitCastExpr(
+                          hasType(qualType(equalsBoundNode("type"))))))))));
+  auto ImplicitCastFromBool = implicitCastExpr(
       anyOf(hasCastKind(CK_IntegralCast), hasCastKind(CK_IntegralToFloating),
             // Prior to C++11 cast from bool literal to pointer was allowed.
             allOf(anyOf(hasCastKind(CK_NullToPointer),
                         hasCastKind(CK_NullToMemberPointer)),
                   hasSourceExpression(cxxBoolLiteral()))),
       hasSourceExpression(expr(hasType(booleanType()))),
-      unless(exceptionCases));
-  auto boolXor =
-      binaryOperator(hasOperatorName("^"), hasLHS(implicitCastFromBool),
-                     hasRHS(implicitCastFromBool));
+      unless(ExceptionCases));
+  auto BoolXor =
+      binaryOperator(hasOperatorName("^"), hasLHS(ImplicitCastFromBool),
+                     hasRHS(ImplicitCastFromBool));
   Finder->addMatcher(
-      traverse(ast_type_traits::TK_AsIs,
+      traverse(TK_AsIs,
                implicitCastExpr(
                    anyOf(hasCastKind(CK_IntegralToBoolean),
                          hasCastKind(CK_FloatingToBoolean),
@@ -288,39 +290,39 @@ void ImplicitBoolConversionCheck::registerMatchers(MatchFinder *Finder) {
                    unless(hasParent(
                        stmt(anyOf(ifStmt(), whileStmt()), has(declStmt())))),
                    // Exclude cases common to implicit cast to and from bool.
-                   unless(exceptionCases), unless(has(boolXor)),
+                   unless(ExceptionCases), unless(has(BoolXor)),
                    // Retrieve also parent statement, to check if we need
                    // additional parens in replacement.
-                   anyOf(hasParent(stmt().bind("parentStmt")), anything()),
+                   optionally(hasParent(stmt().bind("parentStmt"))),
                    unless(isInTemplateInstantiation()),
                    unless(hasAncestor(functionTemplateDecl())))
                    .bind("implicitCastToBool")),
       this);
 
-  auto boolComparison = binaryOperator(hasAnyOperatorName("==", "!="),
-                                       hasLHS(implicitCastFromBool),
-                                       hasRHS(implicitCastFromBool));
-  auto boolOpAssignment = binaryOperator(hasAnyOperatorName("|=", "&="),
+  auto BoolComparison = binaryOperator(hasAnyOperatorName("==", "!="),
+                                       hasLHS(ImplicitCastFromBool),
+                                       hasRHS(ImplicitCastFromBool));
+  auto BoolOpAssignment = binaryOperator(hasAnyOperatorName("|=", "&="),
                                          hasLHS(expr(hasType(booleanType()))));
-  auto bitfieldAssignment = binaryOperator(
+  auto BitfieldAssignment = binaryOperator(
       hasLHS(memberExpr(hasDeclaration(fieldDecl(hasBitWidth(1))))));
-  auto bitfieldConstruct = cxxConstructorDecl(hasDescendant(cxxCtorInitializer(
+  auto BitfieldConstruct = cxxConstructorDecl(hasDescendant(cxxCtorInitializer(
       withInitializer(equalsBoundNode("implicitCastFromBool")),
       forField(hasBitWidth(1)))));
   Finder->addMatcher(
       traverse(
-          ast_type_traits::TK_AsIs,
+          TK_AsIs,
           implicitCastExpr(
-              implicitCastFromBool,
+              ImplicitCastFromBool,
               // Exclude comparisons of bools, as they are always cast to
               // integers in such context:
               //   bool_expr_a == bool_expr_b
               //   bool_expr_a != bool_expr_b
               unless(hasParent(
-                  binaryOperator(anyOf(boolComparison, boolXor,
-                                       boolOpAssignment, bitfieldAssignment)))),
+                  binaryOperator(anyOf(BoolComparison, BoolXor,
+                                       BoolOpAssignment, BitfieldAssignment)))),
               implicitCastExpr().bind("implicitCastFromBool"),
-              unless(hasParent(bitfieldConstruct)),
+              unless(hasParent(BitfieldConstruct)),
               // Check also for nested casts, for example: bool -> int -> float.
               anyOf(hasParent(implicitCastExpr().bind("furtherImplicitCast")),
                     anything()),
@@ -390,6 +392,4 @@ void ImplicitBoolConversionCheck::handleCastFromBool(
   }
 }
 
-} // namespace readability
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::readability

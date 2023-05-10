@@ -1,5 +1,5 @@
-//===--- StringView.h -------------------------------------------*- C++ -*-===//
-//
+//===--- StringView.h ----------------*- mode:c++;eval:(read-only-mode) -*-===//
+//       Do not edit! See README.txt.
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -7,6 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // FIXME: Use std::string_view instead when we support C++17.
+// There are two copies of this file in the source tree.  The one under
+// libcxxabi is the original and the one under llvm is the copy.  Use
+// cp-to-llvm.sh to update the copy.  See README.txt for more details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,7 +17,6 @@
 #define DEMANGLE_STRINGVIEW_H
 
 #include "DemangleConfig.h"
-#include <algorithm>
 #include <cassert>
 #include <cstring>
 
@@ -29,46 +31,35 @@ public:
 
   template <size_t N>
   StringView(const char (&Str)[N]) : First(Str), Last(Str + N - 1) {}
-  StringView(const char *First_, const char *Last_)
-      : First(First_), Last(Last_) {}
   StringView(const char *First_, size_t Len)
       : First(First_), Last(First_ + Len) {}
   StringView(const char *Str) : First(Str), Last(Str + std::strlen(Str)) {}
   StringView() : First(nullptr), Last(nullptr) {}
 
-  StringView substr(size_t From) const {
-    return StringView(begin() + From, size() - From);
+  StringView substr(size_t Pos, size_t Len = npos) const {
+    assert(Pos <= size());
+    if (Len > size() - Pos)
+      Len = size() - Pos;
+    return StringView(begin() + Pos, Len);
   }
 
   size_t find(char C, size_t From = 0) const {
-    size_t FindBegin = std::min(From, size());
     // Avoid calling memchr with nullptr.
-    if (FindBegin < size()) {
+    if (From < size()) {
       // Just forward to memchr, which is faster than a hand-rolled loop.
-      if (const void *P = ::memchr(First + FindBegin, C, size() - FindBegin))
+      if (const void *P = ::memchr(First + From, C, size() - From))
         return size_t(static_cast<const char *>(P) - First);
     }
     return npos;
   }
 
-  StringView substr(size_t From, size_t To) const {
-    if (To >= size())
-      To = size() - 1;
-    if (From >= size())
-      From = size() - 1;
-    return StringView(First + From, First + To);
+  void remove_prefix(size_t N) {
+    assert(size() >= N);
+    First += N;
   }
-
-  StringView dropFront(size_t N = 1) const {
-    if (N >= size())
-      N = size();
-    return StringView(First + N, Last);
-  }
-
-  StringView dropBack(size_t N = 1) const {
-    if (N >= size())
-      N = size();
-    return StringView(First, Last - N);
+  void remove_suffix(size_t N) {
+    assert(size() >= N);
+    Last -= N;
   }
 
   char front() const {
@@ -81,31 +72,12 @@ public:
     return *(end() - 1);
   }
 
-  char popFront() {
-    assert(!empty());
-    return *First++;
-  }
-
-  bool consumeFront(char C) {
-    if (!startsWith(C))
-      return false;
-    *this = dropFront(1);
-    return true;
-  }
-
-  bool consumeFront(StringView S) {
-    if (!startsWith(S))
-      return false;
-    *this = dropFront(S.size());
-    return true;
-  }
-
   bool startsWith(char C) const { return !empty() && *begin() == C; }
 
   bool startsWith(StringView Str) const {
     if (Str.size() > size())
       return false;
-    return std::equal(Str.begin(), Str.end(), begin());
+    return std::strncmp(Str.begin(), begin(), Str.size()) == 0;
   }
 
   const char &operator[](size_t Idx) const { return *(begin() + Idx); }
@@ -118,7 +90,7 @@ public:
 
 inline bool operator==(const StringView &LHS, const StringView &RHS) {
   return LHS.size() == RHS.size() &&
-         std::equal(LHS.begin(), LHS.end(), RHS.begin());
+         std::strncmp(LHS.begin(), RHS.begin(), LHS.size()) == 0;
 }
 
 DEMANGLE_NAMESPACE_END

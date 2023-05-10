@@ -29,7 +29,7 @@ FileLineResolver::FileLineResolver(const FileSpec &file_spec, uint32_t line_no,
     : Searcher(), m_file_spec(file_spec), m_line_number(line_no),
       m_inlines(check_inlines) {}
 
-FileLineResolver::~FileLineResolver() {}
+FileLineResolver::~FileLineResolver() = default;
 
 Searcher::CallbackReturn
 FileLineResolver::SearchCallback(SearchFilter &filter, SymbolContext &context,
@@ -48,7 +48,7 @@ FileLineResolver::SearchCallback(SearchFilter &filter, SymbolContext &context,
           // Match all lines in a file...
           const bool append = true;
           while (file_idx != UINT32_MAX) {
-            line_table->FineLineEntriesForFileIndex(file_idx, append,
+            line_table->FindLineEntriesForFileIndex(file_idx, append,
                                                     m_sc_list);
             // Get the next file index in case we have multiple file entries
             // for the same file

@@ -18,19 +18,18 @@
 #include "lldb/lldb-private-enumerations.h"
 #include "lldb/lldb-types.h"
 
-#include "llvm/ADT/Optional.h"
-
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 
 namespace lldb_private {
 
-// A child of another ValueObject.
+/// A child of another ValueObject.
 class ValueObjectChild : public ValueObject {
 public:
   ~ValueObjectChild() override;
 
-  uint64_t GetByteSize() override { return m_byte_size; }
+  std::optional<uint64_t> GetByteSize() override { return m_byte_size; }
 
   lldb::offset_t GetByteOffset() override { return m_byte_offset; }
 
@@ -69,13 +68,8 @@ protected:
   uint8_t m_bitfield_bit_offset;
   bool m_is_base_class;
   bool m_is_deref_of_parent;
-  llvm::Optional<LazyBool> m_can_update_with_invalid_exe_ctx;
+  std::optional<LazyBool> m_can_update_with_invalid_exe_ctx;
 
-  //
-  //  void
-  //  ReadValueFromMemory (ValueObject* parent, lldb::addr_t address);
-
-protected:
   friend class ValueObject;
   friend class ValueObjectConstResult;
   friend class ValueObjectConstResultImpl;

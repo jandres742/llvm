@@ -2,9 +2,9 @@
 ;  1. Internalize global definition which is not used externally if all accesses to it are read-only
 ;  2. Make a local copy of internal definition if all accesses to it are readonly. This allows constant
 ;     folding it during optimziation phase.
-; RUN: opt -module-summary %s -o %t1.bc
+; RUN: opt -module-summary -opaque-pointers %s -o %t1.bc
 ; RUN: opt -module-summary %p/Inputs/index-const-prop.ll -o %t2.bc
-; RUN: llvm-lto2 run %t1.bc %t2.bc -save-temps \
+; RUN: llvm-lto2 run -opaque-pointers %t1.bc %t2.bc -save-temps \
 ; RUN:  -r=%t2.bc,foo,pl \
 ; RUN:  -r=%t2.bc,bar,pl \
 ; RUN:  -r=%t2.bc,baz,pl \
@@ -21,7 +21,7 @@
 ; RUN: llvm-dis %t3.1.5.precodegen.bc -o - | FileCheck %s --check-prefix=CODEGEN
 
 ; Now check that we won't internalize global (gBar) if it's externally referenced
-; RUN: llvm-lto2 run %t1.bc %t2.bc -save-temps \
+; RUN: llvm-lto2 run -opaque-pointers %t1.bc %t2.bc -save-temps \
 ; RUN:  -r=%t2.bc,foo,pl \
 ; RUN:  -r=%t2.bc,bar,pl \
 ; RUN:  -r=%t2.bc,baz,pl \
@@ -38,7 +38,7 @@
 
 ; Run again but with main2 exported instead of main to check that write only
 ; variables are optimized out.
-; RUN: llvm-lto2 run %t1.bc %t2.bc -save-temps \
+; RUN: llvm-lto2 run -opaque-pointers %t1.bc %t2.bc -save-temps \
 ; RUN:  -r=%t2.bc,foo,pl \
 ; RUN:  -r=%t2.bc,bar,pl \
 ; RUN:  -r=%t2.bc,baz,pl \
@@ -57,13 +57,13 @@
 ; with corresponsing stores
 ; RUN: llvm-dis %t5.2.5.precodegen.bc -o - | FileCheck %s --check-prefix=CODEGEN2-SRC
 
-; IMPORT:       @gFoo.llvm.0 = internal unnamed_addr global i32 1, align 4
-; IMPORT-NEXT:  @gBar = internal local_unnamed_addr global i32 2, align 4
+; IMPORT:       @gBar = internal local_unnamed_addr global i32 2, align 4
+; IMPORT-NEXT:  @gFoo.llvm.0 = internal unnamed_addr global i32 1, align 4
 ; IMPORT:       !DICompileUnit({{.*}})
 
 ; Write only variables are imported with a zero initializer.
-; IMPORT-WRITEONLY:  @gFoo.llvm.0 = internal unnamed_addr global i32 0
 ; IMPORT-WRITEONLY:  @gBar = internal local_unnamed_addr global i32 0
+; IMPORT-WRITEONLY:  @gFoo.llvm.0 = internal unnamed_addr global i32 0
 
 ; CODEGEN:        i32 @main()
 ; CODEGEN-NEXT:     ret i32 3
@@ -87,8 +87,8 @@ target triple = "x86_64-pc-linux-gnu"
 @gBar = external global i32
 
 define i32 @main() local_unnamed_addr {
-  %call = tail call i32 bitcast (i32 (...)* @foo to i32 ()*)()
-  %call1 = tail call i32 bitcast (i32 (...)* @bar to i32 ()*)()
+  %call = tail call i32 @foo()
+  %call1 = tail call i32 @bar()
   %add = add nsw i32 %call1, %call
   ret i32 %add
 }

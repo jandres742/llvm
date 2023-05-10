@@ -108,10 +108,21 @@ void Language::ForEach(std::function<bool(Language *)> callback) {
     }
   });
 
-  std::lock_guard<std::mutex> guard(GetLanguagesMutex());
-  LanguagesMap &map(GetLanguagesMap());
-  for (const auto &entry : map) {
-    if (!callback(entry.second.get()))
+  // callback may call a method in Language that attempts to acquire the same
+  // lock (such as Language::ForEach or Language::FindPlugin). To avoid a
+  // deadlock, we do not use callback while holding the lock.
+  std::vector<Language *> loaded_plugins;
+  {
+    std::lock_guard<std::mutex> guard(GetLanguagesMutex());
+    LanguagesMap &map(GetLanguagesMap());
+    for (const auto &entry : map) {
+      if (entry.second)
+        loaded_plugins.push_back(entry.second.get());
+    }
+  }
+
+  for (auto *lang : loaded_plugins) {
+    if (!callback(lang))
       break;
   }
 }
@@ -133,7 +144,7 @@ Language::GetHardcodedSynthetics() {
   return {};
 }
 
-std::vector<ConstString>
+std::vector<FormattersMatchCandidate>
 Language::GetPossibleFormattersMatches(ValueObject &valobj,
                                        lldb::DynamicValueType use_dynamic) {
   return {};
@@ -183,9 +194,23 @@ struct language_name_pair language_names[] = {
     {"c++14", eLanguageTypeC_plus_plus_14},
     {"fortran03", eLanguageTypeFortran03},
     {"fortran08", eLanguageTypeFortran08},
+    {"renderscript", eLanguageTypeRenderScript},
+    {"bliss", eLanguageTypeBLISS},
+    {"kotlin", eLanguageTypeKotlin},
+    {"zig", eLanguageTypeZig},
+    {"crystal", eLanguageTypeCrystal},
+    {"<invalid language>",
+     static_cast<LanguageType>(
+         0x0029)}, // Not yet taken by any language in the DWARF spec
+                   // and thus has no entry in LanguageType
+    {"c++17", eLanguageTypeC_plus_plus_17},
+    {"c++20", eLanguageTypeC_plus_plus_20},
+    {"c17", eLanguageTypeC17},
+    {"fortran18", eLanguageTypeFortran18},
+    {"ada2005", eLanguageTypeAda2005},
+    {"ada2012", eLanguageTypeAda2012},
     // Vendor Extensions
-    {"mipsassem", eLanguageTypeMipsAssembler},
-    {"renderscript", eLanguageTypeExtRenderScript},
+    {"assembler", eLanguageTypeMipsAssembler},
     // Now synonyms, in arbitrary order
     {"objc", eLanguageTypeObjC},
     {"objc++", eLanguageTypeObjC_plus_plus},
@@ -196,7 +221,7 @@ static uint32_t num_languages =
 
 LanguageType Language::GetLanguageTypeFromString(llvm::StringRef string) {
   for (const auto &L : language_names) {
-    if (string.equals_lower(L.name))
+    if (string.equals_insensitive(L.name))
       return static_cast<LanguageType>(L.type);
   }
 
@@ -208,6 +233,17 @@ const char *Language::GetNameForLanguageType(LanguageType language) {
     return language_names[language].name;
   else
     return language_names[eLanguageTypeUnknown].name;
+}
+
+void Language::PrintSupportedLanguagesForExpressions(Stream &s,
+                                                     llvm::StringRef prefix,
+                                                     llvm::StringRef suffix) {
+  auto supported = Language::GetLanguagesSupportingTypeSystemsForExpressions();
+  for (size_t idx = 0; idx < num_languages; ++idx) {
+    auto const &lang = language_names[idx];
+    if (supported[lang.type])
+      s << prefix << lang.name << suffix;
+  }
 }
 
 void Language::PrintAllLanguages(Stream &s, const char *prefix,
@@ -231,6 +267,8 @@ bool Language::LanguageIsCPlusPlus(LanguageType language) {
   case eLanguageTypeC_plus_plus_03:
   case eLanguageTypeC_plus_plus_11:
   case eLanguageTypeC_plus_plus_14:
+  case eLanguageTypeC_plus_plus_17:
+  case eLanguageTypeC_plus_plus_20:
   case eLanguageTypeObjC_plus_plus:
     return true;
   default:
@@ -270,6 +308,8 @@ bool Language::LanguageIsCFamily(LanguageType language) {
   case eLanguageTypeC_plus_plus_03:
   case eLanguageTypeC_plus_plus_11:
   case eLanguageTypeC_plus_plus_14:
+  case eLanguageTypeC_plus_plus_17:
+  case eLanguageTypeC_plus_plus_20:
   case eLanguageTypeObjC_plus_plus:
   case eLanguageTypeObjC:
     return true;
@@ -293,6 +333,8 @@ LanguageType Language::GetPrimaryLanguage(LanguageType language) {
   case eLanguageTypeC_plus_plus_03:
   case eLanguageTypeC_plus_plus_11:
   case eLanguageTypeC_plus_plus_14:
+  case eLanguageTypeC_plus_plus_17:
+  case eLanguageTypeC_plus_plus_20:
     return eLanguageTypeC_plus_plus;
   case eLanguageTypeC:
   case eLanguageTypeC89:
@@ -328,7 +370,6 @@ LanguageType Language::GetPrimaryLanguage(LanguageType language) {
   case eLanguageTypeJulia:
   case eLanguageTypeDylan:
   case eLanguageTypeMipsAssembler:
-  case eLanguageTypeExtRenderScript:
   case eLanguageTypeUnknown:
   default:
     return language;
@@ -417,6 +458,14 @@ bool Language::GetFormatterPrefixSuffix(ValueObject &valobj,
   return false;
 }
 
+bool Language::DemangledNameContainsPath(llvm::StringRef path, 
+                                         ConstString demangled) const {
+  // The base implementation does a simple contains comparision:
+  if (path.empty())
+    return false;
+  return demangled.GetStringRef().contains(path);                                         
+}
+
 DumpValueObjectOptions::DeclPrintingHelper Language::GetDeclPrintingHelper() {
   return nullptr;
 }
@@ -448,7 +497,7 @@ void Language::GetDefaultExceptionResolverDescription(bool catch_on,
            catch_on ? "on" : "off", throw_on ? "on" : "off");
 }
 // Constructor
-Language::Language() {}
+Language::Language() = default;
 
 // Destructor
-Language::~Language() {}
+Language::~Language() = default;

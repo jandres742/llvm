@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+// UNSUPPORTED: !stdlib=libc++ && (c++03 || c++11 || c++14)
 
 // <string_view>
 
@@ -17,7 +18,7 @@
 #include "test_macros.h"
 
 template<typename CharT>
-void test ( const CharT *s, size_t len ) {
+void test ( const CharT *s, std::size_t len ) {
     typedef std::basic_string_view<CharT> SV;
     {
     SV sv1 ( s );
@@ -39,7 +40,7 @@ void test ( const CharT *s, size_t len ) {
 }
 
 #if TEST_STD_VER > 11
-constexpr size_t test_ce ( size_t n, size_t k ) {
+constexpr std::size_t test_ce ( size_t n, size_t k ) {
     typedef std::basic_string_view<char> SV;
     SV sv1{ "ABCDEFGHIJKL", n };
     sv1.remove_suffix ( k );
@@ -52,9 +53,11 @@ int main(int, char**) {
     test ( "a", 1 );
     test ( "", 0 );
 
+#ifndef TEST_HAS_NO_WIDE_CHARACTERS
     test ( L"ABCDE", 5 );
     test ( L"a", 1 );
     test ( L"", 0 );
+#endif
 
 #if TEST_STD_VER >= 11
     test ( u"ABCDE", 5 );

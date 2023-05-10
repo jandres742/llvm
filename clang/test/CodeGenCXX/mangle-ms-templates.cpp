@@ -272,7 +272,7 @@ struct type1 {
 };
 extern const record inst;
 void recref(type1<inst>) {}
-// CHECK: "?recref@@YAXU?$type1@$E?inst@@3Urecord@@B@@@Z"
+// CHECK: "?recref@@YAXU?$type1@$1?inst@@3Urecord@@B@@@Z"
 
 struct _GUID {};
 struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid;
@@ -286,7 +286,7 @@ struct UUIDType2 {};
 void fun(UUIDType1<uuid> a) {}
 // CHECK: "?fun@@YAXU?$UUIDType1@Uuuid@@$1?_GUID_12345678_1234_1234_1234_1234567890ab@@3U__s_GUID@@B@@@Z"
 void fun(UUIDType2<uuid> b) {}
-// CHECK: "?fun@@YAXU?$UUIDType2@Uuuid@@$E?_GUID_12345678_1234_1234_1234_1234567890ab@@3U__s_GUID@@B@@@Z"
+// CHECK: "?fun@@YAXU?$UUIDType2@Uuuid@@$1?_GUID_12345678_1234_1234_1234_1234567890ab@@3U__s_GUID@@B@@@Z"
 
 template <typename T> struct TypeWithFriendDefinition {
   friend void FunctionDefinedWithInjectedName(TypeWithFriendDefinition<T>) {}
@@ -310,3 +310,20 @@ struct UUIDType4 : UUIDType3<G> {
 template struct UUIDType4<&__uuidof(uuid)>;
 // CHECK: "?bar@?$UUIDType4@$1?_GUID_12345678_1234_1234_1234_1234567890ab@@3U__s_GUID@@B@@QAEXXZ"
 // CHECK: "?foo@?$UUIDType3@$1?_GUID_12345678_1234_1234_1234_1234567890ab@@3U__s_GUID@@B@@QAEXXZ"
+
+#ifdef _WIN64
+template<__int128 N> struct Int128 {};
+template<unsigned __int128 N> struct UInt128 {};
+// X64: define {{.*}} @"?fun_int128@@YAXU?$Int128@$0A@@@@Z"(
+void fun_int128(Int128<0>) {}
+// X64: define {{.*}} @"?fun_int128@@YAXU?$Int128@$0?0@@@Z"(
+void fun_int128(Int128<-1>) {}
+// X64: define {{.*}} @"?fun_int128@@YAXU?$Int128@$0DPPPPPPPPPPPPPPPAAAAAAAAAAAAAAAB@@@@Z"(
+void fun_int128(Int128<(__int128)9223372036854775807 * (__int128)9223372036854775807>) {}
+// X64: define {{.*}} @"?fun_uint128@@YAXU?$UInt128@$0A@@@@Z"(
+void fun_uint128(UInt128<0>) {}
+// X64: define {{.*}} @"?fun_uint128@@YAXU?$UInt128@$0?0@@@Z"(
+void fun_uint128(UInt128<(unsigned __int128)-1>) {}
+// X64: define {{.*}} @"?fun_uint128@@YAXU?$UInt128@$0DPPPPPPPPPPPPPPPAAAAAAAAAAAAAAAB@@@@Z"(
+void fun_uint128(UInt128<(unsigned __int128)9223372036854775807 * (unsigned __int128)9223372036854775807>) {}
+#endif

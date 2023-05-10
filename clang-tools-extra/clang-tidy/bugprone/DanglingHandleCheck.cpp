@@ -15,9 +15,7 @@
 using namespace clang::ast_matchers;
 using namespace clang::tidy::matchers;
 
-namespace clang {
-namespace tidy {
-namespace bugprone {
+namespace clang::tidy::bugprone {
 
 namespace {
 
@@ -27,7 +25,8 @@ handleFrom(const ast_matchers::internal::Matcher<RecordDecl> &IsAHandle,
   return expr(
       anyOf(cxxConstructExpr(hasDeclaration(cxxMethodDecl(ofClass(IsAHandle))),
                              hasArgument(0, Arg)),
-            cxxMemberCallExpr(hasType(cxxRecordDecl(IsAHandle)),
+            cxxMemberCallExpr(hasType(hasUnqualifiedDesugaredType(recordType(
+                                  hasDeclaration(cxxRecordDecl(IsAHandle))))),
                               callee(memberExpr(member(cxxConversionDecl()))),
                               on(Arg))));
 }
@@ -94,9 +93,7 @@ DanglingHandleCheck::DanglingHandleCheck(StringRef Name,
       HandleClasses(utils::options::parseStringList(Options.get(
           "HandleClasses",
           "std::basic_string_view;std::experimental::basic_string_view"))),
-      IsAHandle(cxxRecordDecl(hasAnyName(std::vector<StringRef>(
-                                  HandleClasses.begin(), HandleClasses.end())))
-                    .bind("handle")) {}
+      IsAHandle(cxxRecordDecl(hasAnyName(HandleClasses)).bind("handle")) {}
 
 void DanglingHandleCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "HandleClasses",
@@ -117,7 +114,7 @@ void DanglingHandleCheck::registerMatchersForVariables(MatchFinder *Finder) {
 
   // Find 'Handle foo = ReturnsAValue();'
   Finder->addMatcher(
-      traverse(ast_type_traits::TK_AsIs,
+      traverse(TK_AsIs,
                varDecl(hasType(hasUnqualifiedDesugaredType(recordType(
                            hasDeclaration(cxxRecordDecl(IsAHandle))))),
                        unless(parmVarDecl()),
@@ -128,7 +125,7 @@ void DanglingHandleCheck::registerMatchersForVariables(MatchFinder *Finder) {
       this);
   // Find 'foo = ReturnsAValue();  // foo is Handle'
   Finder->addMatcher(
-      traverse(ast_type_traits::TK_AsIs,
+      traverse(TK_AsIs,
                cxxOperatorCallExpr(callee(cxxMethodDecl(ofClass(IsAHandle))),
                                    hasOverloadedOperatorName("="),
                                    hasArgument(1, ConvertedHandle))
@@ -136,16 +133,16 @@ void DanglingHandleCheck::registerMatchersForVariables(MatchFinder *Finder) {
       this);
 
   // Container insertions that will dangle.
-  Finder->addMatcher(traverse(ast_type_traits::TK_AsIs,
-                              makeContainerMatcher(IsAHandle).bind("bad_stmt")),
-                     this);
+  Finder->addMatcher(
+      traverse(TK_AsIs, makeContainerMatcher(IsAHandle).bind("bad_stmt")),
+      this);
 }
 
 void DanglingHandleCheck::registerMatchersForReturn(MatchFinder *Finder) {
   // Return a local.
   Finder->addMatcher(
       traverse(
-          ast_type_traits::TK_AsIs,
+          TK_AsIs,
           returnStmt(
               // The AST contains two constructor calls:
               //   1. Value to Handle conversion.
@@ -170,7 +167,7 @@ void DanglingHandleCheck::registerMatchersForReturn(MatchFinder *Finder) {
   // Return a temporary.
   Finder->addMatcher(
       traverse(
-          ast_type_traits::TK_AsIs,
+          TK_AsIs,
           returnStmt(has(exprWithCleanups(has(ignoringParenImpCasts(handleFrom(
                          IsAHandle, handleFromTemporaryValue(IsAHandle)))))))
               .bind("bad_stmt")),
@@ -189,6 +186,4 @@ void DanglingHandleCheck::check(const MatchFinder::MatchResult &Result) {
       << Handle->getQualifiedNameAsString();
 }
 
-} // namespace bugprone
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::bugprone

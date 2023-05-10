@@ -10,14 +10,19 @@
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
 #include "AvoidConstParamsInDecls.h"
+#include "AvoidUnconditionalPreprocessorIfCheck.h"
 #include "BracesAroundStatementsCheck.h"
 #include "ConstReturnTypeCheck.h"
+#include "ContainerContainsCheck.h"
+#include "ContainerDataPointerCheck.h"
 #include "ContainerSizeEmptyCheck.h"
 #include "ConvertMemberFunctionsToStatic.h"
 #include "DeleteNullPointerCheck.h"
-#include "DeletedDefaultCheck.h"
+#include "DuplicateIncludeCheck.h"
 #include "ElseAfterReturnCheck.h"
+#include "FunctionCognitiveComplexityCheck.h"
 #include "FunctionSizeCheck.h"
+#include "IdentifierLengthCheck.h"
 #include "IdentifierNamingCheck.h"
 #include "ImplicitBoolConversionCheck.h"
 #include "InconsistentDeclarationParameterNameCheck.h"
@@ -28,6 +33,7 @@
 #include "MisplacedArrayIndexCheck.h"
 #include "NamedParameterCheck.h"
 #include "NonConstParameterCheck.h"
+#include "OperatorsRepresentationCheck.h"
 #include "QualifiedAutoCheck.h"
 #include "RedundantAccessSpecifiersCheck.h"
 #include "RedundantControlFlowCheck.h"
@@ -43,12 +49,12 @@
 #include "StaticAccessedThroughInstanceCheck.h"
 #include "StaticDefinitionInAnonymousNamespaceCheck.h"
 #include "StringCompareCheck.h"
+#include "SuspiciousCallArgumentCheck.h"
 #include "UniqueptrDeleteReleaseCheck.h"
 #include "UppercaseLiteralSuffixCheck.h"
 #include "UseAnyOfAllOfCheck.h"
 
-namespace clang {
-namespace tidy {
+namespace clang::tidy {
 namespace readability {
 
 class ReadabilityModule : public ClangTidyModule {
@@ -56,22 +62,32 @@ public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
     CheckFactories.registerCheck<AvoidConstParamsInDecls>(
         "readability-avoid-const-params-in-decls");
+    CheckFactories.registerCheck<AvoidUnconditionalPreprocessorIfCheck>(
+        "readability-avoid-unconditional-preprocessor-if");
     CheckFactories.registerCheck<BracesAroundStatementsCheck>(
         "readability-braces-around-statements");
     CheckFactories.registerCheck<ConstReturnTypeCheck>(
         "readability-const-return-type");
+    CheckFactories.registerCheck<ContainerContainsCheck>(
+        "readability-container-contains");
+    CheckFactories.registerCheck<ContainerDataPointerCheck>(
+        "readability-container-data-pointer");
     CheckFactories.registerCheck<ContainerSizeEmptyCheck>(
         "readability-container-size-empty");
     CheckFactories.registerCheck<ConvertMemberFunctionsToStatic>(
         "readability-convert-member-functions-to-static");
     CheckFactories.registerCheck<DeleteNullPointerCheck>(
         "readability-delete-null-pointer");
-    CheckFactories.registerCheck<DeletedDefaultCheck>(
-        "readability-deleted-default");
+    CheckFactories.registerCheck<DuplicateIncludeCheck>(
+        "readability-duplicate-include");
     CheckFactories.registerCheck<ElseAfterReturnCheck>(
         "readability-else-after-return");
+    CheckFactories.registerCheck<FunctionCognitiveComplexityCheck>(
+        "readability-function-cognitive-complexity");
     CheckFactories.registerCheck<FunctionSizeCheck>(
         "readability-function-size");
+    CheckFactories.registerCheck<IdentifierLengthCheck>(
+        "readability-identifier-length");
     CheckFactories.registerCheck<IdentifierNamingCheck>(
         "readability-identifier-naming");
     CheckFactories.registerCheck<ImplicitBoolConversionCheck>(
@@ -88,6 +104,8 @@ public:
         "readability-misleading-indentation");
     CheckFactories.registerCheck<MisplacedArrayIndexCheck>(
         "readability-misplaced-array-index");
+    CheckFactories.registerCheck<OperatorsRepresentationCheck>(
+        "readability-operators-representation");
     CheckFactories.registerCheck<QualifiedAutoCheck>(
         "readability-qualified-auto");
     CheckFactories.registerCheck<RedundantAccessSpecifiersCheck>(
@@ -122,6 +140,8 @@ public:
         "readability-redundant-string-init");
     CheckFactories.registerCheck<SimplifyBooleanExprCheck>(
         "readability-simplify-boolean-expr");
+    CheckFactories.registerCheck<SuspiciousCallArgumentCheck>(
+        "readability-suspicious-call-argument");
     CheckFactories.registerCheck<UniqueptrDeleteReleaseCheck>(
         "readability-uniqueptr-delete-release");
     CheckFactories.registerCheck<UppercaseLiteralSuffixCheck>(
@@ -141,5 +161,4 @@ static ClangTidyModuleRegistry::Add<ReadabilityModule>
 // and thus register the ReadabilityModule.
 volatile int ReadabilityModuleAnchorSource = 0;
 
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy

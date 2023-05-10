@@ -12,10 +12,10 @@
 \*===----------------------------------------------------------------------===*/
 
 #include "llvm-c-test.h"
-#include "llvm-c/Core.h"
 #include "llvm-c/DebugInfo.h"
 #include <stdio.h>
 #include <string.h>
+#include <assert.h>
 
 static LLVMMetadataRef
 declare_objc_class(LLVMDIBuilderRef DIB, LLVMMetadataRef File) {
@@ -53,11 +53,10 @@ int llvm_test_dibuilder(void) {
                               "", 0,
                               "/test/include/llvm-c-test-import.h", 34,
                               "", 0);
-  LLVMMetadataRef ImportedModule =
-    LLVMDIBuilderCreateImportedModuleFromModule(DIB, Module, OtherModule,
-                                                File, 42);
-  LLVMDIBuilderCreateImportedModuleFromAlias(DIB, Module, ImportedModule,
-                                             File, 42);
+  LLVMMetadataRef ImportedModule = LLVMDIBuilderCreateImportedModuleFromModule(
+      DIB, Module, OtherModule, File, 42, NULL, 0);
+  LLVMDIBuilderCreateImportedModuleFromAlias(DIB, Module, ImportedModule, File,
+                                             42, NULL, 0);
 
   LLVMMetadataRef ClassTy = declare_objc_class(DIB, File);
   LLVMMetadataRef GlobalClassValueExpr =
@@ -199,6 +198,35 @@ int llvm_test_dibuilder(void) {
 
   LLVMDisposeDIBuilder(DIB);
   LLVMDisposeModule(M);
+
+  return 0;
+}
+
+int llvm_get_di_tag(void) {
+  LLVMModuleRef m = LLVMModuleCreateWithName("Mod");
+  LLVMContextRef context = LLVMGetModuleContext(m);
+
+  LLVMMetadataRef metas[] = {LLVMMDStringInContext2(context, "foo", 3)};
+  LLVMMetadataRef md = LLVMMDNodeInContext2(context, metas, 1);
+  uint16_t tag0 = LLVMGetDINodeTag(md);
+
+  assert(tag0 == 0);
+  (void)tag0;
+
+  const char *filename = "metadata.c";
+  LLVMDIBuilderRef builder = LLVMCreateDIBuilder(m);
+  LLVMMetadataRef file =
+      LLVMDIBuilderCreateFile(builder, filename, strlen(filename), ".", 1);
+  LLVMMetadataRef decl = LLVMDIBuilderCreateStructType(
+      builder, file, "TestClass", 9, file, 42, 64, 0,
+      LLVMDIFlagObjcClassComplete, NULL, NULL, 0, 0, NULL, NULL, 0);
+  uint16_t tag1 = LLVMGetDINodeTag(decl);
+
+  assert(tag1 == 0x13);
+  (void)tag1;
+
+  LLVMDisposeDIBuilder(builder);
+  LLVMDisposeModule(m);
 
   return 0;
 }

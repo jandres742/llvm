@@ -47,15 +47,15 @@
 // RUN:     -std=c++11 -triple x86_64-unknown-unknown -emit-llvm -o - %s \
 // RUN:     | FileCheck --check-prefixes CHECK,FUNCTION,NOCUSTOM,NOTYPED %s
 
-// CHECK: define void @_Z16alwaysInstrumentv() #[[ALWAYSATTR:[0-9]+]] {
+// CHECK: define{{.*}} void @_Z16alwaysInstrumentv() #[[ALWAYSATTR:[0-9]+]] {
 [[clang::xray_always_instrument]] void alwaysInstrument() {
   static constexpr char kPhase[] = "always";
   __xray_customevent(kPhase, 6);
   __xray_typedevent(1, kPhase, 6);
-  // CUSTOM: call void @llvm.xray.customevent(i8*{{.*}}, i32 6)
-  // NOCUSTOM-NOT: call void @llvm.xray.customevent(i8*{{.*}}, i32 6)
-  // TYPED: call void @llvm.xray.typedevent(i16 {{.*}}, i8*{{.*}}, i32 6)
-  // NOTYPED-NOT: call void @llvm.xray.typedevent(i16 {{.*}}, i8*{{.*}}, i32 6)
+  // CUSTOM: call void @llvm.xray.customevent(ptr{{.*}}, i32 6)
+  // NOCUSTOM-NOT: call void @llvm.xray.customevent(ptr{{.*}}, i32 6)
+  // TYPED: call void @llvm.xray.typedevent(i16 {{.*}}, ptr{{.*}}, i32 6)
+  // NOTYPED-NOT: call void @llvm.xray.typedevent(i16 {{.*}}, ptr{{.*}}, i32 6)
 }
 
 // FUNCTION: attributes #[[ALWAYSATTR]] = {{.*}} "function-instrument"="xray-always" {{.*}}

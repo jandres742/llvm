@@ -1,4 +1,4 @@
-//===-- sanitizer/asan_interface.h ------------------------------*- C++ -*-===//
+//===-- sanitizer/hwasan_interface.h ----------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -72,6 +72,9 @@ extern "C" {
   /* Returns the offset of the first byte in the memory range that can not be
    * accessed through the pointer in x, or -1 if the whole range is good. */
   intptr_t __hwasan_test_shadow(const volatile void *x, size_t size);
+
+  /* Sets the callback function to be called during HWASan error reporting. */
+  void __hwasan_set_error_report_callback(void (*callback)(const char *));
 
   int __sanitizer_posix_memalign(void **memptr, size_t alignment, size_t size);
   void * __sanitizer_memalign(size_t alignment, size_t size);

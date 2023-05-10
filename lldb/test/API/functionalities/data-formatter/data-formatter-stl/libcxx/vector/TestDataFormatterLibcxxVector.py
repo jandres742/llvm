@@ -12,8 +12,6 @@ from lldbsuite.test import lldbutil
 
 class LibcxxVectorDataFormatterTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     def check_numbers(self, var_name):
         self.expect("frame variable " + var_name,
                     substrs=[var_name + ' = size=7',
@@ -26,16 +24,15 @@ class LibcxxVectorDataFormatterTestCase(TestBase):
                              '[6] = 1234567',
                              '}'])
 
-        self.expect("p " + var_name,
-                    substrs=['$', 'size=7',
-                             '[0] = 1',
-                             '[1] = 12',
-                             '[2] = 123',
-                             '[3] = 1234',
-                             '[4] = 12345',
-                             '[5] = 123456',
-                             '[6] = 1234567',
-                             '}'])
+        self.expect_expr(var_name, result_summary="size=7", result_children=[
+            ValueCheck(value="1"),
+            ValueCheck(value="12"),
+            ValueCheck(value="123"),
+            ValueCheck(value="1234"),
+            ValueCheck(value="12345"),
+            ValueCheck(value="123456"),
+            ValueCheck(value="1234567"),
+        ])
 
         # check access-by-index
         self.expect("frame variable " + var_name + "[0]",
@@ -91,7 +88,7 @@ class LibcxxVectorDataFormatterTestCase(TestBase):
                              '[3] = 1234',
                              '}'])
 
-        self.expect("p numbers",
+        self.expect("expression numbers",
                     substrs=['$', 'size=4',
                              '[0] = 1',
                              '[1] = 12',
@@ -138,7 +135,7 @@ class LibcxxVectorDataFormatterTestCase(TestBase):
                              'is',
                              'smart'])
 
-        self.expect("p strings",
+        self.expect("expression strings",
                     substrs=['goofy',
                              'is',
                              'smart'])
@@ -152,7 +149,7 @@ class LibcxxVectorDataFormatterTestCase(TestBase):
                              'is',
                              'smart'])
 
-        self.expect("p strings",
+        self.expect("expression strings",
                     substrs=['vector has 3 items',
                              'goofy',
                              'is',
@@ -188,4 +185,4 @@ class LibcxxVectorDataFormatterTestCase(TestBase):
 
         self.expect("frame variable ptr", substrs=['ptr =', ' size=7'])
 
-        self.expect("p ptr", substrs=['$', 'size=7'])
+        self.expect("expression ptr", substrs=['$', 'size=7'])

@@ -11,7 +11,7 @@
 
 #include "lldb/API/SBDefines.h"
 
-#include <stdio.h>
+#include <cstdio>
 #include <vector>
 
 namespace lldb {
@@ -27,9 +27,11 @@ public:
   // Make an event that contains a C string.
   SBEvent(uint32_t event, const char *cstr, uint32_t cstr_len);
 
+#ifndef SWIG
   SBEvent(lldb::EventSP &event_sp);
 
   SBEvent(lldb_private::Event *event_sp);
+#endif
 
   ~SBEvent();
 
@@ -47,7 +49,9 @@ public:
 
   const char *GetBroadcasterClass() const;
 
+#ifndef SWIG
   bool BroadcasterMatchesPtr(const lldb::SBBroadcaster *broadcaster);
+#endif
 
   bool BroadcasterMatchesRef(const lldb::SBBroadcaster &broadcaster);
 
@@ -79,7 +83,7 @@ protected:
 
 private:
   mutable lldb::EventSP m_event_sp;
-  mutable lldb_private::Event *m_opaque_ptr;
+  mutable lldb_private::Event *m_opaque_ptr = nullptr;
 };
 
 } // namespace lldb

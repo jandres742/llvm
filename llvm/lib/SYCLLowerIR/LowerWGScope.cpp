@@ -65,6 +65,19 @@
 // (1) - materialization of a PFWI object
 // (2) - "fixup" of the private variable address.
 //
+// TODO: add support for the case when there are other functions between
+// parallel_for_work_group and parallel_for_work_item in the call stack.
+// For example:
+//
+// void foo(sycl::group<1> group, ...) {
+//   group.parallel_for_work_item(range<1>(), [&](h_item<1> i) { ... });
+// }
+// ...
+//   cgh.parallel_for_work_group<class kernel>(
+//     range<1>(...), range<1>(...), [=](group<1> g) {
+//       foo(g, ...);
+//     });
+//
 // TODO The approach employed by this pass generates lots of barriers and data
 // copying between private and local memory, which might not be efficient. There
 // are optimization opportunities listed below. Also other approaches can be
@@ -77,7 +90,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -106,7 +119,7 @@ static constexpr char PFWI_MD[] = "parallel_for_work_item";
 static cl::opt<int> Debug("sycl-lower-wg-debug", llvm::cl::Optional,
                           llvm::cl::Hidden,
                           llvm::cl::desc("Debug SYCL work group code lowering"),
-                          llvm::cl::init(10));
+                          llvm::cl::init(1));
 
 namespace {
 class SYCLLowerWGScopeLegacyPass : public FunctionPass {
@@ -119,8 +132,7 @@ public:
   // run the LowerWGScope pass on the specified module
   bool runOnFunction(Function &F) override {
     FunctionAnalysisManager FAM;
-    auto TT = llvm::Triple(F.getParent()->getTargetTriple());
-    auto PA = Impl.run(F, TT, FAM);
+    auto PA = Impl.run(F, FAM);
     return !PA.areAllPreserved();
   }
 
@@ -237,6 +249,8 @@ static bool mayHaveSideEffects(const Instruction *I) {
   case Instruction::Call:
     assert(!isPFWICall(I) && "pfwi must have been handled separately");
     return true;
+  case Instruction::AddrSpaceCast:
+    return false;
   default:
     return true;
   }
@@ -265,6 +279,7 @@ static void guardBlockWithIsLeaderCheck(BasicBlock *IfBB, BasicBlock *TrueBB,
   auto *Ty = LinearLocalID->getType();
   Value *Zero = Constant::getNullValue(Ty);
   IRBuilder<> Builder(IfBB->getContext());
+  spirv::genWGBarrier(*(IfBB->getTerminator()), TT);
   Builder.SetInsertPoint(IfBB->getTerminator());
   Value *Cmp = Builder.CreateICmpEQ(LinearLocalID, Zero, "cmpz");
   Builder.SetCurrentDebugLocation(DbgLoc);
@@ -301,7 +316,7 @@ shareOutputViaLocalMem(Instruction &I, BasicBlock &BBa, BasicBlock &BBb,
   Bld.CreateStore(&I, WGLocal);
   // 3) Generate a load in the "worker" BB of the value stored by the leader
   Bld.SetInsertPoint(&BBb.front());
-  auto *WGVal = Bld.CreateLoad(WGLocal, "wg_val_" + Twine(I.getName()));
+  auto *WGVal = Bld.CreateLoad(T, WGLocal, "wg_val_" + Twine(I.getName()));
   // 4) Finally, replace usages of I outside the scope
   for (auto *U : Users)
     U->replaceUsesOfWith(&I, WGVal);
@@ -374,24 +389,20 @@ using LocalsSet = SmallPtrSet<AllocaInst *, 4>;
 
 static void copyBetweenPrivateAndShadow(Value *L, GlobalVariable *Shadow,
                                         IRBuilder<> &Builder, bool Loc2Shadow) {
+  assert(isa<PointerType>(L->getType()));
   Type *T = nullptr;
   MaybeAlign LocAlign(0);
 
   if (const auto *AI = dyn_cast<AllocaInst>(L)) {
     T = AI->getAllocatedType();
-    LocAlign = MaybeAlign(AI->getAlignment());
+    LocAlign = AI->getAlign();
   } else {
-    if (cast<Argument>(L)->hasByValAttr()) {
-      T = cast<Argument>(L)->getParamByValType();
-      LocAlign = MaybeAlign(cast<Argument>(L)->getParamAlignment());
-    } else {
-      Type *Ty = cast<Argument>(L)->getType();
-      Module &M = *Shadow->getParent();
-      LocAlign = M.getDataLayout().getValueOrABITypeAlignment(
-          MaybeAlign(cast<Argument>(L)->getParamAlignment()), Ty);
-      T = cast<Argument>(L)->getType()->getPointerElementType();
-    }
+    auto Arg = cast<Argument>(L);
+    T = Arg->getParamByValType();
+    LocAlign = Arg->getParamAlign();
   }
+
+  assert(T && "Unexpected type");
 
   if (T->isAggregateType()) {
     // TODO: we should use methods which directly return MaybeAlign once such
@@ -410,7 +421,7 @@ static void copyBetweenPrivateAndShadow(Value *L, GlobalVariable *Shadow,
 
     if (!Loc2Shadow)
       std::swap(Src, Dst);
-    Value *LocalVal = Builder.CreateLoad(Src, "mat_ld");
+    Value *LocalVal = Builder.CreateLoad(T, Src, "mat_ld");
     Builder.CreateStore(LocalVal, Dst);
   }
 }
@@ -581,7 +592,7 @@ static void dumpDot(const Function &F, const Twine &Suff) {
   std::error_code EC;
   auto FName =
       ("PFWG_Kernel_" + Suff + "_" + Twine(F.getValueID()) + ".dot").str();
-  raw_fd_ostream File(FName, EC, sys::fs::F_Text);
+  raw_fd_ostream File(FName, EC, sys::fs::OF_Text);
 
   if (!EC)
     WriteGraph(File, (const Function *)&F, false);
@@ -593,7 +604,7 @@ static void dumpIR(const Function &F, const Twine &Suff) {
   std::error_code EC;
   auto FName =
       ("PFWG_Kernel_" + Suff + "_" + Twine(F.getValueID()) + ".ll").str();
-  raw_fd_ostream File(FName, EC, sys::fs::F_Text);
+  raw_fd_ostream File(FName, EC, sys::fs::OF_Text);
 
   if (!EC)
     F.print(File, 0, 1, 1);
@@ -616,14 +627,20 @@ using CaptureDesc = std::pair<AllocaInst *, GetElementPtrInst *>;
 //
 static void fixupPrivateMemoryPFWILambdaCaptures(CallInst *PFWICall) {
   // Lambda object is always the last argument to the PFWI lambda function:
-  auto NArgs = PFWICall->getNumArgOperands();
-  assert(PFWICall->getNumArgOperands() > 1 && "invalid PFWI call");
+  auto NArgs = PFWICall->arg_size();
+  if (PFWICall->arg_size() == 1)
+    return;
+
   Value *LambdaObj =
       PFWICall->getArgOperand(NArgs - 1 /*lambda object parameter*/);
   // First go through all stores through the LambdaObj pointer - those are
   // initialization of captures, and for each stored value find its origin -
   // whether it is an alloca with "work_item_scope"
   SmallVector<CaptureDesc, 4> PrivMemCaptures;
+
+  // Look through cast
+  if (auto *Cast = dyn_cast<AddrSpaceCastInst>(LambdaObj))
+    LambdaObj = Cast->getOperand(0);
 
   for (auto *U : LambdaObj->users()) {
     GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U);
@@ -685,17 +702,8 @@ static void fixupPrivateMemoryPFWILambdaCaptures(CallInst *PFWICall) {
 
 // Go through "byval" parameters which are passed as AS(0) pointers
 // and: (1) create local shadows for them (2) and initialize them from the
-// leader's copy and (3) replace usages with pointer to the shadow
-//
-// Do the same for 'this' pointer which points to PFWG lamda object which is
-// allocated in the caller. Caller is a kernel function which is generated by
-// SYCL frontend. Kernel function allocates PFWG lambda object and initalizes
-// captured objects (like accessors) using arguments of the kernel. After
-// intialization kernel calls PFWG function (which is the operator() of the PFWG
-// object). PFWG object captures all objects by value and all uses (except
-// initialization from kernel arguments) of this values can only be in scope of
-// PFWG function that is why copy back of PFWG object is not needed.
-static void sharePFWGPrivateObjects(Function &F, const Triple &TT) {
+// leader's copy and (3) materialize the value in the local variable before use
+static void shareByValParams(Function &F, const Triple &TT) {
   // Skip alloca instructions and split. Alloca instructions must be in the
   // beginning of the function otherwise they are considered as dynamic which
   // can cause the problems with inlining.
@@ -707,70 +715,46 @@ static void sharePFWGPrivateObjects(Function &F, const Triple &TT) {
   BasicBlock *LeaderBB = EntryBB->splitBasicBlock(SplitPoint, "leader");
   BasicBlock *MergeBB = LeaderBB->splitBasicBlock(&LeaderBB->front(), "merge");
 
-  // 1) rewire the above basic blocks so that LeaderBB is executed only for the
+  // Rewire the above basic blocks so that LeaderBB is executed only for the
   // leader workitem
   guardBlockWithIsLeaderCheck(EntryBB, LeaderBB, MergeBB,
                               EntryBB->back().getDebugLoc(), TT);
   Instruction &At = LeaderBB->back();
 
   for (auto &Arg : F.args()) {
-    Type *T;
+    if (!Arg.hasByValAttr())
+      continue;
+
+    assert(Arg.getType()->getPointerAddressSpace() ==
+           asUInt(spirv::AddrSpace::Private));
+
+    // Create the shared copy - "shadow" - for current arg
+    Type *T = Arg.getParamByValType();
+    GlobalVariable *Shadow =
+        spirv::createWGLocalVariable(*F.getParent(), T, "ArgShadow");
+
     LLVMContext &Ctx = At.getContext();
     IRBuilder<> Builder(Ctx);
     Builder.SetInsertPoint(&LeaderBB->front());
 
-    // 2) create the shared copy - "shadow" - for current arg
-    GlobalVariable *Shadow = nullptr;
-    Value *RepVal = nullptr;
-    if (Arg.hasByValAttr()) {
-      assert(Arg.getType()->getPointerAddressSpace() ==
-             asUInt(spirv::AddrSpace::Private));
-      T = Arg.getParamByValType();
-      Shadow = spirv::createWGLocalVariable(*F.getParent(), T, "ArgShadow");
-      RepVal = Shadow;
-      if (TT.isNVPTX()) {
-        // For NVPTX target address space inference for kernel arguments and
-        // allocas is happening in the backend (NVPTXLowerArgs and
-        // NVPTXLowerAlloca passes). After the frontend these pointers are in
-        // LLVM default address space 0 which is the generic address space for
-        // NVPTX target.
-        assert(Arg.getType()->getPointerAddressSpace() == 0);
-
-        // Cast a pointer in the shared address space to the generic address
-        // space.
-        RepVal = ConstantExpr::getPointerBitCastOrAddrSpaceCast(Shadow,
-                                                                Arg.getType());
-      }
-    }
-    // Process 'this' pointer which points to PFWG lambda object
-    else if (Arg.getArgNo() == 0) {
-      PointerType *PtrT = dyn_cast<PointerType>(Arg.getType());
-      assert(PtrT && "Expected this pointer as the first argument");
-      T = PtrT->getElementType();
-      Shadow = spirv::createWGLocalVariable(*F.getParent(), T, "ArgShadow");
-      RepVal =
-          Builder.CreatePointerBitCastOrAddrSpaceCast(Shadow, Arg.getType());
-    }
-
-    if (!Shadow || !RepVal)
-      continue;
-
-    // 3) replace argument with shadow in all uses
-    for (auto *U : Arg.users())
-      U->replaceUsesOfWith(&Arg, RepVal);
-
     copyBetweenPrivateAndShadow(&Arg, Shadow, Builder,
                                 true /*private->shadow*/);
+    // Materialize the value in the local variable before use
+    Builder.SetInsertPoint(&MergeBB->front());
+    copyBetweenPrivateAndShadow(&Arg, Shadow, Builder,
+                                false /*shadow->private*/);
   }
-  // 5) make sure workers use up-to-date shared values written by the leader
+  // Insert barrier to make sure workers use up-to-date shared values written by
+  // the leader
   spirv::genWGBarrier(MergeBB->front(), TT);
 }
 
-PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
+PreservedAnalyses SYCLLowerWGScopePass::run(Function &F,
                                             FunctionAnalysisManager &FAM) {
   if (!F.getMetadata(WG_SCOPE_MD))
     return PreservedAnalyses::all();
-  bool Changed = false;
+  LLVM_DEBUG(llvm::dbgs() << "Function name: " << F.getName() << "\n");
+  const auto &TT = llvm::Triple(F.getParent()->getTargetTriple());
   // Ranges of "side effect" instructions
   SmallVector<InstrRange, 16> Ranges;
   SmallPtrSet<AllocaInst *, 16> Allocas;
@@ -784,19 +768,22 @@ PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
     Instruction *First = nullptr;
     Instruction *Last = nullptr;
 
-    // Skip PHIs and allocas, as they don't have side effects and must never be
-    // guarded with the WG leader test. Note that there should be no allocas in
-    // local address space at this point - they must have been converted to
-    // globals.
+    // Skip PHIs, allocas and addrspacecasts associated with allocas, as they
+    // don't have side effects and must never be guarded with the WG leader
+    // test. Note that there should be no allocas in local address space at this
+    // point - they must have been converted to globals.
     Instruction *I = BB.getFirstNonPHI();
 
-    for (; I->getOpcode() == Instruction::Alloca; I = I->getNextNode()) {
+    for (; I->getOpcode() == Instruction::Alloca ||
+           I->getOpcode() == Instruction::AddrSpaceCast ||
+           I->isDebugOrPseudoInst();
+         I = I->getNextNode()) {
       auto *AllocaI = dyn_cast<AllocaInst>(I);
       // Allocas marked with "work_item_scope" are those originating from
-      // cl::sycl::private_memory<T> variables, which must be in private memory.
+      // sycl::private_memory<T> variables, which must be in private memory.
       // No shadows/materialization is needed for them because they can be
       // updated only within PFWIs
-      if (!AllocaI->getMetadata(WI_SCOPE_MD))
+      if (AllocaI && !AllocaI->getMetadata(WI_SCOPE_MD))
         Allocas.insert(AllocaI);
     }
     for (; I && (I != BB.getTerminator()); I = I->getNextNode()) {
@@ -827,7 +814,7 @@ PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
       Ranges.push_back(InstrRange{First, Last});
     }
   }
-#ifndef NDEBUG
+
   int NByval = 0;
   for (const auto &Arg : F.args()) {
     if (Arg.hasByValAttr())
@@ -836,6 +823,7 @@ PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
 
   bool HaveChanges = (Ranges.size() > 0) || (Allocas.size() > 0) || NByval > 0;
 
+#ifndef NDEBUG
   if (HaveChanges && Debug > 1) {
     dumpIR(F, "before");
     dumpDot(F, "before");
@@ -843,10 +831,9 @@ PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
 #endif // NDEBUG
 
   // Perform the transformation
-  for (auto &R : Ranges) {
+  for (auto &R : Ranges)
     tformRange(R, TT);
-    Changed = true;
-  }
+
   // There can be allocas not corresponding to any variable declared in user
   // code but generated by the compiler - e.g. for non-trivially typed
   // parameters passed by value. There can be WG scope stores into such
@@ -867,9 +854,8 @@ PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
   for (auto *PFWICall : PFWICalls)
     fixupPrivateMemoryPFWILambdaCaptures(PFWICall);
 
-  // Finally, create shadows for and replace usages of byval pointer params and
-  // PFWG lambda object ('this' pointer).
-  sharePFWGPrivateObjects(F, TT);
+  // Finally, create shadows for and replace usages of byval pointer params.
+  shareByValParams(F, TT);
 
 #ifndef NDEBUG
   if (HaveChanges && Debug > 0)
@@ -879,7 +865,7 @@ PreservedAnalyses SYCLLowerWGScopePass::run(Function &F, const llvm::Triple &TT,
     dumpDot(F, "after");
   }
 #endif // NDEBUG
-  return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+  return HaveChanges ? PreservedAnalyses::none() : PreservedAnalyses::all();
 }
 
 GlobalVariable *spirv::createWGLocalVariable(Module &M, Type *T,
@@ -897,7 +883,7 @@ GlobalVariable *spirv::createWGLocalVariable(Module &M, Type *T,
       );
   G->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
   const DataLayout &DL = M.getDataLayout();
-  G->setAlignment(MaybeAlign(DL.getPreferredAlignment(G)));
+  G->setAlignment(MaybeAlign(DL.getPreferredAlign(G)));
   LocalMemUsed += DL.getTypeStoreSize(G->getValueType());
   LLVM_DEBUG(llvm::dbgs() << "Local AS Var created: " << G->getName() << "\n");
   LLVM_DEBUG(llvm::dbgs() << "  Local mem used: " << LocalMemUsed << "B\n");
@@ -914,7 +900,7 @@ GlobalVariable *spirv::createWGLocalVariable(Module &M, Type *T,
 // Return a value equals to 0 if and only if the local linear id is 0.
 Value *spirv::genPseudoLocalID(Instruction &Before, const Triple &TT) {
   Module &M = *Before.getModule();
-  if (TT.isNVPTX()) {
+  if (TT.isNVPTX() || TT.isAMDGCN()) {
     LLVMContext &Ctx = Before.getContext();
     Type *RetTy = getSizeTTy(M);
 
@@ -961,10 +947,10 @@ Value *spirv::genPseudoLocalID(Instruction &Before, const Triple &TT) {
                              // asUInt(spirv::AddrSpace::Input) // AddressSpace
                              asUInt(spirv::AddrSpace::Global) // AddressSpace
       );
-      unsigned Align = M.getDataLayout().getPreferredAlignment(G);
-      G->setAlignment(MaybeAlign(Align));
+      Align Alignment = M.getDataLayout().getPreferredAlign(G);
+      G->setAlignment(MaybeAlign(Alignment));
     }
-    Value *Res = new LoadInst(G->getType()->getElementType(), G, "", &Before);
+    Value *Res = new LoadInst(G->getValueType(), G, "", &Before);
     return Res;
   }
 }
@@ -980,8 +966,7 @@ Instruction *spirv::genWGBarrier(Instruction &Before, const Triple &TT) {
   Type *RetTy = Type::getVoidTy(Ctx);
 
   AttributeList Attr;
-  Attr = Attr.addAttribute(Ctx, AttributeList::FunctionIndex,
-                           Attribute::Convergent);
+  Attr = Attr.addFnAttribute(Ctx, Attribute::Convergent);
   FunctionCallee FC =
       M.getOrInsertFunction(Name, Attr, RetTy, ScopeTy, ScopeTy, SemanticsTy);
   assert(FC.getCallee() && "spirv intrinsic creation failed");
@@ -994,7 +979,6 @@ Instruction *spirv::genWGBarrier(Instruction &Before, const Triple &TT) {
       ScopeTy, asUInt(spirv::MemorySemantics::SequentiallyConsistent) |
                    asUInt(spirv::MemorySemantics::WorkgroupMemory));
   auto BarrierCall = Bld.CreateCall(FC, {ArgExec, ArgMem, ArgSema});
-  BarrierCall->addAttribute(llvm::AttributeList::FunctionIndex,
-                            llvm::Attribute::Convergent);
+  BarrierCall->addFnAttr(llvm::Attribute::Convergent);
   return BarrierCall;
 }

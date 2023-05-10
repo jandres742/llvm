@@ -8,8 +8,6 @@ from lldbsuite.test.lldbtest import *
 
 class ContextObjectTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     def test_context_object(self):
         """Tests expression evaluation in context of an object."""
         self.build()
@@ -18,34 +16,34 @@ class ContextObjectTestCase(TestBase):
         frame = thread.GetFrameAtIndex(0)
 
         #
-        # Test C++ struct variable
+        # Test C++ struct variable and reference-to-struct variable
         #
+        for obj in "cpp_struct", "cpp_struct_ref":
+            obj_val = frame.FindVariable(obj)
+            self.assertTrue(obj_val.IsValid())
 
-        obj_val = frame.FindVariable("cpp_struct")
-        self.assertTrue(obj_val.IsValid())
+            # Test an empty expression evaluation
+            value = obj_val.EvaluateExpression("")
+            self.assertFalse(value.IsValid())
+            self.assertFalse(value.GetError().Success())
 
-        # Test an empty expression evaluation
-        value = obj_val.EvaluateExpression("")
-        self.assertFalse(value.IsValid())
-        self.assertFalse(value.GetError().Success())
+            # Test retrieveing of a field (not a local with the same name)
+            value = obj_val.EvaluateExpression("field")
+            self.assertTrue(value.IsValid())
+            self.assertSuccess(value.GetError())
+            self.assertEqual(value.GetValueAsSigned(), 1111)
 
-        # Test retrieveing of a field (not a local with the same name)
-        value = obj_val.EvaluateExpression("field")
-        self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
-        self.assertEqual(value.GetValueAsSigned(), 1111)
+            # Test functions evaluation
+            value = obj_val.EvaluateExpression("function()")
+            self.assertTrue(value.IsValid())
+            self.assertSuccess(value.GetError())
+            self.assertEqual(value.GetValueAsSigned(), 2222)
 
-        # Test functions evaluation
-        value = obj_val.EvaluateExpression("function()")
-        self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
-        self.assertEqual(value.GetValueAsSigned(), 2222)
-
-        # Test that we retrieve the right global
-        value = obj_val.EvaluateExpression("global.field")
-        self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
-        self.assertEqual(value.GetValueAsSigned(), 1111)
+            # Test that we retrieve the right global
+            value = obj_val.EvaluateExpression("global.field")
+            self.assertTrue(value.IsValid())
+            self.assertSuccess(value.GetError())
+            self.assertEqual(value.GetValueAsSigned(), 1111)
 
         #
         # Test C++ union variable
@@ -57,7 +55,7 @@ class ContextObjectTestCase(TestBase):
         # Test retrieveing of a field
         value = obj_val.EvaluateExpression("field_int")
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())
         self.assertEqual(value.GetValueAsSigned(), 5555)
 
         #
@@ -69,7 +67,7 @@ class ContextObjectTestCase(TestBase):
 
         # Test an expression evaluation
         value = obj_val.EvaluateExpression("1")
-        self.assertFalse(value.IsValid())
+        self.assertTrue(value.IsValid())
         self.assertFalse(value.GetError().Success())
 
         #
@@ -81,13 +79,13 @@ class ContextObjectTestCase(TestBase):
 
         # Test an expression evaluation
         value = obj_val.EvaluateExpression("1")
-        self.assertFalse(value.IsValid())
+        self.assertTrue(value.IsValid())
         self.assertFalse(value.GetError().Success())
 
         # Test retrieveing of an element's field
         value = obj_val.GetValueForExpressionPath("[7]").EvaluateExpression("field")
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())
         self.assertEqual(value.GetValueAsSigned(), 1111)
 
         #
@@ -99,13 +97,13 @@ class ContextObjectTestCase(TestBase):
 
         # Test an expression evaluation
         value = obj_val.EvaluateExpression("1")
-        self.assertFalse(value.IsValid())
+        self.assertTrue(value.IsValid())
         self.assertFalse(value.GetError().Success())
 
         # Test retrieveing of a dereferenced object's field
         value = obj_val.Dereference().EvaluateExpression("field")
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())
         self.assertEqual(value.GetValueAsSigned(), 1111)
 
         #
@@ -129,13 +127,13 @@ class ContextObjectTestCase(TestBase):
 
         # Test an expression evaluation
         value = obj_val.EvaluateExpression("1")
-        self.assertFalse(value.IsValid())
+        self.assertTrue(value.IsValid())
         self.assertFalse(value.GetError().Success())
 
         # Test retrieveing of a dereferenced object's field
         value = obj_val.Dereference().EvaluateExpression("field")
         self.assertTrue(value.IsValid())
-        self.assertTrue(value.GetError().Success())
+        self.assertSuccess(value.GetError())
         self.assertEqual(value.GetValueAsSigned(), 1111)
 
     def setUp(self):

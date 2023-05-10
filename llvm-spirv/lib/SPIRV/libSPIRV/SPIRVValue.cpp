@@ -42,6 +42,9 @@
 
 #include "SPIRVValue.h"
 #include "SPIRVEnum.h"
+
+#include "llvm/ADT/APInt.h"
+
 namespace SPIRV {
 void SPIRVValue::setAlignment(SPIRVWord A) {
   if (A == 0) {
@@ -72,43 +75,8 @@ bool SPIRVValue::hasNoSignedWrap() const {
   return hasDecorate(DecorationNoSignedWrap);
 }
 
-void SPIRVValue::setNoSignedWrap(bool HasNoSignedWrap) {
-  if (!HasNoSignedWrap) {
-    eraseDecorate(DecorationNoSignedWrap);
-  }
-  if (Module->isAllowedToUseExtension(
-          ExtensionID::SPV_KHR_no_integer_wrap_decoration)) {
-    // NoSignedWrap decoration is available only if it is allowed to use SPIR-V
-    // 1.4 or if SPV_KHR_no_integer_wrap_decoration extension is allowed
-    // FIXME: update this 'if' to include check for SPIR-V 1.4 once translator
-    // support this version
-    addDecorate(new SPIRVDecorate(DecorationNoSignedWrap, this));
-    SPIRVDBG(spvdbgs() << "Set nsw for obj " << Id << "\n")
-  } else {
-    SPIRVDBG(spvdbgs() << "Skip setting nsw for obj " << Id << "\n")
-  }
-}
-
 bool SPIRVValue::hasNoUnsignedWrap() const {
   return hasDecorate(DecorationNoUnsignedWrap);
-}
-
-void SPIRVValue::setNoUnsignedWrap(bool HasNoUnsignedWrap) {
-  if (!HasNoUnsignedWrap) {
-    eraseDecorate(DecorationNoUnsignedWrap);
-    return;
-  }
-  if (Module->isAllowedToUseExtension(
-          ExtensionID::SPV_KHR_no_integer_wrap_decoration)) {
-    // NoUnsignedWrap decoration is available only if it is allowed to use
-    // SPIR-V 1.4 or if SPV_KHR_no_integer_wrap_decoration extension is allowed
-    // FIXME: update this 'if' to include check for SPIR-V 1.4 once translator
-    // support this version
-    addDecorate(new SPIRVDecorate(DecorationNoUnsignedWrap, this));
-    SPIRVDBG(spvdbgs() << "Set nuw for obj " << Id << "\n")
-  } else {
-    SPIRVDBG(spvdbgs() << "Skip setting nuw for obj " << Id << "\n")
-  }
 }
 
 void SPIRVValue::setFPFastMathMode(SPIRVWord M) {
@@ -120,5 +88,70 @@ void SPIRVValue::setFPFastMathMode(SPIRVWord M) {
   SPIRVDBG(spvdbgs() << "Set fast math mode to " << M << " for obj " << Id
                      << "\n")
 }
+
+template <spv::Decoration NoIntegerWrapDecoration>
+void SPIRVValue::setNoIntegerDecorationWrap(bool HasNoIntegerWrap) {
+  if (!HasNoIntegerWrap) {
+    eraseDecorate(NoIntegerWrapDecoration);
+    return;
+  }
+  // NoSignedWrap and NoUnsignedWrap decorations are available only if it is
+  // allowed to use SPIR-V 1.4 or if SPV_KHR_no_integer_wrap_decoration
+  // extension is enabled
+#ifdef _SPIRVDBG
+  const std::string InstStr =
+      NoIntegerWrapDecoration == DecorationNoSignedWrap ? "nsw" : "nuw";
+#endif // _SPIRVDBG
+  if (Module->isAllowedToUseVersion(VersionNumber::SPIRV_1_4)) {
+    Module->setMinSPIRVVersion(VersionNumber::SPIRV_1_4);
+    addDecorate(new SPIRVDecorate(NoIntegerWrapDecoration, this));
+    SPIRVDBG(spvdbgs() << "Set " << InstStr << " for obj " << Id << "\n")
+  } else if (Module->isAllowedToUseExtension(
+                 ExtensionID::SPV_KHR_no_integer_wrap_decoration)) {
+    Module->addExtension(ExtensionID::SPV_KHR_no_integer_wrap_decoration);
+    addDecorate(new SPIRVDecorate(NoIntegerWrapDecoration, this));
+    SPIRVDBG(spvdbgs() << "Set " << InstStr << " for obj " << Id << "\n")
+  } else {
+    SPIRVDBG(spvdbgs() << "Skip setting " << InstStr << " for obj " << Id
+                       << "\n")
+  }
+}
+
+template void
+SPIRVValue::setNoIntegerDecorationWrap<DecorationNoSignedWrap>(bool);
+template void
+SPIRVValue::setNoIntegerDecorationWrap<DecorationNoUnsignedWrap>(bool);
+
+template <spv::Op OC>
+void SPIRVConstantBase<OC>::setWords(const uint64_t *TheValue) {
+  assert(TheValue && "Nullptr value");
+  recalculateWordCount();
+  validate();
+
+  Words.resize(NumWords);
+  for (size_t I = 0; I != NumWords / 2; ++I) {
+    Words[I * 2] = static_cast<SPIRVWord>(TheValue[I]) & SPIRVWORD_MAX;
+    Words[I * 2 + 1] =
+        static_cast<SPIRVWord>((TheValue[I] >> SpirvWordBitWidth)) &
+        SPIRVWORD_MAX;
+  }
+  if (NumWords % 2)
+    Words.back() =
+        static_cast<SPIRVWord>(TheValue[NumWords / 2]) & SPIRVWORD_MAX;
+}
+
+// Complete constructor for AP integer constant
+template <spv::Op OC>
+SPIRVConstantBase<OC>::SPIRVConstantBase(SPIRVModule *M, SPIRVType *TheType,
+                                         SPIRVId TheId,
+                                         const llvm::APInt &TheValue)
+    : SPIRVValue(M, 0, OC, TheType, TheId) {
+  setWords(TheValue.getRawData());
+}
+
+// To solve errors about undefined reference to template class methods
+// definitions.
+template class SPIRVConstantBase<OpConstant>;
+template class SPIRVConstantBase<OpSpecConstant>;
 
 } // namespace SPIRV

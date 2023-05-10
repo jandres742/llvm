@@ -139,6 +139,14 @@ public:
   ///     be printed.  In disassembly formatting, where we want a format
   ///     like "<*+36>", this should be false and "*" will be printed
   ///     instead.
+  ///
+  /// \param[in] show_inline_callsite_line_info
+  ///     When processing an inline block, the line info of the callsite
+  ///     is dumped if this flag is \b true, otherwise the line info
+  ///     of the actual inlined function is dumped.
+  ///
+  /// \return
+  ///     \b true if some text was dumped, \b false otherwise.
   bool DumpStopContext(Stream *s, ExecutionContextScope *exe_scope,
                        const Address &so_addr, bool show_fullpaths,
                        bool show_module, bool show_inlined_frames,
@@ -237,26 +245,13 @@ public:
   ///     represented by this symbol context object, nullptr otherwise.
   Block *GetFunctionBlock();
 
-  /// If this symbol context represents a function that is a method, return
-  /// true and provide information about the method.
+  /// Determines the name of the instance variable for the this decl context.
   ///
-  /// \param[out] language
-  ///     If \b true is returned, the language for the method.
-  ///
-  /// \param[out] is_instance_method
-  ///     If \b true is returned, \b true if this is a instance method,
-  ///     \b false if this is a static/class function.
-  ///
-  /// \param[out] language_object_name
-  ///     If \b true is returned, the name of the artificial variable
-  ///     for the language ("this" for C++, "self" for ObjC).
+  /// For C++ the name is "this", for Objective-C the name is "self".
   ///
   /// \return
-  ///     \b True if this symbol context represents a function that
-  ///     is a method of a class, \b false otherwise.
-  bool GetFunctionMethodInfo(lldb::LanguageType &language,
-                             bool &is_instance_method,
-                             ConstString &language_object_name);
+  ///     Returns a string for the name of the instance variable.
+  ConstString GetInstanceVariableName();
 
   /// Sorts the types in TypeMap according to SymbolContext to TypeList
   ///
@@ -308,12 +303,13 @@ public:
   // Member variables
   lldb::TargetSP target_sp; ///< The Target for a given query
   lldb::ModuleSP module_sp; ///< The Module for a given query
-  CompileUnit *comp_unit;   ///< The CompileUnit for a given query
-  Function *function;       ///< The Function for a given query
-  Block *block;             ///< The Block for a given query
+  CompileUnit *comp_unit = nullptr; ///< The CompileUnit for a given query
+  Function *function = nullptr;     ///< The Function for a given query
+  Block *block = nullptr;           ///< The Block for a given query
   LineEntry line_entry;     ///< The LineEntry for a given query
-  Symbol *symbol;           ///< The Symbol for a given query
-  Variable *variable;       ///< The global variable matching the given query
+  Symbol *symbol = nullptr; ///< The Symbol for a given query
+  Variable *variable =
+      nullptr; ///< The global variable matching the given query
 };
 
 class SymbolContextSpecifier {
@@ -340,7 +336,7 @@ public:
 
   void Clear();
 
-  bool SymbolContextMatches(SymbolContext &sc);
+  bool SymbolContextMatches(const SymbolContext &sc);
 
   bool AddressMatches(lldb::addr_t addr);
 

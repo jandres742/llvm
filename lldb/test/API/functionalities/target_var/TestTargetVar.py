@@ -10,9 +10,6 @@ from lldbsuite.test import lldbutil
 
 class targetCommandTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
-    @skipUnlessDarwin
     @skipIfDarwinEmbedded           # needs x86_64
     @skipIf(debug_info="gmodules")  # not relevant
     @skipIf(compiler="clang", compiler_version=['<', '7.0'])
@@ -20,3 +17,5 @@ class targetCommandTestCase(TestBase):
         self.build()
         lldbutil.run_to_name_breakpoint(self, 'main')
         self.expect("target variable i", substrs=['i', '42'])
+        self.expect("target variable var", patterns=['\(incomplete \*\) var = 0[xX](0)*dead'])
+        self.expect("target variable var[0]", error=True, substrs=["can't find global variable 'var[0]'"])

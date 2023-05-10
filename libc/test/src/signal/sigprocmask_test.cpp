@@ -6,18 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "include/errno.h"
 #include "include/signal.h"
-#include "src/errno/llvmlibc_errno.h"
+#include "src/errno/libc_errno.h"
 #include "src/signal/raise.h"
 #include "src/signal/sigaddset.h"
 #include "src/signal/sigemptyset.h"
 #include "src/signal/sigprocmask.h"
 
-#include "utils/UnitTest/ErrnoSetterMatcher.h"
-#include "utils/UnitTest/Test.h"
+#include "test/ErrnoSetterMatcher.h"
+#include "test/UnitTest/Test.h"
 
-class SignalTest : public __llvm_libc::testing::Test {
+class LlvmLibcSignalTest : public __llvm_libc::testing::Test {
   sigset_t oldSet;
 
 public:
@@ -32,8 +31,8 @@ using __llvm_libc::testing::ErrnoSetterMatcher::Fails;
 using __llvm_libc::testing::ErrnoSetterMatcher::Succeeds;
 
 // This tests for invalid input.
-TEST_F(SignalTest, SigprocmaskInvalid) {
-  llvmlibc_errno = 0;
+TEST_F(LlvmLibcSignalTest, SigprocmaskInvalid) {
+  libc_errno = 0;
 
   sigset_t valid;
   // 17 and -4 are out of the range for sigprocmask's how paramater.
@@ -49,11 +48,11 @@ TEST_F(SignalTest, SigprocmaskInvalid) {
 
 // This tests that when nothing is blocked, a process gets killed and alse tests
 // that when signals are blocked they are not delivered to the process.
-TEST_F(SignalTest, BlockUnblock) {
+TEST_F(LlvmLibcSignalTest, BlockUnblock) {
   sigset_t sigset;
   EXPECT_EQ(__llvm_libc::sigemptyset(&sigset), 0);
   EXPECT_EQ(__llvm_libc::sigprocmask(SIG_SETMASK, &sigset, nullptr), 0);
-  EXPECT_DEATH([] { __llvm_libc::raise(SIGUSR1); }, SIGUSR1);
+  EXPECT_DEATH([] { __llvm_libc::raise(SIGUSR1); }, WITH_SIGNAL(SIGUSR1));
   EXPECT_EQ(__llvm_libc::sigaddset(&sigset, SIGUSR1), 0);
   EXPECT_EQ(__llvm_libc::sigprocmask(SIG_SETMASK, &sigset, nullptr), 0);
   EXPECT_EXITS([] { __llvm_libc::raise(SIGUSR1); }, 0);

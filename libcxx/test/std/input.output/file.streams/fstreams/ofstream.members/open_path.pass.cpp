@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14
-// UNSUPPORTED: c++filesystem-disabled
+// UNSUPPORTED: no-filesystem
+
+// UNSUPPORTED: availability-filesystem-missing
 
 // <fstream>
 
@@ -42,7 +44,9 @@ int main(int, char**) {
     fs >> c;
     assert(c == 'a');
   }
-  std::remove(p.c_str());
+  std::remove(p.string().c_str());
+
+#ifndef TEST_HAS_NO_WIDE_CHARACTERS
   {
     std::wofstream fs;
     assert(!fs.is_open());
@@ -59,7 +63,8 @@ int main(int, char**) {
     fs >> c;
     assert(c == L'a');
   }
-  std::remove(p.c_str());
+  std::remove(p.string().c_str());
+#endif
 
   return 0;
 }

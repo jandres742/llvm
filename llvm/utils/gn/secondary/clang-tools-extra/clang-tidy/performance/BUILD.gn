@@ -12,6 +12,7 @@ static_library("performance") {
     "//llvm/lib/Support",
   ]
   sources = [
+    "AvoidEndlCheck.cpp",
     "FasterStringFindCheck.cpp",
     "ForRangeCopyCheck.cpp",
     "ImplicitConversionInLoopCheck.cpp",
@@ -21,6 +22,7 @@ static_library("performance") {
     "MoveConstArgCheck.cpp",
     "MoveConstructorInitCheck.cpp",
     "NoAutomaticMoveCheck.cpp",
+    "NoIntToPtrCheck.cpp",
     "NoexceptMoveConstructorCheck.cpp",
     "PerformanceTidyModule.cpp",
     "TriviallyDestructibleCheck.cpp",

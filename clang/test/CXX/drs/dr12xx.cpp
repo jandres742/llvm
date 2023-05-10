@@ -1,7 +1,11 @@
 // RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++14 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++1z %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++17 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++20 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++2b %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+
+// dr1200: na
 
 namespace dr1213 { // dr1213: 7
 #if __cplusplus >= 201103L
@@ -26,6 +30,21 @@ namespace dr1213 { // dr1213: 7
   using U = decltype(EV4Int()[0]);
 #endif
 }
+
+#if __cplusplus >= 201103L
+namespace dr1227 { // dr1227: yes
+template <class T> struct A { using X = typename T::X; }; // expected-error {{type 'int' cannot be used prior to '::' because it has no members}}
+template <class T> typename T::X f(typename A<T>::X);
+template <class T> void f(...) { }
+template <class T> auto g(typename A<T>::X) -> typename T::X; // expected-note {{in instantiation of template class 'dr1227::A<int>' requested here}}
+template <class T> void g(...) { }
+
+void h() {
+  f<int>(0); // OK, substituting return type causes deduction to fail
+  g<int>(0); // expected-note {{while substituting explicitly-specified template arguments into function template 'g'}}
+}
+}
+#endif
 
 namespace dr1250 { // dr1250: 3.9
 struct Incomplete;
@@ -52,6 +71,8 @@ namespace dr1265 { // dr1265: 5
   auto k(), l(); // expected-error {{function with deduced return type must be the only declaration in its group}}
 #endif
 }
+
+// dr1291: na
 
 namespace dr1295 { // dr1295: 4
   struct X {

@@ -8,9 +8,8 @@ from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 
 class TestArtificialFrameThreadStepOut1(TestBase):
-    mydir = TestBase.compute_mydir(__file__)
 
-    # If your test case doesn't stress debug info, the
+    # If your test case doesn't stress debug info, then
     # set this to true.  That way it won't be run once for
     # each debug info format.
     NO_DEBUG_INFO_TESTCASE = True
@@ -29,7 +28,7 @@ class TestArtificialFrameThreadStepOut1(TestBase):
                         VALID_BREAKPOINT)
 
         error = lldb.SBError()
-        launch_info = lldb.SBLaunchInfo(None)
+        launch_info = target.GetLaunchInfo()
         process = target.Launch(launch_info, error)
         self.assertTrue(process, PROCESS_IS_VALID)
 

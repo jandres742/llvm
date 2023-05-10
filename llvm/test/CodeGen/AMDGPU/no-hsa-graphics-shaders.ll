@@ -14,3 +14,6 @@ define amdgpu_vs void @vertex_shader() #0 {
 define amdgpu_gs void @geometry_shader() #0 {
   ret void
 }
+
+!llvm.module.flags = !{!0}
+!0 = !{i32 1, !"amdgpu_code_object_version", i32 200}

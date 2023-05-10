@@ -13,9 +13,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/Path.h"
 
-namespace clang {
-namespace tidy {
-namespace utils {
+namespace clang::tidy::utils {
 
 /// canonicalize a path by removing ./ and ../ components.
 static std::string cleanPath(StringRef Path) {
@@ -123,12 +121,7 @@ public:
 
     // Emit warnings for headers that are missing guards.
     checkGuardlessHeaders();
-
-    // Clear all state.
-    Macros.clear();
-    Files.clear();
-    Ifndefs.clear();
-    EndIfs.clear();
+    clearAllState();
   }
 
   bool wouldFixEndifComment(StringRef FileName, SourceLocation EndIf,
@@ -150,13 +143,13 @@ public:
         EndIfStr[FindEscapedNewline] == '\\')
       return false;
 
-    if (!Check->shouldSuggestEndifComment(FileName) &&
-        !(EndIfStr.startswith("//") ||
-          (EndIfStr.startswith("/*") && EndIfStr.endswith("*/"))))
-      return false;
+    bool IsLineComment =
+        EndIfStr.consume_front("//") ||
+        (EndIfStr.consume_front("/*") && EndIfStr.consume_back("*/"));
+    if (!IsLineComment)
+      return Check->shouldSuggestEndifComment(FileName);
 
-    return (EndIfStr != "// " + HeaderGuard.str()) &&
-           (EndIfStr != "/* " + HeaderGuard.str() + " */");
+    return EndIfStr.trim() != HeaderGuard;
   }
 
   /// Look for header guards that don't match the preferred style. Emit
@@ -169,10 +162,11 @@ public:
                                          StringRef CurHeaderGuard,
                                          std::vector<FixItHint> &FixIts) {
     std::string CPPVar = Check->getHeaderGuard(FileName, CurHeaderGuard);
+    CPPVar = Check->sanitizeHeaderGuard(CPPVar);
     std::string CPPVarUnder = CPPVar + '_';
 
-    // Allow a trailing underscore iff we don't have to change the endif comment
-    // too.
+    // Allow a trailing underscore if and only if we don't have to change the
+    // endif comment too.
     if (Ifndef.isValid() && CurHeaderGuard != CPPVar &&
         (CurHeaderGuard != CPPVarUnder ||
          wouldFixEndifComment(FileName, EndIf, CurHeaderGuard))) {
@@ -221,6 +215,7 @@ public:
         continue;
 
       std::string CPPVar = Check->getHeaderGuard(FileName);
+      CPPVar = Check->sanitizeHeaderGuard(CPPVar);
       std::string CPPVarUnder = CPPVar + '_'; // Allow a trailing underscore.
       // If there's a macro with a name that follows the header guard convention
       // but was not recognized by the preprocessor as a header guard there must
@@ -255,6 +250,13 @@ public:
   }
 
 private:
+  void clearAllState() {
+    Macros.clear();
+    Files.clear();
+    Ifndefs.clear();
+    EndIfs.clear();
+  }
+
   std::vector<std::pair<Token, const MacroInfo *>> Macros;
   llvm::StringMap<const FileEntry *> Files;
   std::map<const IdentifierInfo *, std::pair<SourceLocation, SourceLocation>>
@@ -266,10 +268,19 @@ private:
 };
 } // namespace
 
+void HeaderGuardCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
+  Options.store(Opts, "HeaderFileExtensions", RawStringHeaderFileExtensions);
+}
+
 void HeaderGuardCheck::registerPPCallbacks(const SourceManager &SM,
                                            Preprocessor *PP,
                                            Preprocessor *ModuleExpanderPP) {
   PP->addPPCallbacks(std::make_unique<HeaderGuardPPCallbacks>(PP, this));
+}
+
+std::string HeaderGuardCheck::sanitizeHeaderGuard(StringRef Guard) {
+  // Only reserved identifiers are allowed to start with an '_'.
+  return Guard.drop_while([](char C) { return C == '_'; }).str();
 }
 
 bool HeaderGuardCheck::shouldSuggestEndifComment(StringRef FileName) {
@@ -285,7 +296,4 @@ bool HeaderGuardCheck::shouldSuggestToAddHeaderGuard(StringRef FileName) {
 std::string HeaderGuardCheck::formatEndIf(StringRef HeaderGuard) {
   return "endif // " + HeaderGuard.str();
 }
-
-} // namespace utils
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::utils

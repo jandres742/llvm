@@ -9,12 +9,12 @@
 #ifndef LLVM_MC_MCELFOBJECTWRITER_H
 #define LLVM_MC_MCELFOBJECTWRITER_H
 
-#include "llvm/ADT/Triple.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 #include <cstdint>
 #include <vector>
 
@@ -23,7 +23,6 @@ namespace llvm {
 class MCAssembler;
 class MCContext;
 class MCFixup;
-class MCObjectWriter;
 class MCSymbol;
 class MCSymbolELF;
 class MCValue;
@@ -48,7 +47,7 @@ struct ELFRelocationEntry {
         << ", OriginalAddend=" << OriginalAddend;
   }
 
-  void dump() const { print(errs()); }
+  LLVM_DUMP_METHOD void dump() const { print(errs()); }
 };
 
 class MCELFObjectTargetWriter : public MCObjectTargetWriter {
@@ -65,7 +64,7 @@ protected:
 public:
   virtual ~MCELFObjectTargetWriter() = default;
 
-  virtual Triple::ObjectFormatType getFormat() const { return Triple::ELF; }
+  Triple::ObjectFormatType getFormat() const override { return Triple::ELF; }
   static bool classof(const MCObjectTargetWriter *W) {
     return W->getFormat() == Triple::ELF;
   }
@@ -79,6 +78,8 @@ public:
       case Triple::PS4:
       case Triple::FreeBSD:
         return ELF::ELFOSABI_FREEBSD;
+      case Triple::Solaris:
+        return ELF::ELFOSABI_SOLARIS;
       default:
         return ELF::ELFOSABI_NONE;
     }
@@ -137,6 +138,14 @@ public:
   }
   unsigned setRSsym(unsigned Value, unsigned Type) const {
     return (Type & R_SSYM_MASK) | ((Value & 0xff) << R_SSYM_SHIFT);
+  }
+
+  // On AArch64, return a new section to be added to the ELF object that
+  // contains relocations used to describe every symbol that should have memory
+  // tags applied. Returns nullptr if no such section is necessary (i.e. there's
+  // no tagged globals).
+  virtual MCSectionELF *getMemtagRelocsSection(MCContext &Ctx) const {
+    return nullptr;
   }
 };
 

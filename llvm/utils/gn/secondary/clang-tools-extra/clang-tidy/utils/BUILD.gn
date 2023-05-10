@@ -12,8 +12,10 @@ static_library("utils") {
   ]
   sources = [
     "ASTUtils.cpp",
+    "Aliasing.cpp",
     "DeclRefExprUtils.cpp",
     "ExceptionAnalyzer.cpp",
+    "ExceptionSpecAnalyzer.cpp",
     "ExprSequence.cpp",
     "FileExtensionsUtils.cpp",
     "FixItHintUtils.cpp",

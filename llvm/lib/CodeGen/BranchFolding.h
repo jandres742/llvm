@@ -14,7 +14,6 @@
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/Support/Compiler.h"
-#include <cstdint>
 #include <vector>
 
 namespace llvm {
@@ -23,7 +22,6 @@ class BasicBlock;
 class MachineBranchProbabilityInfo;
 class MachineFunction;
 class MachineLoopInfo;
-class MachineModuleInfo;
 class MachineRegisterInfo;
 class MBFIWrapper;
 class ProfileSummaryInfo;
@@ -32,8 +30,7 @@ class TargetRegisterInfo;
 
   class LLVM_LIBRARY_VISIBILITY BranchFolder {
   public:
-    explicit BranchFolder(bool defaultEnableTailMerge,
-                          bool CommonHoist,
+    explicit BranchFolder(bool DefaultEnableTailMerge, bool CommonHoist,
                           MBFIWrapper &FreqInfo,
                           const MachineBranchProbabilityInfo &ProbInfo,
                           ProfileSummaryInfo *PSI,
@@ -45,7 +42,7 @@ class TargetRegisterInfo;
     /// given function.  Block placement changes the layout and may create new
     /// tail merging opportunities.
     bool OptimizeFunction(MachineFunction &MF, const TargetInstrInfo *tii,
-                          const TargetRegisterInfo *tri, MachineModuleInfo *mmi,
+                          const TargetRegisterInfo *tri,
                           MachineLoopInfo *mli = nullptr,
                           bool AfterPlacement = false);
 
@@ -116,16 +113,15 @@ class TargetRegisterInfo;
     };
     std::vector<SameTailElt> SameTails;
 
-    bool AfterBlockPlacement;
-    bool EnableTailMerge;
-    bool EnableHoistCommonCode;
-    bool UpdateLiveIns;
+    bool AfterBlockPlacement = false;
+    bool EnableTailMerge = false;
+    bool EnableHoistCommonCode = false;
+    bool UpdateLiveIns = false;
     unsigned MinCommonTailLength;
-    const TargetInstrInfo *TII;
-    const MachineRegisterInfo *MRI;
-    const TargetRegisterInfo *TRI;
-    MachineModuleInfo *MMI;
-    MachineLoopInfo *MLI;
+    const TargetInstrInfo *TII = nullptr;
+    const MachineRegisterInfo *MRI = nullptr;
+    const TargetRegisterInfo *TRI = nullptr;
+    MachineLoopInfo *MLI = nullptr;
     LivePhysRegs LiveRegs;
 
   private:

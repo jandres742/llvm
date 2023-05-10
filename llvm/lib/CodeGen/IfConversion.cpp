@@ -21,6 +21,7 @@
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/CodeGen/MBFIWrapper.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
@@ -28,16 +29,13 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/CodeGen/MBFIWrapper.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSchedule.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
-#include "llvm/IR/Attributes.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -73,8 +71,6 @@ static cl::opt<bool> DisableTriangleR("disable-ifcvt-triangle-rev",
                                       cl::init(false), cl::Hidden);
 static cl::opt<bool> DisableTriangleF("disable-ifcvt-triangle-false",
                                       cl::init(false), cl::Hidden);
-static cl::opt<bool> DisableTriangleFR("disable-ifcvt-triangle-false-rev",
-                                       cl::init(false), cl::Hidden);
 static cl::opt<bool> DisableDiamond("disable-ifcvt-diamond",
                                     cl::init(false), cl::Hidden);
 static cl::opt<bool> DisableForkedDiamond("disable-ifcvt-forked-diamond",
@@ -191,16 +187,16 @@ namespace {
     std::vector<BBInfo> BBAnalysis;
     TargetSchedModel SchedModel;
 
-    const TargetLoweringBase *TLI;
-    const TargetInstrInfo *TII;
-    const TargetRegisterInfo *TRI;
-    const MachineBranchProbabilityInfo *MBPI;
-    MachineRegisterInfo *MRI;
+    const TargetLoweringBase *TLI = nullptr;
+    const TargetInstrInfo *TII = nullptr;
+    const TargetRegisterInfo *TRI = nullptr;
+    const MachineBranchProbabilityInfo *MBPI = nullptr;
+    MachineRegisterInfo *MRI = nullptr;
 
     LivePhysRegs Redefs;
 
-    bool PreRegAlloc;
-    bool MadeChange;
+    bool PreRegAlloc = true;
+    bool MadeChange = false;
     int FnNum = -1;
     std::function<bool(const MachineFunction &)> PredicateFtor;
 
@@ -300,7 +296,7 @@ namespace {
         MachineBasicBlock::iterator TIE = TBBInfo.BB->end();
         MachineBasicBlock::iterator FIE = FBBInfo.BB->end();
 
-        unsigned Dups1, Dups2;
+        unsigned Dups1 = 0, Dups2 = 0;
         if (!CountDuplicatedInstructions(TIB, FIB, TIE, FIE, Dups1, Dups2,
                                          *TBBInfo.BB, *FBBInfo.BB,
                                          /*SkipUnconditionalBranches*/ true))
@@ -463,10 +459,7 @@ bool IfConverter::runOnMachineFunction(MachineFunction &MF) {
   if (!PreRegAlloc) {
     // Tail merge tend to expose more if-conversion opportunities.
     BranchFolder BF(true, false, MBFI, *MBPI, PSI);
-    auto *MMIWP = getAnalysisIfAvailable<MachineModuleInfoWrapperPass>();
-    BFChange = BF.OptimizeFunction(
-        MF, TII, ST.getRegisterInfo(),
-        MMIWP ? &MMIWP->getMMI() : nullptr);
+    BFChange = BF.OptimizeFunction(MF, TII, ST.getRegisterInfo());
   }
 
   LLVM_DEBUG(dbgs() << "\nIfcvt: function (" << ++FnNum << ") \'"
@@ -537,7 +530,6 @@ bool IfConverter::runOnMachineFunction(MachineFunction &MF) {
         if (DisableTriangle && !isFalse && !isRev) break;
         if (DisableTriangleR && !isFalse && isRev) break;
         if (DisableTriangleF && isFalse && !isRev) break;
-        if (DisableTriangleFR && isFalse && isRev) break;
         LLVM_DEBUG(dbgs() << "Ifcvt (Triangle");
         if (isFalse)
           LLVM_DEBUG(dbgs() << " false");
@@ -605,10 +597,7 @@ bool IfConverter::runOnMachineFunction(MachineFunction &MF) {
 
   if (MadeChange && IfCvtBranchFold) {
     BranchFolder BF(false, false, MBFI, *MBPI, PSI);
-    auto *MMIWP = getAnalysisIfAvailable<MachineModuleInfoWrapperPass>();
-    BF.OptimizeFunction(
-        MF, TII, MF.getSubtarget().getRegisterInfo(),
-        MMIWP ? &MMIWP->getMMI() : nullptr);
+    BF.OptimizeFunction(MF, TII, MF.getSubtarget().getRegisterInfo());
   }
 
   MadeChange |= BFChange;
@@ -748,8 +737,8 @@ bool IfConverter::CountDuplicatedInstructions(
     bool SkipUnconditionalBranches) const {
   while (TIB != TIE && FIB != FIE) {
     // Skip dbg_value instructions. These do not count.
-    TIB = skipDebugInstructionsForward(TIB, TIE);
-    FIB = skipDebugInstructionsForward(FIB, FIE);
+    TIB = skipDebugInstructionsForward(TIB, TIE, false);
+    FIB = skipDebugInstructionsForward(FIB, FIE, false);
     if (TIB == TIE || FIB == FIE)
       break;
     if (!TIB->isIdenticalTo(*FIB))
@@ -757,7 +746,7 @@ bool IfConverter::CountDuplicatedInstructions(
     // A pred-clobbering instruction in the shared portion prevents
     // if-conversion.
     std::vector<MachineOperand> PredDefs;
-    if (TII->DefinesPredicate(*TIB, PredDefs))
+    if (TII->ClobbersPredicate(*TIB, PredDefs, false))
       return false;
     // If we get all the way to the branch instructions, don't count them.
     if (!TIB->isBranch())
@@ -791,8 +780,8 @@ bool IfConverter::CountDuplicatedInstructions(
   while (RTIE != RTIB && RFIE != RFIB) {
     // Skip dbg_value instructions. These do not count.
     // Note that these are reverse iterators going forward.
-    RTIE = skipDebugInstructionsForward(RTIE, RTIB);
-    RFIE = skipDebugInstructionsForward(RFIE, RFIB);
+    RTIE = skipDebugInstructionsForward(RTIE, RTIB, false);
+    RFIE = skipDebugInstructionsForward(RFIE, RFIB, false);
     if (RTIE == RTIB || RFIE == RFIB)
       break;
     if (!RTIE->isIdenticalTo(*RFIE))
@@ -844,8 +833,8 @@ static void verifySameBranchInstructions(
   MachineBasicBlock::reverse_iterator E1 = MBB1->rbegin();
   MachineBasicBlock::reverse_iterator E2 = MBB2->rbegin();
   while (E1 != B1 && E2 != B2) {
-    skipDebugInstructionsForward(E1, B1);
-    skipDebugInstructionsForward(E2, B2);
+    skipDebugInstructionsForward(E1, B1, false);
+    skipDebugInstructionsForward(E2, B2, false);
     if (E1 == B1 && E2 == B2)
       break;
 
@@ -1152,7 +1141,7 @@ void IfConverter::ScanInstructions(BBInfo &BBI,
     // FIXME: Make use of PredDefs? e.g. ADDC, SUBC sets predicates but are
     // still potentially predicable.
     std::vector<MachineOperand> PredDefs;
-    if (TII->DefinesPredicate(MI, PredDefs))
+    if (TII->ClobbersPredicate(MI, PredDefs, true))
       BBI.ClobbersPred = true;
 
     if (!TII->isPredicable(MI)) {
@@ -1217,11 +1206,11 @@ bool IfConverter::FeasibilityAnalysis(BBInfo &BBI,
 void IfConverter::AnalyzeBlock(
     MachineBasicBlock &MBB, std::vector<std::unique_ptr<IfcvtToken>> &Tokens) {
   struct BBState {
-    BBState(MachineBasicBlock &MBB) : MBB(&MBB), SuccsAnalyzed(false) {}
+    BBState(MachineBasicBlock &MBB) : MBB(&MBB) {}
     MachineBasicBlock *MBB;
 
     /// This flag is true if MBB's successors have been analyzed.
-    bool SuccsAnalyzed;
+    bool SuccsAnalyzed = false;
   };
 
   // Push MBB to the stack.
@@ -1520,19 +1509,9 @@ static void UpdatePredRedefs(MachineInstr &MI, LivePhysRegs &Redefs) {
       MIB.addReg(Reg, RegState::Implicit | RegState::Define);
       continue;
     }
-    if (LiveBeforeMI.count(Reg))
+    if (any_of(TRI->subregs_inclusive(Reg),
+               [&](MCPhysReg S) { return LiveBeforeMI.count(S); }))
       MIB.addReg(Reg, RegState::Implicit);
-    else {
-      bool HasLiveSubReg = false;
-      for (MCSubRegIterator S(Reg, TRI); S.isValid(); ++S) {
-        if (!LiveBeforeMI.count(*S))
-          continue;
-        HasLiveSubReg = true;
-        break;
-      }
-      if (HasLiveSubReg)
-        MIB.addReg(Reg, RegState::Implicit);
-    }
   }
 }
 
@@ -1570,8 +1549,8 @@ bool IfConverter::IfConvertSimple(BBInfo &BBI, IfcvtKind Kind) {
   if (MRI->tracksLiveness()) {
     // Initialize liveins to the first BB. These are potentially redefined by
     // predicated instructions.
-    Redefs.addLiveIns(CvtMBB);
-    Redefs.addLiveIns(NextMBB);
+    Redefs.addLiveInsNoPristines(CvtMBB);
+    Redefs.addLiveInsNoPristines(NextMBB);
   }
 
   // Remove the branches from the entry so we can add the contents of the true
@@ -1671,8 +1650,8 @@ bool IfConverter::IfConvertTriangle(BBInfo &BBI, IfcvtKind Kind) {
   // predicated instructions.
   Redefs.init(*TRI);
   if (MRI->tracksLiveness()) {
-    Redefs.addLiveIns(CvtMBB);
-    Redefs.addLiveIns(NextMBB);
+    Redefs.addLiveInsNoPristines(CvtMBB);
+    Redefs.addLiveInsNoPristines(NextMBB);
   }
 
   bool HasEarlyExit = CvtBBI->FalseBB != nullptr;
@@ -1834,14 +1813,14 @@ bool IfConverter::IfConvertDiamondCommon(
   //   after tracking the BB1 instructions.
   Redefs.init(*TRI);
   if (MRI->tracksLiveness()) {
-    Redefs.addLiveIns(MBB1);
-    Redefs.addLiveIns(MBB2);
+    Redefs.addLiveInsNoPristines(MBB1);
+    Redefs.addLiveInsNoPristines(MBB2);
   }
 
   // Remove the duplicated instructions at the beginnings of both paths.
   // Skip dbg_value instructions.
-  MachineBasicBlock::iterator DI1 = MBB1.getFirstNonDebugInstr();
-  MachineBasicBlock::iterator DI2 = MBB2.getFirstNonDebugInstr();
+  MachineBasicBlock::iterator DI1 = MBB1.getFirstNonDebugInstr(false);
+  MachineBasicBlock::iterator DI2 = MBB2.getFirstNonDebugInstr(false);
   BBI1->NonPredSize -= NumDups1;
   BBI2->NonPredSize -= NumDups1;
 
@@ -1966,17 +1945,15 @@ bool IfConverter::IfConvertDiamondCommon(
         } else if (!RedefsByFalse.count(Reg)) {
           // These are defined before ctrl flow reach the 'false' instructions.
           // They cannot be modified by the 'true' instructions.
-          for (MCSubRegIterator SubRegs(Reg, TRI, /*IncludeSelf=*/true);
-               SubRegs.isValid(); ++SubRegs)
-            ExtUses.insert(*SubRegs);
+          for (MCPhysReg SubReg : TRI->subregs_inclusive(Reg))
+            ExtUses.insert(SubReg);
         }
       }
 
       for (MCPhysReg Reg : Defs) {
         if (!ExtUses.count(Reg)) {
-          for (MCSubRegIterator SubRegs(Reg, TRI, /*IncludeSelf=*/true);
-               SubRegs.isValid(); ++SubRegs)
-            RedefsByFalse.insert(*SubRegs);
+          for (MCPhysReg SubReg : TRI->subregs_inclusive(Reg))
+            RedefsByFalse.insert(SubReg);
         }
       }
     }
@@ -2252,6 +2229,15 @@ void IfConverter::MergeBlocks(BBInfo &ToBBI, BBInfo &FromBBI, bool AddEdges) {
   assert(!FromMBB.hasAddressTaken() &&
          "Removing a BB whose address is taken!");
 
+  // If we're about to splice an INLINEASM_BR from FromBBI, we need to update
+  // ToBBI's successor list accordingly.
+  if (FromMBB.mayHaveInlineAsmBr())
+    for (MachineInstr &MI : FromMBB)
+      if (MI.getOpcode() == TargetOpcode::INLINEASM_BR)
+        for (MachineOperand &MO : MI.operands())
+          if (MO.isMBB() && !ToBBI.BB->isSuccessor(MO.getMBB()))
+            ToBBI.BB->addSuccessor(MO.getMBB(), BranchProbability::getZero());
+
   // In case FromMBB contains terminators (e.g. return instruction),
   // first move the non-terminator instructions, then the terminators.
   MachineBasicBlock::iterator FromTI = FromMBB.getFirstTerminator();
@@ -2270,8 +2256,7 @@ void IfConverter::MergeBlocks(BBInfo &ToBBI, BBInfo &FromBBI, bool AddEdges) {
   if (ToBBI.IsBrAnalyzable)
     ToBBI.BB->normalizeSuccProbs();
 
-  SmallVector<MachineBasicBlock *, 4> FromSuccs(FromMBB.succ_begin(),
-                                                FromMBB.succ_end());
+  SmallVector<MachineBasicBlock *, 4> FromSuccs(FromMBB.successors());
   MachineBasicBlock *NBB = getNextBlock(FromMBB);
   MachineBasicBlock *FallThrough = FromBBI.HasFallThrough ? NBB : nullptr;
   // The edge probability from ToBBI.BB to FromMBB, which is only needed when

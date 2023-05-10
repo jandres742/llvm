@@ -14,6 +14,7 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_TARGETINFO_H
 #define LLVM_CLANG_LIB_CODEGEN_TARGETINFO_H
 
+#include "CGBuilder.h"
 #include "CodeGenModule.h"
 #include "CGValue.h"
 #include "clang/AST/Type.h"
@@ -37,30 +38,50 @@ class ABIInfo;
 class CallArgList;
 class CodeGenFunction;
 class CGBlockInfo;
-class CGFunctionInfo;
+class SwiftABIInfo;
 
 /// TargetCodeGenInfo - This class organizes various target-specific
 /// codegeneration issues, like target-specific attributes, builtins and so
 /// on.
 class TargetCodeGenInfo {
-  std::unique_ptr<ABIInfo> Info = nullptr;
+  std::unique_ptr<ABIInfo> Info;
+
+protected:
+  // Target hooks supporting Swift calling conventions. The target must
+  // initialize this field if it claims to support these calling conventions
+  // by returning true from TargetInfo::checkCallingConvention for them.
+  std::unique_ptr<SwiftABIInfo> SwiftInfo;
 
 public:
-  TargetCodeGenInfo(std::unique_ptr<ABIInfo> Info) : Info(std::move(Info)) {}
+  TargetCodeGenInfo(std::unique_ptr<ABIInfo> Info);
   virtual ~TargetCodeGenInfo();
 
   /// getABIInfo() - Returns ABI info helper for the target.
   const ABIInfo &getABIInfo() const { return *Info; }
+
+  /// Returns Swift ABI info helper for the target.
+  const SwiftABIInfo &getSwiftABIInfo() const {
+    assert(SwiftInfo && "Swift ABI info has not been initialized");
+    return *SwiftInfo;
+  }
 
   /// setTargetAttributes - Provides a convenient hook to handle extra
   /// target-specific attributes for the given global.
   virtual void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                                    CodeGen::CodeGenModule &M) const {}
 
-  /// emitTargetMD - Provides a convenient hook to handle extra
-  /// target-specific metadata for the given global.
-  virtual void emitTargetMD(const Decl *D, llvm::GlobalValue *GV,
-                            CodeGen::CodeGenModule &M) const {}
+  /// emitTargetMetadata - Provides a convenient hook to handle extra
+  /// target-specific metadata for the given globals.
+  virtual void emitTargetMetadata(
+      CodeGen::CodeGenModule &CGM,
+      const llvm::MapVector<GlobalDecl, StringRef> &MangledDeclNames) const {}
+
+  /// Any further codegen related checks that need to be done on a function call
+  /// in a target specific manner.
+  virtual void checkFunctionCallABI(CodeGenModule &CGM, SourceLocation CallLoc,
+                                    const FunctionDecl *Caller,
+                                    const FunctionDecl *Callee,
+                                    const CallArgList &Args) const {}
 
   /// Determines the size of struct _Unwind_Exception on this platform,
   /// in 8-bit units.  The Itanium ABI defines this as:
@@ -118,6 +139,16 @@ public:
     return Address;
   }
 
+  /// Performs a target specific test of a floating point value for things
+  /// like IsNaN, Infinity, ... Nullptr is returned if no implementation
+  /// exists.
+  virtual llvm::Value *
+  testFPKind(llvm::Value *V, unsigned BuiltinID, CGBuilderTy &Builder,
+             CodeGenModule &CGM) const {
+    assert(V->getType()->isFloatingPointTy() && "V should have an FP type.");
+    return nullptr;
+  }
+
   /// Corrects the low-level LLVM type for a given constraint and "usual"
   /// type.
   ///
@@ -127,6 +158,13 @@ public:
                                           StringRef Constraint,
                                           llvm::Type *Ty) const {
     return Ty;
+  }
+
+  /// Target hook to decide whether an inline asm operand can be passed
+  /// by value.
+  virtual bool isScalarizableAsmOperand(CodeGen::CodeGenFunction &CGF,
+                                        llvm::Type *Ty) const {
+    return false;
   }
 
   /// Adds constraints and types for result registers.
@@ -155,11 +193,9 @@ public:
     return "";
   }
 
-  /// Determine whether a call to objc_retainAutoreleasedReturnValue should be
-  /// marked as 'notail'.
-  virtual bool shouldSuppressTailCallsOfRetainAutoreleasedReturnValue() const {
-    return false;
-  }
+  /// Determine whether a call to objc_retainAutoreleasedReturnValue or
+  /// objc_unsafeClaimAutoreleasedReturnValue should be marked as 'notail'.
+  virtual bool markARCOptimizedReturnCallsAsNoTail() const { return false; }
 
   /// Return a constant used by UBSan as a signature to identify functions
   /// possessing type information, or 0 if the platform is unsupported.
@@ -303,15 +339,20 @@ public:
   /// convention and ABI as an OpenCL kernel. The wrapper function accepts
   /// block context and block arguments in target-specific way and calls
   /// the original block invoke function.
-  virtual llvm::Function *
+  virtual llvm::Value *
   createEnqueuedBlockKernel(CodeGenFunction &CGF,
                             llvm::Function *BlockInvokeFunc,
-                            llvm::Value *BlockLiteral) const;
+                            llvm::Type *BlockTy) const;
 
   /// \return true if the target supports alias from the unmangled name to the
   /// mangled name of functions declared within an extern "C" region and marked
   /// as 'used', and having internal linkage.
   virtual bool shouldEmitStaticExternCAliases() const { return true; }
+
+  /// \return true if annonymous zero-sized bitfields should be emitted to
+  /// correctly distinguish between struct types whose memory layout is the
+  /// same, but whose layout may differ when used as argument passed by value
+  virtual bool shouldEmitDWARFBitFieldSeparators() const { return false; }
 
   virtual void setCUDAKernelCallingConvention(const FunctionType *&FT) const {}
 
@@ -326,6 +367,12 @@ public:
     return nullptr;
   }
 
+  /// Return the WebAssembly externref reference type.
+  virtual llvm::Type *getWasmExternrefReferenceType() const { return nullptr; }
+
+  /// Return the WebAssembly funcref reference type.
+  virtual llvm::Type *getWasmFuncrefReferenceType() const { return nullptr; }
+
   /// Emit the device-side copy of the builtin surface type.
   virtual bool emitCUDADeviceBuiltinSurfaceDeviceCopy(CodeGenFunction &CGF,
                                                       LValue Dst,
@@ -339,6 +386,11 @@ public:
                                                       LValue Src) const {
     // DO NOTHING by default.
     return false;
+  }
+
+  /// Return an LLVM type that corresponds to an OpenCL type.
+  virtual llvm::Type *getOpenCLType(CodeGenModule &CGM, const Type *T) const {
+    return nullptr;
   }
 };
 

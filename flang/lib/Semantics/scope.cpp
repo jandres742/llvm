@@ -49,15 +49,8 @@ std::string EquivalenceObject::AsFortran() const {
   return ss.str();
 }
 
-bool Scope::IsModule() const {
-  return kind_ == Kind::Module && !symbol_->get<ModuleDetails>().isSubmodule();
-}
-bool Scope::IsSubmodule() const {
-  return kind_ == Kind::Module && symbol_->get<ModuleDetails>().isSubmodule();
-}
-
 Scope &Scope::MakeScope(Kind kind, Symbol *symbol) {
-  return children_.emplace_back(*this, kind, symbol);
+  return children_.emplace_back(*this, kind, symbol, context_);
 }
 
 template <typename T>
@@ -68,7 +61,7 @@ static std::vector<common::Reference<T>> GetSortedSymbols(
   for (auto &pair : symbols) {
     result.push_back(*pair.second);
   }
-  std::sort(result.begin(), result.end());
+  std::sort(result.begin(), result.end(), SymbolSourcePositionCompare{});
   return result;
 }
 
@@ -95,6 +88,9 @@ Symbol *Scope::FindSymbol(const SourceName &name) const {
   auto it{find(name)};
   if (it != end()) {
     return &*it->second;
+  } else if (IsSubmodule()) {
+    const Scope *parent{symbol_->get<ModuleDetails>().parent()};
+    return parent ? parent->FindSymbol(name) : nullptr;
   } else if (CanImport(name)) {
     return parent_.FindSymbol(name);
   } else {
@@ -111,14 +107,6 @@ Symbol *Scope::FindComponent(SourceName name) const {
     return parent->FindComponent(name);
   } else {
     return nullptr;
-  }
-}
-
-std::optional<SourceName> Scope::GetName() const {
-  if (const auto *sym{GetSymbol()}) {
-    return sym->name();
-  } else {
-    return std::nullopt;
   }
 }
 
@@ -164,7 +152,7 @@ Symbol &Scope::MakeCommonBlock(const SourceName &name) {
     return symbol;
   }
 }
-Symbol *Scope::FindCommonBlock(const SourceName &name) {
+Symbol *Scope::FindCommonBlock(const SourceName &name) const {
   const auto it{commonBlocks_.find(name)};
   return it != commonBlocks_.end() ? &*it->second : nullptr;
 }
@@ -217,12 +205,47 @@ DeclTypeSpec &Scope::MakeDerivedType(
   return declTypeSpecs_.emplace_back(category, std::move(spec));
 }
 
-void Scope::set_chars(parser::CookedSource &cooked) {
-  CHECK(kind_ == Kind::Module);
-  CHECK(parent_.IsGlobal() || parent_.IsModuleFile());
-  CHECK(DEREF(symbol_).test(Symbol::Flag::ModFile));
-  // TODO: Preserve the CookedSource rather than acquiring its string.
-  chars_ = cooked.AcquireData();
+const DeclTypeSpec *Scope::GetType(const SomeExpr &expr) {
+  if (auto dyType{expr.GetType()}) {
+    if (dyType->IsAssumedType()) {
+      return &MakeTypeStarType();
+    } else if (dyType->IsUnlimitedPolymorphic()) {
+      return &MakeClassStarType();
+    } else {
+      switch (dyType->category()) {
+      case TypeCategory::Integer:
+      case TypeCategory::Real:
+      case TypeCategory::Complex:
+        return &MakeNumericType(dyType->category(), KindExpr{dyType->kind()});
+      case TypeCategory::Character:
+        if (const ParamValue * lenParam{dyType->charLengthParamValue()}) {
+          return &MakeCharacterType(
+              ParamValue{*lenParam}, KindExpr{dyType->kind()});
+        } else {
+          auto lenExpr{dyType->GetCharLength()};
+          if (!lenExpr) {
+            lenExpr =
+                std::get<evaluate::Expr<evaluate::SomeCharacter>>(expr.u).LEN();
+          }
+          if (lenExpr) {
+            return &MakeCharacterType(
+                ParamValue{SomeIntExpr{std::move(*lenExpr)},
+                    common::TypeParamAttr::Len},
+                KindExpr{dyType->kind()});
+          }
+        }
+        break;
+      case TypeCategory::Logical:
+        return &MakeLogicalType(KindExpr{dyType->kind()});
+      case TypeCategory::Derived:
+        return &MakeDerivedType(dyType->IsPolymorphic()
+                ? DeclTypeSpec::ClassDerived
+                : DeclTypeSpec::TypeDerived,
+            DerivedTypeSpec{dyType->GetDerivedTypeSpec()});
+      }
+    }
+  }
+  return nullptr;
 }
 
 Scope::ImportKind Scope::GetImportKind() const {
@@ -252,7 +275,7 @@ std::optional<parser::MessageFixedText> Scope::SetImportKind(ImportKind kind) {
         ? "IMPORT,NONE must be the only IMPORT statement in a scope"_err_en_US
         : "IMPORT,ALL must be the only IMPORT statement in a scope"_err_en_US;
   } else if (kind != *importKind_ &&
-      (kind != ImportKind::Only || kind != ImportKind::Only)) {
+      (kind != ImportKind::Only && *importKind_ != ImportKind::Only)) {
     return "Every IMPORT must have ONLY specifier if one of them does"_err_en_US;
   } else {
     return std::nullopt;
@@ -265,7 +288,7 @@ void Scope::add_importName(const SourceName &name) {
 
 // true if name can be imported or host-associated from parent scope.
 bool Scope::CanImport(const SourceName &name) const {
-  if (IsGlobal() || parent_.IsGlobal()) {
+  if (IsTopLevel() || parent_.IsTopLevel()) {
     return false;
   }
   switch (GetImportKind()) {
@@ -286,7 +309,7 @@ const Scope *Scope::FindScope(parser::CharBlock source) const {
 
 Scope *Scope::FindScope(parser::CharBlock source) {
   bool isContained{sourceRange_.Contains(source)};
-  if (!isContained && !IsGlobal() && !IsModuleFile()) {
+  if (!isContained && !IsTopLevel() && !IsModuleFile()) {
     return nullptr;
   }
   for (auto &child : children_) {
@@ -294,11 +317,11 @@ Scope *Scope::FindScope(parser::CharBlock source) {
       return scope;
     }
   }
-  return isContained ? this : nullptr;
+  return isContained && !IsTopLevel() ? this : nullptr;
 }
 
 void Scope::AddSourceRange(const parser::CharBlock &source) {
-  for (auto *scope = this; !scope->IsGlobal(); scope = &scope->parent()) {
+  for (auto *scope{this}; !scope->IsGlobal(); scope = &scope->parent()) {
     scope->sourceRange_.ExtendToCover(source);
   }
 }
@@ -333,21 +356,51 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os, const Scope &scope) {
   return os;
 }
 
-bool Scope::IsParameterizedDerivedType() const {
-  if (!IsDerivedType()) {
+bool Scope::IsStmtFunction() const {
+  return symbol_ && symbol_->test(Symbol::Flag::StmtFunction);
+}
+
+template <common::TypeParamAttr... ParamAttr> struct IsTypeParamHelper {
+  static_assert(sizeof...(ParamAttr) == 0, "must have one or zero template");
+  static bool IsParam(const Symbol &symbol) {
+    return symbol.has<TypeParamDetails>();
+  }
+};
+
+template <common::TypeParamAttr ParamAttr> struct IsTypeParamHelper<ParamAttr> {
+  static bool IsParam(const Symbol &symbol) {
+    if (const auto *typeParam{symbol.detailsIf<TypeParamDetails>()}) {
+      return typeParam->attr() == ParamAttr;
+    }
     return false;
   }
-  if (const Scope * parent{GetDerivedTypeParent()}) {
-    if (parent->IsParameterizedDerivedType()) {
-      return true;
+};
+
+template <common::TypeParamAttr... ParamAttr>
+static bool IsParameterizedDerivedTypeHelper(const Scope &scope) {
+  if (scope.IsDerivedType()) {
+    if (const Scope * parent{scope.GetDerivedTypeParent()}) {
+      if (IsParameterizedDerivedTypeHelper<ParamAttr...>(*parent)) {
+        return true;
+      }
     }
-  }
-  for (const auto &pair : symbols_) {
-    if (pair.second->has<TypeParamDetails>()) {
-      return true;
+    for (const auto &nameAndSymbolPair : scope) {
+      if (IsTypeParamHelper<ParamAttr...>::IsParam(*nameAndSymbolPair.second)) {
+        return true;
+      }
     }
   }
   return false;
+}
+
+bool Scope::IsParameterizedDerivedType() const {
+  return IsParameterizedDerivedTypeHelper<>(*this);
+}
+bool Scope::IsDerivedTypeWithLengthParameter() const {
+  return IsParameterizedDerivedTypeHelper<common::TypeParamAttr::Len>(*this);
+}
+bool Scope::IsDerivedTypeWithKindParameter() const {
+  return IsParameterizedDerivedTypeHelper<common::TypeParamAttr::Kind>(*this);
 }
 
 const DeclTypeSpec *Scope::FindInstantiatedDerivedType(
@@ -380,11 +433,11 @@ const Scope &Scope::GetDerivedTypeBase() const {
   return *child;
 }
 
-void Scope::InstantiateDerivedTypes(SemanticsContext &context) {
+void Scope::InstantiateDerivedTypes() {
   for (DeclTypeSpec &type : declTypeSpecs_) {
     if (type.category() == DeclTypeSpec::TypeDerived ||
         type.category() == DeclTypeSpec::ClassDerived) {
-      type.derivedTypeSpec().Instantiate(*this, context);
+      type.derivedTypeSpec().Instantiate(*this);
     }
   }
 }

@@ -14,6 +14,7 @@
 // also to accomodate Fortran tokenization.
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -57,6 +58,13 @@ inline constexpr bool IsLegalInIdentifier(char ch) {
   return IsLegalIdentifierStart(ch) || IsDecimalDigit(ch);
 }
 
+inline constexpr bool IsPrintable(char ch) { return ch >= ' ' && ch <= '~'; }
+
+inline constexpr bool IsWhiteSpace(char ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\v' || ch == '\f' ||
+      ch == '\r';
+}
+
 inline constexpr char ToLowerCaseLetter(char ch) {
   return IsUpperCaseLetter(ch) ? ch - 'A' + 'a' : ch;
 }
@@ -65,7 +73,7 @@ inline constexpr char ToLowerCaseLetter(char &&ch) {
   return IsUpperCaseLetter(ch) ? ch - 'A' + 'a' : ch;
 }
 
-inline std::string ToLowerCaseLetters(const std::string &str) {
+inline std::string ToLowerCaseLetters(std::string_view str) {
   std::string lowered{str};
   for (char &ch : lowered) {
     ch = ToLowerCaseLetter(ch);
@@ -81,7 +89,7 @@ inline constexpr char ToUpperCaseLetter(char &&ch) {
   return IsLowerCaseLetter(ch) ? ch - 'a' + 'A' : ch;
 }
 
-inline std::string ToUpperCaseLetters(const std::string &str) {
+inline std::string ToUpperCaseLetters(std::string_view str) {
   std::string raised{str};
   for (char &ch : raised) {
     ch = ToUpperCaseLetter(ch);
@@ -96,9 +104,9 @@ inline constexpr bool IsSameApartFromCase(char x, char y) {
 inline constexpr char DecimalDigitValue(char ch) { return ch - '0'; }
 
 inline constexpr char HexadecimalDigitValue(char ch) {
-  return IsUpperCaseLetter(ch)
-      ? ch - 'A' + 10
-      : IsLowerCaseLetter(ch) ? ch - 'a' + 10 : DecimalDigitValue(ch);
+  return IsUpperCaseLetter(ch) ? ch - 'A' + 10
+      : IsLowerCaseLetter(ch)  ? ch - 'a' + 10
+                               : DecimalDigitValue(ch);
 }
 
 inline constexpr std::optional<char> BackslashEscapeValue(char ch) {
@@ -148,6 +156,33 @@ inline constexpr std::optional<char> BackslashEscapeChar(char ch) {
     return ch;
   default:
     return std::nullopt;
+  }
+}
+
+// Does not include spaces or line ending characters.
+inline constexpr bool IsValidFortranTokenCharacter(char ch) {
+  switch (ch) {
+  case '"':
+  case '%':
+  case '\'':
+  case '(':
+  case ')':
+  case '*':
+  case '+':
+  case ',':
+  case '-':
+  case '.':
+  case '/':
+  case ':':
+  case ';':
+  case '<':
+  case '=':
+  case '>':
+  case '[':
+  case ']':
+    return true;
+  default:
+    return IsLegalIdentifierStart(ch) || IsDecimalDigit(ch);
   }
 }
 

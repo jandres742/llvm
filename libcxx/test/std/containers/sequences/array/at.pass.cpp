@@ -19,11 +19,6 @@
 
 #include "test_macros.h"
 
-// std::array is explicitly allowed to be initialized with A a = { init-list };.
-// Disable the missing braces warning for this reason.
-#include "disable_missing_braces_warning.h"
-
-
 TEST_CONSTEXPR_CXX17 bool tests()
 {
     {
@@ -77,7 +72,8 @@ void test_exceptions()
         }
 
         try {
-            TEST_IGNORE_NODISCARD array.at(-1);
+            using size_type = decltype(array)::size_type;
+            TEST_IGNORE_NODISCARD array.at(static_cast<size_type>(-1));
             assert(false);
         } catch (std::out_of_range const&) {
             // pass

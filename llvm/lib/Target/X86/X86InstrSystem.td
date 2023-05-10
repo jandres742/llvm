@@ -23,10 +23,24 @@ def RDTSCP : I<0x01, MRM_F9, (outs), (ins), "rdtscp", []>, TB;
 
 let mayLoad = 1, mayStore = 0, hasSideEffects = 1, isTrap = 1 in {
   def TRAP    : I<0x0B, RawFrm, (outs), (ins), "ud2", [(trap)]>, TB;
-  def UD2B    : I<0xB9, RawFrm, (outs), (ins), "ud2b", []>, TB;
+
+  def UD1Wm   : I<0xB9, MRMSrcMem, (outs), (ins GR16:$src1, i16mem:$src2),
+                  "ud1{w}\t{$src2, $src1|$src1, $src2}", []>, TB, OpSize16;
+  def UD1Lm   : I<0xB9, MRMSrcMem, (outs), (ins GR32:$src1, i32mem:$src2),
+                  "ud1{l}\t{$src2, $src1|$src1, $src2}", []>, TB, OpSize32;
+  def UD1Qm   : RI<0xB9, MRMSrcMem, (outs), (ins GR64:$src1, i64mem:$src2),
+                   "ud1{q}\t{$src2, $src1|$src1, $src2}", []>, TB;
+
+  def UD1Wr   : I<0xB9, MRMSrcReg, (outs), (ins GR16:$src1, GR16:$src2),
+                  "ud1{w}\t{$src2, $src1|$src1, $src2}", []>, TB, OpSize16;
+  def UD1Lr   : I<0xB9, MRMSrcReg, (outs), (ins GR32:$src1, GR32:$src2),
+                  "ud1{l}\t{$src2, $src1|$src1, $src2}", []>, TB, OpSize32;
+  def UD1Qr   : RI<0xB9, MRMSrcReg, (outs), (ins GR64:$src1, GR64:$src2),
+                   "ud1{q}\t{$src2, $src1|$src1, $src2}", []>, TB;
 }
 
-def HLT : I<0xF4, RawFrm, (outs), (ins), "hlt", []>;
+let isTerminator = 1 in
+  def HLT : I<0xF4, RawFrm, (outs), (ins), "hlt", []>;
 def RSM : I<0xAA, RawFrm, (outs), (ins), "rsm", []>, TB;
 
 // Interrupt and SysCall Instructions.
@@ -34,13 +48,11 @@ let Uses = [EFLAGS] in
   def INTO : I<0xce, RawFrm, (outs), (ins), "into", []>, Requires<[Not64BitMode]>;
 
 def INT3 : I<0xcc, RawFrm, (outs), (ins), "int3", [(int_x86_int (i8 3))]>;
-} // SchedRW
 
+def UBSAN_UD1 : PseudoI<(outs), (ins i32imm:$kind), [(ubsantrap (i32 timm:$kind))]>;
 // The long form of "int $3" turns into int3 as a size optimization.
 // FIXME: This doesn't work because InstAlias can't match immediate constants.
 //def : InstAlias<"int\t$3", (INT3)>;
-
-let SchedRW = [WriteSystem] in {
 
 def INT : Ii8<0xcd, RawFrm, (outs), (ins u8imm:$trap), "int\t$trap",
               [(int_x86_int timm:$trap)]>;
@@ -59,9 +71,9 @@ def SYSEXIT64 :RI<0x35, RawFrm, (outs), (ins), "sysexitq", []>, TB,
 } // SchedRW
 
 def : Pat<(debugtrap),
-          (INT3)>, Requires<[NotPS4]>;
+          (INT3)>, Requires<[NotPS]>;
 def : Pat<(debugtrap),
-          (INT (i8 0x41))>, Requires<[IsPS4]>;
+          (INT (i8 0x41))>, Requires<[IsPS]>;
 
 //===----------------------------------------------------------------------===//
 //  Input/Output Instructions.
@@ -158,6 +170,17 @@ def GS_PREFIX : I<0x65, PrefixByte, (outs), (ins), "gs", []>;
 } // SchedRW
 
 //===----------------------------------------------------------------------===//
+// Address-size override prefixes.
+//
+
+let SchedRW = [WriteNop] in {
+def ADDR16_PREFIX : I<0x67, PrefixByte, (outs), (ins), "addr16", []>,
+                      Requires<[In32BitMode]>;
+def ADDR32_PREFIX : I<0x67, PrefixByte, (outs), (ins), "addr32", []>,
+                      Requires<[In64BitMode]>;
+} // SchedRW
+
+//===----------------------------------------------------------------------===//
 // Moves to and from segment registers.
 //
 
@@ -193,47 +216,43 @@ def SWAPGS : I<0x01, MRM_F8, (outs), (ins), "swapgs", []>, TB;
 let mayLoad = 1 in
 def LAR16rm : I<0x02, MRMSrcMem, (outs GR16:$dst), (ins i16mem:$src),
                 "lar{w}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize16, NotMemoryFoldable;
-def LAR16rr : I<0x02, MRMSrcReg, (outs GR16:$dst), (ins GR16:$src),
+                OpSize16;
+def LAR16rr : I<0x02, MRMSrcReg, (outs GR16:$dst), (ins GR16orGR32orGR64:$src),
                 "lar{w}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize16, NotMemoryFoldable;
+                OpSize16;
 
-// i16mem operand in LAR32rm and GR32 operand in LAR32rr is not a typo.
 let mayLoad = 1 in
 def LAR32rm : I<0x02, MRMSrcMem, (outs GR32:$dst), (ins i16mem:$src),
                 "lar{l}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize32, NotMemoryFoldable;
-def LAR32rr : I<0x02, MRMSrcReg, (outs GR32:$dst), (ins GR32:$src),
+                OpSize32;
+def LAR32rr : I<0x02, MRMSrcReg, (outs GR32:$dst), (ins GR16orGR32orGR64:$src),
                 "lar{l}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize32, NotMemoryFoldable;
-// i16mem operand in LAR64rm and GR32 operand in LAR64rr is not a typo.
+                OpSize32;
 let mayLoad = 1 in
 def LAR64rm : RI<0x02, MRMSrcMem, (outs GR64:$dst), (ins i16mem:$src),
-                 "lar{q}\t{$src, $dst|$dst, $src}", []>, TB, NotMemoryFoldable;
-def LAR64rr : RI<0x02, MRMSrcReg, (outs GR64:$dst), (ins GR32:$src),
-                 "lar{q}\t{$src, $dst|$dst, $src}", []>, TB, NotMemoryFoldable;
+                 "lar{q}\t{$src, $dst|$dst, $src}", []>, TB;
+def LAR64rr : RI<0x02, MRMSrcReg, (outs GR64:$dst), (ins GR16orGR32orGR64:$src),
+                 "lar{q}\t{$src, $dst|$dst, $src}", []>, TB;
 
-// i16mem operand in LSL32rm and GR32 operand in LSL32rr is not a typo.
 let mayLoad = 1 in
 def LSL16rm : I<0x03, MRMSrcMem, (outs GR16:$dst), (ins i16mem:$src),
                 "lsl{w}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize16, NotMemoryFoldable;
-def LSL16rr : I<0x03, MRMSrcReg, (outs GR16:$dst), (ins GR16:$src),
+                OpSize16;
+def LSL16rr : I<0x03, MRMSrcReg, (outs GR16:$dst), (ins GR16orGR32orGR64:$src),
                 "lsl{w}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize16, NotMemoryFoldable;
-// i16mem operand in LSL64rm and GR32 operand in LSL64rr is not a typo.
+                OpSize16;
 let mayLoad = 1 in
 def LSL32rm : I<0x03, MRMSrcMem, (outs GR32:$dst), (ins i16mem:$src),
                 "lsl{l}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize32, NotMemoryFoldable;
-def LSL32rr : I<0x03, MRMSrcReg, (outs GR32:$dst), (ins GR32:$src),
+                OpSize32;
+def LSL32rr : I<0x03, MRMSrcReg, (outs GR32:$dst), (ins GR16orGR32orGR64:$src),
                 "lsl{l}\t{$src, $dst|$dst, $src}", []>, TB,
-                OpSize32, NotMemoryFoldable;
+                OpSize32;
 let mayLoad = 1 in
 def LSL64rm : RI<0x03, MRMSrcMem, (outs GR64:$dst), (ins i16mem:$src),
-                 "lsl{q}\t{$src, $dst|$dst, $src}", []>, TB, NotMemoryFoldable;
-def LSL64rr : RI<0x03, MRMSrcReg, (outs GR64:$dst), (ins GR32:$src),
-                 "lsl{q}\t{$src, $dst|$dst, $src}", []>, TB, NotMemoryFoldable;
+                 "lsl{q}\t{$src, $dst|$dst, $src}", []>, TB;
+def LSL64rr : RI<0x03, MRMSrcReg, (outs GR64:$dst), (ins GR16orGR32orGR64:$src),
+                 "lsl{q}\t{$src, $dst|$dst, $src}", []>, TB;
 
 def INVLPG : I<0x01, MRM7m, (outs), (ins i8mem:$addr), "invlpg\t$addr", []>, TB;
 
@@ -246,9 +265,9 @@ def STR64r : RI<0x00, MRM1r, (outs GR64:$dst), (ins),
 let mayStore = 1 in
 def STRm   : I<0x00, MRM1m, (outs), (ins i16mem:$dst), "str{w}\t$dst", []>, TB;
 
-def LTRr : I<0x00, MRM3r, (outs), (ins GR16:$src), "ltr{w}\t$src", []>, TB, NotMemoryFoldable;
+def LTRr : I<0x00, MRM3r, (outs), (ins GR16:$src), "ltr{w}\t$src", []>, TB;
 let mayLoad = 1 in
-def LTRm : I<0x00, MRM3m, (outs), (ins i16mem:$src), "ltr{w}\t$src", []>, TB, NotMemoryFoldable;
+def LTRm : I<0x00, MRM3m, (outs), (ins i16mem:$src), "ltr{w}\t$src", []>, TB;
 
 def PUSHCS16 : I<0x0E, RawFrm, (outs), (ins), "push{w}\t{%cs|cs}", []>,
                  OpSize16, Requires<[Not64BitMode]>;
@@ -345,11 +364,11 @@ def LGS32rm : I<0xb5, MRMSrcMem, (outs GR32:$dst), (ins opaquemem:$src),
 def LGS64rm : RI<0xb5, MRMSrcMem, (outs GR64:$dst), (ins opaquemem:$src),
                  "lgs{q}\t{$src, $dst|$dst, $src}", []>, TB;
 
-def VERRr : I<0x00, MRM4r, (outs), (ins GR16:$seg), "verr\t$seg", []>, TB, NotMemoryFoldable;
-def VERWr : I<0x00, MRM5r, (outs), (ins GR16:$seg), "verw\t$seg", []>, TB, NotMemoryFoldable;
+def VERRr : I<0x00, MRM4r, (outs), (ins GR16:$seg), "verr\t$seg", []>, TB;
+def VERWr : I<0x00, MRM5r, (outs), (ins GR16:$seg), "verw\t$seg", []>, TB;
 let mayLoad = 1 in {
-def VERRm : I<0x00, MRM4m, (outs), (ins i16mem:$seg), "verr\t$seg", []>, TB, NotMemoryFoldable;
-def VERWm : I<0x00, MRM5m, (outs), (ins i16mem:$seg), "verw\t$seg", []>, TB, NotMemoryFoldable;
+def VERRm : I<0x00, MRM4m, (outs), (ins i16mem:$seg), "verr\t$seg", []>, TB;
+def VERWm : I<0x00, MRM5m, (outs), (ins i16mem:$seg), "verw\t$seg", []>, TB;
 }
 } // SchedRW
 
@@ -395,10 +414,10 @@ def LIDT32m : I<0x01, MRM3m, (outs), (ins opaquemem:$src),
 def LIDT64m : I<0x01, MRM3m, (outs), (ins opaquemem:$src),
                 "lidt{q}\t$src", []>, TB, Requires<[In64BitMode]>;
 def LLDT16r : I<0x00, MRM2r, (outs), (ins GR16:$src),
-                "lldt{w}\t$src", []>, TB, NotMemoryFoldable;
+                "lldt{w}\t$src", []>, TB;
 let mayLoad = 1 in
 def LLDT16m : I<0x00, MRM2m, (outs), (ins i16mem:$src),
-                "lldt{w}\t$src", []>, TB, NotMemoryFoldable;
+                "lldt{w}\t$src", []>, TB;
 } // SchedRW
 
 //===----------------------------------------------------------------------===//
@@ -406,8 +425,15 @@ def LLDT16m : I<0x00, MRM2m, (outs), (ins i16mem:$src),
 let SchedRW = [WriteSystem] in {
 let Uses = [EAX, ECX, EDX] in
 def WRMSR : I<0x30, RawFrm, (outs), (ins), "wrmsr", []>, TB;
+let Uses = [EAX, ECX, EDX] in
+def WRMSRNS : I<0x01, MRM_C6, (outs), (ins), "wrmsrns", []>, PS;
 let Defs = [EAX, EDX], Uses = [ECX] in
 def RDMSR : I<0x32, RawFrm, (outs), (ins), "rdmsr", []>, TB;
+
+let Uses = [RSI, RDI, RCX], Predicates = [In64BitMode] in {
+def WRMSRLIST : I<0x01, MRM_C6, (outs), (ins), "wrmsrlist", []>, XS;
+def RDMSRLIST : I<0x01, MRM_C6, (outs), (ins), "rdmsrlist", []>, XD;
+}
 
 let Defs = [RAX, RDX], Uses = [ECX] in
 def RDPMC : I<0x33, RawFrm, (outs), (ins), "rdpmc", []>, TB;
@@ -425,10 +451,10 @@ def SMSW16m : I<0x01, MRM4m, (outs), (ins i16mem:$dst),
                 "smsw{w}\t$dst", []>, TB;
 
 def LMSW16r : I<0x01, MRM6r, (outs), (ins GR16:$src),
-                "lmsw{w}\t$src", []>, TB, NotMemoryFoldable;
+                "lmsw{w}\t$src", []>, TB;
 let mayLoad = 1 in
 def LMSW16m : I<0x01, MRM6m, (outs), (ins i16mem:$src),
-                "lmsw{w}\t$src", []>, TB, NotMemoryFoldable;
+                "lmsw{w}\t$src", []>, TB;
 
 let Defs = [EAX, EBX, ECX, EDX], Uses = [EAX, ECX] in
   def CPUID : I<0xA2, RawFrm, (outs), (ins), "cpuid", []>, TB;
@@ -438,7 +464,7 @@ let Defs = [EAX, EBX, ECX, EDX], Uses = [EAX, ECX] in
 // Cache instructions
 let SchedRW = [WriteSystem] in {
 def INVD : I<0x08, RawFrm, (outs), (ins), "invd", []>, TB;
-def WBINVD : I<0x09, RawFrm, (outs), (ins), "wbinvd", [(int_x86_wbinvd)]>, TB;
+def WBINVD : I<0x09, RawFrm, (outs), (ins), "wbinvd", [(int_x86_wbinvd)]>, PS;
 
 // wbnoinvd is like wbinvd, except without invalidation
 // encoding: like wbinvd + an 0xF3 prefix
@@ -510,16 +536,17 @@ let SchedRW = [WriteSystem] in {
 //===----------------------------------------------------------------------===//
 // XSAVE instructions
 let SchedRW = [WriteSystem] in {
-let Predicates = [HasXSAVE] in {
+// NOTE: No HasXSAVE predicate so that these can be used with _xgetbv/_xsetbv
+// on Windows without needing to enable the xsave feature to be compatible with
+// MSVC.
 let Defs = [EDX, EAX], Uses = [ECX] in
-  def XGETBV : I<0x01, MRM_D0, (outs), (ins), "xgetbv", []>, TB;
+def XGETBV : I<0x01, MRM_D0, (outs), (ins), "xgetbv", []>, PS;
 
 let Uses = [EDX, EAX, ECX] in
-  def XSETBV : I<0x01, MRM_D1, (outs), (ins),
-                "xsetbv",
-                [(int_x86_xsetbv ECX, EDX, EAX)]>, TB;
+def XSETBV : I<0x01, MRM_D1, (outs), (ins),
+              "xsetbv",
+              [(int_x86_xsetbv ECX, EDX, EAX)]>, PS;
 
-} // HasXSAVE
 
 let Uses = [EDX, EAX] in {
 def XSAVE : I<0xAE, MRM4m, (outs), (ins opaquemem:$dst),
@@ -542,22 +569,22 @@ def XSAVEOPT64 : RI<0xAE, MRM6m, (outs), (ins opaquemem:$dst),
                     [(int_x86_xsaveopt64 addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVEOPT, In64BitMode]>;
 def XSAVEC : I<0xC7, MRM4m, (outs), (ins opaquemem:$dst),
                "xsavec\t$dst",
-               [(int_x86_xsavec addr:$dst, EDX, EAX)]>, TB, Requires<[HasXSAVEC]>;
+               [(int_x86_xsavec addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVEC]>;
 def XSAVEC64 : RI<0xC7, MRM4m, (outs), (ins opaquemem:$dst),
                  "xsavec64\t$dst",
-                 [(int_x86_xsavec64 addr:$dst, EDX, EAX)]>, TB, Requires<[HasXSAVEC, In64BitMode]>;
+                 [(int_x86_xsavec64 addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVEC, In64BitMode]>;
 def XSAVES : I<0xC7, MRM5m, (outs), (ins opaquemem:$dst),
                "xsaves\t$dst",
-               [(int_x86_xsaves addr:$dst, EDX, EAX)]>, TB, Requires<[HasXSAVES]>;
+               [(int_x86_xsaves addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVES]>;
 def XSAVES64 : RI<0xC7, MRM5m, (outs), (ins opaquemem:$dst),
                   "xsaves64\t$dst",
-                  [(int_x86_xsaves64 addr:$dst, EDX, EAX)]>, TB, Requires<[HasXSAVE, In64BitMode]>;
+                  [(int_x86_xsaves64 addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVE, In64BitMode]>;
 def XRSTORS : I<0xC7, MRM3m, (outs), (ins opaquemem:$dst),
                 "xrstors\t$dst",
-                [(int_x86_xrstors addr:$dst, EDX, EAX)]>, TB, Requires<[HasXSAVES]>;
+                [(int_x86_xrstors addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVES]>;
 def XRSTORS64 : RI<0xC7, MRM3m, (outs), (ins opaquemem:$dst),
                    "xrstors64\t$dst",
-                   [(int_x86_xrstors64 addr:$dst, EDX, EAX)]>, TB, Requires<[HasXSAVES, In64BitMode]>;
+                   [(int_x86_xrstors64 addr:$dst, EDX, EAX)]>, PS, Requires<[HasXSAVES, In64BitMode]>;
 } // Uses
 } // SchedRW
 
@@ -570,19 +597,19 @@ def : InstAlias<"xstorerng", (XSTORE)>;
 
 let SchedRW = [WriteSystem] in {
 let Defs = [RSI, RDI], Uses = [RBX, RDX, RSI, RDI] in {
-  def XCRYPTECB : I<0xa7, MRM_C8, (outs), (ins), "xcryptecb", []>, TB;
-  def XCRYPTCBC : I<0xa7, MRM_D0, (outs), (ins), "xcryptcbc", []>, TB;
-  def XCRYPTCTR : I<0xa7, MRM_D8, (outs), (ins), "xcryptctr", []>, TB;
-  def XCRYPTCFB : I<0xa7, MRM_E0, (outs), (ins), "xcryptcfb", []>, TB;
-  def XCRYPTOFB : I<0xa7, MRM_E8, (outs), (ins), "xcryptofb", []>, TB;
+  def XCRYPTECB : I<0xa7, MRM_C8, (outs), (ins), "xcryptecb", []>, TB, REP;
+  def XCRYPTCBC : I<0xa7, MRM_D0, (outs), (ins), "xcryptcbc", []>, TB, REP;
+  def XCRYPTCTR : I<0xa7, MRM_D8, (outs), (ins), "xcryptctr", []>, TB, REP;
+  def XCRYPTCFB : I<0xa7, MRM_E0, (outs), (ins), "xcryptcfb", []>, TB, REP;
+  def XCRYPTOFB : I<0xa7, MRM_E8, (outs), (ins), "xcryptofb", []>, TB, REP;
 }
 
 let Defs = [RAX, RSI, RDI], Uses = [RAX, RSI, RDI] in {
-  def XSHA1 : I<0xa6, MRM_C8, (outs), (ins), "xsha1", []>, TB;
-  def XSHA256 : I<0xa6, MRM_D0, (outs), (ins), "xsha256", []>, TB;
+  def XSHA1 : I<0xa6, MRM_C8, (outs), (ins), "xsha1", []>, TB, REP;
+  def XSHA256 : I<0xa6, MRM_D0, (outs), (ins), "xsha256", []>, TB, REP;
 }
 let Defs = [RAX, RDX, RSI], Uses = [RAX, RSI] in
-  def MONTMUL : I<0xa6, MRM_C0, (outs), (ins), "montmul", []>, TB;
+  def MONTMUL : I<0xa6, MRM_C0, (outs), (ins), "montmul", []>, TB, REP;
 } // SchedRW
 
 //==-----------------------------------------------------------------------===//
@@ -590,10 +617,10 @@ let Defs = [RAX, RDX, RSI], Uses = [RAX, RSI] in
 let SchedRW = [WriteSystem] in {
 let Defs = [EAX, EDX], Uses = [ECX] in
   def RDPKRUr : I<0x01, MRM_EE, (outs), (ins), "rdpkru",
-                  [(set EAX, (X86rdpkru ECX)), (implicit EDX)]>, TB;
+                  [(set EAX, (X86rdpkru ECX)), (implicit EDX)]>, PS;
 let Uses = [EAX, ECX, EDX] in
   def WRPKRUr : I<0x01, MRM_EF, (outs), (ins), "wrpkru",
-                  [(X86wrpkru EAX, EDX, ECX)]>, TB;
+                  [(X86wrpkru EAX, EDX, ECX)]>, PS;
 } // SchedRW
 
 //===----------------------------------------------------------------------===//
@@ -653,15 +680,15 @@ let Predicates = [In64BitMode, HasINVPCID] in {
 //===----------------------------------------------------------------------===//
 // SMAP Instruction
 let Defs = [EFLAGS], SchedRW = [WriteSystem] in {
-  def CLAC : I<0x01, MRM_CA, (outs), (ins), "clac", []>, TB;
-  def STAC : I<0x01, MRM_CB, (outs), (ins), "stac", []>, TB;
+  def CLAC : I<0x01, MRM_CA, (outs), (ins), "clac", []>, PS;
+  def STAC : I<0x01, MRM_CB, (outs), (ins), "stac", []>, PS;
 }
 
 //===----------------------------------------------------------------------===//
 // SMX Instruction
 let SchedRW = [WriteSystem] in {
 let Uses = [RAX, RBX, RCX, RDX], Defs = [RAX, RBX, RCX] in {
-  def GETSEC : I<0x37, RawFrm, (outs), (ins), "getsec", []>, TB;
+  def GETSEC : I<0x37, RawFrm, (outs), (ins), "getsec", []>, PS;
 } // Uses, Defs
 } // SchedRW
 
@@ -715,6 +742,15 @@ def PTWRITE64r : RI<0xAE, MRM4r, (outs), (ins GR64:$dst),
 } // SchedRW
 
 //===----------------------------------------------------------------------===//
+// RDPRU - Read Processor Register instruction.
+
+let SchedRW = [WriteSystem] in {
+let Uses = [ECX], Defs = [EAX, EDX] in
+   def RDPRU : I<0x01, MRM_FD, (outs), (ins), "rdpru", []>, PS,
+               Requires<[HasRDPRU]>;
+}
+
+//===----------------------------------------------------------------------===//
 // Platform Configuration instruction
 
 // From ISA docs:
@@ -729,6 +765,6 @@ def PTWRITE64r : RI<0xAE, MRM4r, (outs), (ins GR64:$dst),
 
 let SchedRW = [WriteSystem] in {
 let Uses = [RAX, RBX, RCX, RDX], Defs = [RAX, RBX, RCX, RDX, EFLAGS] in
-    def PCONFIG : I<0x01, MRM_C5, (outs), (ins), "pconfig", []>, TB,
+    def PCONFIG : I<0x01, MRM_C5, (outs), (ins), "pconfig", []>, PS,
                   Requires<[HasPCONFIG]>;
 } // SchedRW

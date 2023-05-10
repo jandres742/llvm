@@ -11,7 +11,6 @@ import lldbsuite.test.lldbutil as lldbutil
 
 class HelloWorldTestCase(TestBase):
     NO_DEBUG_INFO_TESTCASE = True
-    mydir = TestBase.compute_mydir(__file__)
 
     def setUp(self):
         # Call super's setUp().
@@ -26,7 +25,6 @@ class HelloWorldTestCase(TestBase):
         # Call super's tearDown().
         TestBase.tearDown(self)
 
-    @add_test_categories(['pyapi'])
     @skipIfiOSSimulator
     def test_with_process_launch_api(self):
         """Create target, breakpoint, launch a process, and then kill it."""
@@ -72,10 +70,7 @@ class HelloWorldTestCase(TestBase):
         # The breakpoint should have a hit count of 1.
         self.assertEqual(breakpoint.GetHitCount(), 1, BREAKPOINT_HIT_ONCE)
 
-    @add_test_categories(['pyapi'])
     @skipIfiOSSimulator
-    @expectedFailureNetBSD
-    @skipIfReproducer # File synchronization is not supported during replay.
     def test_with_attach_to_process_with_id_api(self):
         """Create target, spawn a process, and attach to it with process id."""
         exe = '%s_%d'%(self.testMethodName, os.getpid())
@@ -91,7 +86,6 @@ class HelloWorldTestCase(TestBase):
             if os.path.exists(token):
                 os.remove(token)
         popen = self.spawnSubprocess(self.getBuildArtifact(exe), [token])
-        self.addTearDownHook(self.cleanupSubprocesses)
         lldbutil.wait_for_file_on_target(self, token)
 
         listener = lldb.SBListener("my.attach.listener")
@@ -106,11 +100,8 @@ class HelloWorldTestCase(TestBase):
                     substrs=['main.c:%d' % self.line2,
                              '(int)argc=2'])
 
-    @add_test_categories(['pyapi'])
     @skipIfiOSSimulator
     @skipIfAsan # FIXME: Hangs indefinitely.
-    @expectedFailureNetBSD
-    @skipIfReproducer # FIXME: Unexpected packet during (active) replay
     def test_with_attach_to_process_with_name_api(self):
         """Create target, spawn a process, and attach to it with process name."""
         exe = '%s_%d'%(self.testMethodName, os.getpid())
@@ -126,7 +117,6 @@ class HelloWorldTestCase(TestBase):
             if os.path.exists(token):
                 os.remove(token)
         popen = self.spawnSubprocess(self.getBuildArtifact(exe), [token])
-        self.addTearDownHook(self.cleanupSubprocesses)
         lldbutil.wait_for_file_on_target(self, token)
 
         listener = lldb.SBListener("my.attach.listener")
@@ -142,7 +132,8 @@ class HelloWorldTestCase(TestBase):
         target.ConnectRemote(listener, None, None, error)
 
         process = target.AttachToProcessWithName(listener, name, False, error)
-        self.assertTrue(error.Success() and process, PROCESS_IS_VALID)
+        self.assertSuccess(error)
+        self.assertTrue(process, PROCESS_IS_VALID)
 
         # Verify that after attach, our selected target indeed matches name.
         self.expect(

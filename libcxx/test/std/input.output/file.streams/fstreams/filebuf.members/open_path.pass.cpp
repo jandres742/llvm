@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14
-// UNSUPPORTED: c++filesystem-disabled
+// UNSUPPORTED: no-filesystem
+
+// UNSUPPORTED: availability-filesystem-missing
 
 // <fstream>
 
@@ -38,7 +40,9 @@ int main(int, char**) {
     assert(f.sbumpc() == '2');
     assert(f.sbumpc() == '3');
   }
-  std::remove(p.c_str());
+  std::remove(p.string().c_str());
+
+#ifndef TEST_HAS_NO_WIDE_CHARACTERS
   {
     std::wfilebuf f;
     assert(f.open(p, std::ios_base::out) != 0);
@@ -53,7 +57,8 @@ int main(int, char**) {
     assert(f.sbumpc() == L'2');
     assert(f.sbumpc() == L'3');
   }
-  remove(p.c_str());
+  std::remove(p.string().c_str());
+#endif
 
   return 0;
 }

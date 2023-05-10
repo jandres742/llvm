@@ -22,7 +22,7 @@
 // Windows (from within the clang\docs directory):
 //   make.bat html
 // Non-Windows (from within the clang\docs directory):
-//   make -f Makefile.sphinx html
+//   sphinx-build -b html _build/html
 
 def GlobalDocumentation {
   code Intro =[{..
@@ -57,16 +57,95 @@ global variable or function should be in after translation.
   let Heading = "section, __declspec(allocate)";
 }
 
+def UsedDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+This attribute, when attached to a function or variable definition, indicates
+that there may be references to the entity which are not apparent in the source
+code.  For example, it may be referenced from inline ``asm``, or it may be
+found through a dynamic symbol or section lookup.
+
+The compiler must emit the definition even if it appears to be unused, and it
+must not apply optimizations which depend on fully understanding how the entity
+is used.
+
+Whether this attribute has any effect on the linker depends on the target and
+the linker. Most linkers support the feature of section garbage collection
+(``--gc-sections``), also known as "dead stripping" (``ld64 -dead_strip``) or
+discarding unreferenced sections (``link.exe /OPT:REF``). On COFF and Mach-O
+targets (Windows and Apple platforms), the `used` attribute prevents symbols
+from being removed by linker section GC. On ELF targets, it has no effect on its
+own, and the linker may remove the definition if it is not otherwise referenced.
+This linker GC can be avoided by also adding the ``retain`` attribute.  Note
+that ``retain`` requires special support from the linker; see that attribute's
+documentation for further information.
+  }];
+}
+
+def RetainDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+This attribute, when attached to a function or variable definition, prevents
+section garbage collection in the linker. It does not prevent other discard
+mechanisms, such as archive member selection, and COMDAT group resolution.
+
+If the compiler does not emit the definition, e.g. because it was not used in
+the translation unit or the compiler was able to eliminate all of the uses,
+this attribute has no effect.  This attribute is typically combined with the
+``used`` attribute to force the definition to be emitted and preserved into the
+final linked image.
+
+This attribute is only necessary on ELF targets; other targets prevent section
+garbage collection by the linker when using the ``used`` attribute alone.
+Using the attributes together should result in consistent behavior across
+targets.
+
+This attribute requires the linker to support the ``SHF_GNU_RETAIN`` extension.
+This support is available in GNU ``ld`` and ``gold`` as of binutils 2.36, as
+well as in ``ld.lld`` 13.
+  }];
+}
+
+def InitPriorityDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+In C++, the order in which global variables are initialized across translation
+units is unspecified, unlike the ordering within a single translation unit. The
+``init_priority`` attribute allows you to specify a relative ordering for the
+initialization of objects declared at namespace scope in C++. The priority is
+given as an integer constant expression between 101 and 65535 (inclusive).
+Priorities outside of that range are reserved for use by the implementation. A
+lower value indicates a higher priority of initialization. Note that only the
+relative ordering of values is important. For example:
+
+.. code-block:: c++
+
+  struct SomeType { SomeType(); };
+  __attribute__((init_priority(200))) SomeType Obj1;
+  __attribute__((init_priority(101))) SomeType Obj2;
+
+``Obj2`` will be initialized *before* ``Obj1`` despite the usual order of
+initialization being the opposite.
+
+On Windows, ``init_seg(compiler)`` is represented with a priority of 200 and
+``init_seg(library)`` is represented with a priority of 400. ``init_seg(user)``
+uses the default 65535 priority.
+
+This attribute is only supported for C++ and Objective-C++ and is ignored in
+other language modes. Currently, this attribute is not implemented on z/OS.
+  }];
+}
+
 def InitSegDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The attribute applied by ``pragma init_seg()`` controls the section into
-which global initialization function pointers are emitted.  It is only
-available with ``-fms-extensions``.  Typically, this function pointer is
-emitted into ``.CRT$XCU`` on Windows.  The user can change the order of
+which global initialization function pointers are emitted. It is only
+available with ``-fms-extensions``. Typically, this function pointer is
+emitted into ``.CRT$XCU`` on Windows. The user can change the order of
 initialization by using a different section name with the same
 ``.CRT$XC`` prefix and a suffix that sorts lexicographically before or
-after the standard ``.CRT$XCU`` sections.  See the init_seg_
+after the standard ``.CRT$XCU`` sections. See the init_seg_
 documentation on MSDN for more information.
 
 .. _init_seg: http://msdn.microsoft.com/en-us/library/7977wcck(v=vs.110).aspx
@@ -92,10 +171,10 @@ def DLLExportDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``__declspec(dllexport)`` attribute declares a variable, function, or
-Objective-C interface to be exported from the module.  It is available under the
-``-fdeclspec`` flag for compatibility with various compilers.  The primary use
+Objective-C interface to be exported from the module. It is available under the
+``-fdeclspec`` flag for compatibility with various compilers. The primary use
 is for COFF object files which explicitly specify what interfaces are available
-for external use.  See the dllexport_ documentation on MSDN for more
+for external use. See the dllexport_ documentation on MSDN for more
 information.
 
 .. _dllexport: https://msdn.microsoft.com/en-us/library/3y1sfaz2.aspx
@@ -106,11 +185,15 @@ def DLLImportDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``__declspec(dllimport)`` attribute declares a variable, function, or
-Objective-C interface to be imported from an external module.  It is available
-under the ``-fdeclspec`` flag for compatibility with various compilers.  The
+Objective-C interface to be imported from an external module. It is available
+under the ``-fdeclspec`` flag for compatibility with various compilers. The
 primary use is for COFF object files which explicitly specify what interfaces
-are imported from external modules.  See the dllimport_ documentation on MSDN
+are imported from external modules. See the dllimport_ documentation on MSDN
 for more information.
+
+Note that a dllimport function may still be inlined, if its definition is
+available and it doesn't reference any non-dllimport functions or global
+variables.
 
 .. _dllimport: https://msdn.microsoft.com/en-us/library/3y1sfaz2.aspx
   }];
@@ -120,14 +203,14 @@ def ThreadDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``__declspec(thread)`` attribute declares a variable with thread local
-storage.  It is available under the ``-fms-extensions`` flag for MSVC
-compatibility.  See the documentation for `__declspec(thread)`_ on MSDN.
+storage. It is available under the ``-fms-extensions`` flag for MSVC
+compatibility. See the documentation for `__declspec(thread)`_ on MSDN.
 
 .. _`__declspec(thread)`: http://msdn.microsoft.com/en-us/library/9w1sdazb.aspx
 
 In Clang, ``__declspec(thread)`` is generally equivalent in functionality to the
-GNU ``__thread`` keyword.  The variable must not have a destructor and must have
-a constant initializer, if any.  The attribute only applies to variables
+GNU ``__thread`` keyword. The variable must not have a destructor and must have
+a constant initializer, if any. The attribute only applies to variables
 declared with static storage duration, such as globals, class static data
 members, and static locals.
   }];
@@ -178,6 +261,28 @@ applies to copies of the block. For example:
   }];
 }
 
+def MaybeUndefDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``maybe_undef`` attribute can be placed on a function parameter. It indicates
+that the parameter is allowed to use undef values. It informs the compiler
+to insert a freeze LLVM IR instruction on the function parameter.
+Please note that this is an attribute that is used as an internal
+implementation detail and not intended to be used by external users.
+
+In languages HIP, CUDA etc., some functions have multi-threaded semantics and
+it is enough for only one or some threads to provide defined arguments.
+Depending on semantics, undef arguments in some threads don't produce
+undefined results in the function call. Since, these functions accept undefined
+arguments, ``maybe_undef`` attribute can be placed.
+
+Sample usage:
+.. code-block:: c
+
+  void maybeundeffunc(int __attribute__((maybe_undef))param);
+  }];
+}
+
 def CarriesDependencyDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -205,6 +310,17 @@ specifying the resolved function list. A specified CPU defines a set of minimum
 features that are required for the function to be called. The result of this is
 that future processors execute the most restrictive version of the function the
 new processor can execute.
+
+In addition, unlike the ICC implementation of this feature, the selection of the
+version does not consider the manufacturer or microarchitecture of the processor.
+It tests solely the list of features that are both supported by the specified
+processor and present in the compiler-rt library. This can be surprising at times,
+as the runtime processor may be from a completely different manufacturer, as long
+as it supports the same feature set.
+
+This can additionally be surprising, as some processors are indistringuishable from
+others based on the list of testable features. When this happens, the variant
+is selected in an unspecified manner.
 
 Function versions are defined with ``cpu_specific``, which takes one or more CPU
 names as a parameter. For example:
@@ -266,7 +382,7 @@ outlining job:
 
   int foo(int x) { return ++x; }
 
-  using namespace cl::sycl;
+  using namespace sycl;
   queue Q;
   buffer<int, 1> a(range<1>{1024});
   Q.submit([&](handler& cgh) {
@@ -279,7 +395,7 @@ outlining job:
 A C++ function object passed to the ``parallel_for`` is called a "SYCL kernel".
 A SYCL kernel defines the entry point to the "device part" of the code. The
 compiler will emit all symbols accessible from a "kernel". In this code
-example, the compiler will emit "foo" function.  More details about the
+example, the compiler will emit "foo" function. More details about the
 compilation of functions for the device part can be found in the SYCL 1.2.1
 specification Section 6.4.
 To show to the compiler entry point to the "device part" of the code, the SYCL
@@ -330,16 +446,110 @@ The SYCL kernel in the previous code sample meets these expectations.
   }];
 }
 
+def SYCLSpecialClassDocs : Documentation {
+  let Category = DocCatStmt;
+  let Content = [{
+SYCL defines some special classes (accessor, sampler, and stream) which require
+specific handling during the generation of the SPIR entry point.
+The ``__attribute__((sycl_special_class))`` attribute is used in SYCL
+headers to indicate that a class or a struct needs a specific handling when
+it is passed from host to device.
+Special classes will have a mandatory ``__init`` method and an optional
+``__finalize`` method (the ``__finalize`` method is used only with the
+``stream`` type). Kernel parameters types are extract from the ``__init`` method
+parameters. The kernel function arguments list is derived from the
+arguments of the ``__init`` method. The arguments of the ``__init`` method are
+copied into the kernel function argument list and the ``__init`` and
+``__finalize`` methods are called at the beginning and the end of the kernel,
+respectively.
+The ``__init`` and ``__finalize`` methods must be defined inside the
+special class.
+Please note that this is an attribute that is used as an internal
+implementation detail and not intended to be used by external users.
+
+The syntax of the attribute is as follows:
+
+.. code-block:: text
+
+  class __attribute__((sycl_special_class)) accessor {};
+  class [[clang::sycl_special_class]] accessor {};
+
+This is a code example that illustrates the use of the attribute:
+
+.. code-block:: c++
+
+  class __attribute__((sycl_special_class)) SpecialType {
+    int F1;
+    int F2;
+    void __init(int f1) {
+      F1 = f1;
+      F2 = f1;
+    }
+    void __finalize() {}
+  public:
+    SpecialType() = default;
+    int getF2() const { return F2; }
+  };
+
+  int main () {
+    SpecialType T;
+    cgh.single_task([=] {
+      T.getF2();
+    });
+  }
+
+This would trigger the following kernel entry point in the AST:
+
+.. code-block:: c++
+
+  void __sycl_kernel(int f1) {
+    SpecialType T;
+    T.__init(f1);
+    ...
+    T.__finalize()
+  }
+  }];
+}
+
+def SYCLDeviceHasDocs : Documentation {
+  let Category = DocCatStmt;
+  let Content = [{
+The ``[[sycl::device_has(aspect, ...)]]`` attribute is used to decorate either
+the declaration of a kernel function that is defined in the current translation
+unit or to decorate the declaration of a non-kernel device function. The
+parameter list to the sycl::device_has() attribute consists of zero or more
+constexpr integral expressions, where each integer is interpreted as one of the
+enumerated values in the sycl::aspect enumeration type.
+
+Specifying this attribute on a kernel has two effects. First, it causes the kernel
+invocation command to throw a synchronous exception with the errc::kernel_not_supported
+error code if the kernel is submitted to a device that does not have one of the
+listed aspects. Second, it causes the compiler to issue a diagnostic if the kernel
+(or any of the functions it calls) uses an optional feature that is associated with
+an aspect that is not listed in the attribute.
+
+.. code-block:: c++
+
+  [[sycl::device_has()]] int func1() {}
+  [[sycl::device_has(sycl::aspect1, sycl::aspect2)]] int func2() {}
+
+  }];
+}
+
 def SYCLSimdDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
     The ``__attribute__((sycl_explicit_simd))`` attribute is used by the device
-    compiler front end to mark kernels and functions to be compiled and executed
-    in the explicit SIMD mode. In this mode subgroup size is always 1 and
-    explicit SIMD extensions - such as manual vectorization using wide vector
-    data types and operations can be used. Compiler may decide to compile such
-    functions using different optimization and code generation
-    pipeline.
+    compiler front end to mark ESIMD kernels and functions. In this mode,
+    subgroup size is always equal to 1 and explicit SIMD extensions, such as
+    manual vectorization using wide vector data types and operations can be used.
+    The compiler may decide to compile such functions using different optimization
+    and code generation pipeline. Also, this attribute is used to distinguish
+    ESIMD private globals from regular SYCL global variables.
+
+    In SYCL 1.2.1 mode, the ``intel::sycl_explicit_simd`` attribute is propagated
+    from the function it is applied to onto the kernel which calls the function.
+    In SYCL 2020 mode, the attribute is not propagated to the kernel.
   }];
 }
 
@@ -367,24 +577,88 @@ pointer type.
 
 def CXX11NoReturnDocs : Documentation {
   let Category = DocCatFunction;
+  let Heading = "noreturn, _Noreturn";
   let Content = [{
 A function declared as ``[[noreturn]]`` shall not return to its caller. The
 compiler will generate a diagnostic for a function declared as ``[[noreturn]]``
 that appears to be capable of returning to its caller.
+
+The ``[[_Noreturn]]`` spelling is deprecated and only exists to ease code
+migration for code using ``[[noreturn]]`` after including ``<stdnoreturn.h>``.
   }];
 }
 
 def NoMergeDocs : Documentation {
-  let Category = DocCatFunction;
+  let Category = DocCatStmt;
   let Content = [{
-If a statement is marked ``nomerge`` and contains call experessions, those call
+If a statement is marked ``nomerge`` and contains call expressions, those call
 expressions inside the statement will not be merged during optimization. This 
 attribute can be used to prevent the optimizer from obscuring the source
 location of certain calls. For example, it will prevent tail merging otherwise
 identical code sequences that raise an exception or terminate the program. Tail
 merging normally reduces the precision of source location information, making
 stack traces less useful for debugging. This attribute gives the user control
-over the tradeoff between code size and debug information precision.
+over the tradeoff between code size and debug information precision. 
+
+``nomerge`` attribute can also be used as function attribute to prevent all 
+calls to the specified function from merging. It has no effect on indirect 
+calls.
+  }];
+}
+
+def NoInlineDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+This function attribute suppresses the inlining of a function at the call sites
+of the function.
+
+``[[clang::noinline]]`` spelling can be used as a statement attribute; other
+spellings of the attribute are not supported on statements. If a statement is
+marked ``[[clang::noinline]]`` and contains calls, those calls inside the
+statement will not be inlined by the compiler.
+
+``__noinline__`` can be used as a keyword in CUDA/HIP languages. This is to
+avoid diagnostics due to usage of ``__attribute__((__noinline__))``
+with ``__noinline__`` defined as a macro as ``__attribute__((noinline))``.
+
+.. code-block:: c
+
+  int example(void) {
+    int r;
+    [[clang::noinline]] foo();
+    [[clang::noinline]] r = bar();
+    return r;
+  }
+
+  }];
+}
+
+def MustTailDocs : Documentation {
+  let Category = DocCatStmt;
+  let Content = [{
+If a ``return`` statement is marked ``musttail``, this indicates that the
+compiler must generate a tail call for the program to be correct, even when
+optimizations are disabled. This guarantees that the call will not cause
+unbounded stack growth if it is part of a recursive cycle in the call graph.
+
+If the callee is a virtual function that is implemented by a thunk, there is
+no guarantee in general that the thunk tail-calls the implementation of the
+virtual function, so such a call in a recursive cycle can still result in
+unbounded stack growth.
+
+``clang::musttail`` can only be applied to a ``return`` statement whose value
+is the result of a function call (even functions returning void must use
+``return``, although no value is returned). The target function must have the
+same number of arguments as the caller. The types of the return value and all
+arguments must be similar according to C++ rules (differing only in cv
+qualifiers or array size), including the implicit "this" argument, if any.
+Any variables in scope, including all arguments to the function and the
+return value must be trivially destructible. The calling convention of the
+caller and callee must match, and they must not be variadic functions or have
+old style K&R C function declarations.
+
+``clang::musttail`` provides assurances that the tail call can be optimized on
+all targets, not just one.
   }];
 }
 
@@ -522,7 +796,7 @@ parameter.
 
 Note that this attribute merely informs the compiler that a function always
 returns a sufficiently aligned pointer. It does not cause the compiler to
-emit code to enforce that alignment.  The behavior is undefined if the returned
+emit code to enforce that alignment. The behavior is undefined if the returned
 pointer is not sufficiently aligned.
   }];
 }
@@ -831,8 +1105,8 @@ read more about ``__builtin_dynamic_object_size`` `here
 def OverloadableDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-Clang provides support for C++ function overloading in C.  Function overloading
-in C is introduced using the ``overloadable`` attribute.  For example, one
+Clang provides support for C++ function overloading in C. Function overloading
+in C is introduced using the ``overloadable`` attribute. For example, one
 might provide several overloaded versions of a ``tgsin`` function that invokes
 the appropriate standard function computing the sine of a value with ``float``,
 ``double``, or ``long double`` precision:
@@ -846,7 +1120,7 @@ the appropriate standard function computing the sine of a value with ``float``,
 
 Given these declarations, one can call ``tgsin`` with a ``float`` value to
 receive a ``float`` result, with a ``double`` to receive a ``double`` result,
-etc.  Function overloading in C follows the rules of C++ function overloading
+etc. Function overloading in C follows the rules of C++ function overloading
 to pick the best overload given the call arguments, with a few C-specific
 semantics:
 
@@ -859,7 +1133,7 @@ semantics:
   compatible types.
 
 * A conversion from type ``T`` to a value of type ``U`` is permitted if ``T``
-  and ``U`` are compatible types.  This conversion is given "conversion" rank.
+  and ``U`` are compatible types. This conversion is given "conversion" rank.
 
 * If no viable candidates are otherwise available, we allow a conversion from a
   pointer of type ``T*`` to a pointer of type ``U*``, where ``T`` and ``U`` are
@@ -868,10 +1142,10 @@ semantics:
   for ``T`` and ``U`` to be incompatible.
 
 The declaration of ``overloadable`` functions is restricted to function
-declarations and definitions.  If a function is marked with the ``overloadable``
+declarations and definitions. If a function is marked with the ``overloadable``
 attribute, then all declarations and definitions of functions with that name,
 except for at most one (see the note below about unmarked overloads), must have
-the ``overloadable`` attribute.  In addition, redeclarations of a function with
+the ``overloadable`` attribute. In addition, redeclarations of a function with
 the ``overloadable`` attribute must have the ``overloadable`` attribute, and
 redeclarations of a function without the ``overloadable`` attribute must *not*
 have the ``overloadable`` attribute. e.g.,
@@ -889,7 +1163,7 @@ have the ``overloadable`` attribute. e.g.,
   int h(int) __attribute__((overloadable)); // error: declaration of "h" must not
                                             // have the "overloadable" attribute
 
-Functions marked ``overloadable`` must have prototypes.  Therefore, the
+Functions marked ``overloadable`` must have prototypes. Therefore, the
 following code is ill-formed:
 
 .. code-block:: c
@@ -897,7 +1171,7 @@ following code is ill-formed:
   int h() __attribute__((overloadable)); // error: h does not have a prototype
 
 However, ``overloadable`` functions are allowed to use a ellipsis even if there
-are no named parameters (as is permitted in C++).  This feature is particularly
+are no named parameters (as is permitted in C++). This feature is particularly
 useful when combined with the ``unavailable`` attribute:
 
 .. code-block:: c++
@@ -905,13 +1179,13 @@ useful when combined with the ``unavailable`` attribute:
   void honeypot(...) __attribute__((overloadable, unavailable)); // calling me is an error
 
 Functions declared with the ``overloadable`` attribute have their names mangled
-according to the same rules as C++ function names.  For example, the three
+according to the same rules as C++ function names. For example, the three
 ``tgsin`` functions in our motivating example get the mangled names
-``_Z5tgsinf``, ``_Z5tgsind``, and ``_Z5tgsine``, respectively.  There are two
+``_Z5tgsinf``, ``_Z5tgsind``, and ``_Z5tgsine``, respectively. There are two
 caveats to this use of name mangling:
 
 * Future versions of Clang may change the name mangling of functions overloaded
-  in C, so you should not depend on an specific mangling.  To be completely
+  in C, so you should not depend on an specific mangling. To be completely
   safe, we strongly urge the use of ``static inline`` with ``overloadable``
   functions.
 
@@ -957,7 +1231,7 @@ use cases, we provide an attribute to specifically describe the "method family"
 that a method belongs to.
 
 **Usage**: ``__attribute__((objc_method_family(X)))``, where ``X`` is one of
-``none``, ``alloc``, ``copy``, ``init``, ``mutableCopy``, or ``new``.  This
+``none``, ``alloc``, ``copy``, ``init``, ``mutableCopy``, or ``new``. This
 attribute can only be placed at the end of a method declaration:
 
 .. code-block:: objc
@@ -981,7 +1255,7 @@ The behavior of a function with respect to reference counting for Foundation
 convention (e.g. functions starting with "get" are assumed to return at
 ``+0``).
 
-It can be overridden using a family of the following attributes.  In
+It can be overridden using a family of the following attributes. In
 Objective-C, the annotation ``__attribute__((ns_returns_retained))`` applied to
 a function communicates that the object is returned at ``+1``, and the caller
 is responsible for freeing it.
@@ -1042,8 +1316,18 @@ def NoDebugDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``nodebug`` attribute allows you to suppress debugging information for a
-function or method, or for a variable that is not a parameter or a non-static
-data member.
+function or method, for a variable that is not a parameter or a non-static
+data member, or for a typedef or using declaration.
+  }];
+}
+
+def StandaloneDebugDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``standalone_debug`` attribute causes debug info to be emitted for a record
+type regardless of the debug info optimizations that are enabled with
+-fno-standalone-debug. This attribute only has an effect when debug info
+optimizations are enabled (e.g. with -fno-standalone-debug), and is C++-only.
   }];
 }
 
@@ -1108,6 +1392,7 @@ not made control-dependent on any additional values, e.g., unrolling a loop
 executed by all work items.
 
 Sample usage:
+
 .. code-block:: c
 
   void convfunc(void) __attribute__((convergent));
@@ -1161,7 +1446,7 @@ method in the parent class. For these cases, we provide an attribute to
 designate that a method requires a "call to ``super``" in the overriding
 method in the subclass.
 
-**Usage**: ``__attribute__((objc_requires_super))``.  This attribute can only
+**Usage**: ``__attribute__((objc_requires_super))``. This attribute can only
 be placed at the end of a method declaration:
 
 .. code-block:: objc
@@ -1169,9 +1454,9 @@ be placed at the end of a method declaration:
   - (void)foo __attribute__((objc_requires_super));
 
 This attribute can only be applied the method declarations within a class, and
-not a protocol.  Currently this attribute does not enforce any placement of
+not a protocol. Currently this attribute does not enforce any placement of
 where the call occurs in the overriding method (such as in the case of
-``-dealloc`` where the call must appear at the end).  It checks only that it
+``-dealloc`` where the call must appear at the end). It checks only that it
 exists.
 
 Note that on both OS X and iOS that the Foundation framework provides a
@@ -1183,11 +1468,11 @@ attribute:
   - (void)foo NS_REQUIRES_SUPER;
 
 This macro is conditionally defined depending on the compiler's support for
-this attribute.  If the compiler does not support the attribute the macro
+this attribute. If the compiler does not support the attribute the macro
 expands to nothing.
 
 Operationally, when a method has this annotation the compiler will warn if the
-implementation of an override in a subclass does not call super.  For example:
+implementation of an override in a subclass does not call super. For example:
 
 .. code-block:: objc
 
@@ -1206,7 +1491,7 @@ attribute allows annotated interfaces or protocols to use the
 specified string argument in the object's metadata name instead of the
 default name.
 
-**Usage**: ``__attribute__((objc_runtime_name("MyLocalName")))``.  This attribute
+**Usage**: ``__attribute__((objc_runtime_name("MyLocalName")))``. This attribute
 can only be placed before an @protocol or @interface declaration:
 
 .. code-block:: objc
@@ -1279,7 +1564,7 @@ def AvailabilityDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
 The ``availability`` attribute can be placed on declarations to describe the
-lifecycle of that declaration relative to operating system versions.  Consider
+lifecycle of that declaration relative to operating system versions. Consider
 the function declaration for a hypothetical function ``f``:
 
 .. code-block:: c++
@@ -1287,17 +1572,17 @@ the function declaration for a hypothetical function ``f``:
   void f(void) __attribute__((availability(macos,introduced=10.4,deprecated=10.6,obsoleted=10.7)));
 
 The availability attribute states that ``f`` was introduced in macOS 10.4,
-deprecated in macOS 10.6, and obsoleted in macOS 10.7.  This information
+deprecated in macOS 10.6, and obsoleted in macOS 10.7. This information
 is used by Clang to determine when it is safe to use ``f``: for example, if
 Clang is instructed to compile code for macOS 10.5, a call to ``f()``
-succeeds.  If Clang is instructed to compile code for macOS 10.6, the call
+succeeds. If Clang is instructed to compile code for macOS 10.6, the call
 succeeds but Clang emits a warning specifying that the function is deprecated.
 Finally, if Clang is instructed to compile code for macOS 10.7, the call
 fails because ``f()`` is no longer available.
 
 The availability attribute is a comma-separated list starting with the
 platform name and then including clauses specifying important milestones in the
-declaration's lifetime (in any order) along with additional information.  Those
+declaration's lifetime (in any order) along with additional information. Those
 clauses can be:
 
 introduced=\ *version*
@@ -1316,7 +1601,7 @@ unavailable
 
 message=\ *string-literal*
   Additional message text that Clang will provide when emitting a warning or
-  error about use of a deprecated or obsoleted declaration.  Useful to direct
+  error about use of a deprecated or obsoleted declaration. Useful to direct
   users to replacement APIs.
 
 replacement=\ *string-literal*
@@ -1335,35 +1620,39 @@ specifies availability for the current target platform, the availability
 attributes are ignored. Supported platforms are:
 
 ``ios``
-  Apple's iOS operating system.  The minimum deployment target is specified by
+  Apple's iOS operating system. The minimum deployment target is specified by
   the ``-mios-version-min=*version*`` or ``-miphoneos-version-min=*version*``
   command-line arguments.
 
 ``macos``
-  Apple's macOS operating system.  The minimum deployment target is
+  Apple's macOS operating system. The minimum deployment target is
   specified by the ``-mmacosx-version-min=*version*`` command-line argument.
   ``macosx`` is supported for backward-compatibility reasons, but it is
   deprecated.
 
 ``tvos``
-  Apple's tvOS operating system.  The minimum deployment target is specified by
+  Apple's tvOS operating system. The minimum deployment target is specified by
   the ``-mtvos-version-min=*version*`` command-line argument.
 
 ``watchos``
-  Apple's watchOS operating system.  The minimum deployment target is specified by
+  Apple's watchOS operating system. The minimum deployment target is specified by
   the ``-mwatchos-version-min=*version*`` command-line argument.
+  
+``driverkit``
+  Apple's DriverKit userspace kernel extensions. The minimum deployment target
+  is specified as part of the triple.
 
 A declaration can typically be used even when deploying back to a platform
-version prior to when the declaration was introduced.  When this happens, the
+version prior to when the declaration was introduced. When this happens, the
 declaration is `weakly linked
 <https://developer.apple.com/library/mac/#documentation/MacOSX/Conceptual/BPFrameworks/Concepts/WeakLinking.html>`_,
-as if the ``weak_import`` attribute were added to the declaration.  A
+as if the ``weak_import`` attribute were added to the declaration. A
 weakly-linked declaration may or may not be present a run-time, and a program
 can determine whether the declaration is present by checking whether the
 address of that declaration is non-NULL.
 
 The flag ``strict`` disallows using API when deploying back to a
-platform version prior to when the declaration was introduced.  An
+platform version prior to when the declaration was introduced. An
 attempt to use such API before its introduction causes a hard error.
 Weakly-linking is almost always a better API choice, since it allows
 users to query availability at runtime.
@@ -1517,6 +1806,19 @@ defined_in=\ *string-literal*
   source containers are modules, so ``defined_in`` should specify the Swift
   module name.
 
+USR=\ *string-literal*
+  String that specifies a unified symbol resolution (USR) value for this
+  declaration. USR string uniquely identifies this particular declaration, and
+  is typically used when constructing an index of a codebase.
+  The USR value in this attribute is expected to be generated by an external
+  compiler that compiled the native declaration using its original source
+  language. The exact format of the USR string and its other attributes
+  are determined by the specification of this declaration's source language.
+  When not specified, Clang's indexer will use the Clang USR for this symbol.
+  User can query to see if Clang supports the use of the ``USR`` clause in
+  the ``external_source_symbol`` attribute with
+  ``__has_attribute(external_source_symbol) >= 20230206``.
+
 generated_declaration
   This declaration was automatically generated by some tool.
 
@@ -1661,12 +1963,12 @@ def FallthroughDocs : Documentation {
   let Content = [{
 The ``fallthrough`` (or ``clang::fallthrough``) attribute is used
 to annotate intentional fall-through
-between switch labels.  It can only be applied to a null statement placed at a
-point of execution between any statement and the next switch label.  It is
+between switch labels. It can only be applied to a null statement placed at a
+point of execution between any statement and the next switch label. It is
 common to mark these places with a specific comment, but this attribute is
 meant to replace comments with a more strict annotation, which can be checked
-by the compiler.  This attribute doesn't change semantics of the code and can
-be used wherever an intended fall-through occurs.  It is designed to mimic
+by the compiler. This attribute doesn't change semantics of the code and can
+be used wherever an intended fall-through occurs. It is designed to mimic
 control-flow statements like ``break;``, so it can be placed in most places
 where ``break;`` can, but only if there are no statements on the execution path
 between it and the next switch label.
@@ -1704,6 +2006,166 @@ Here is an example:
   case 77:  // warning: unannotated fall-through
     r();
   }
+  }];
+}
+
+def LikelihoodDocs : Documentation {
+  let Category = DocCatStmt;
+  let Heading = "likely and unlikely";
+  let Content = [{
+The ``likely`` and ``unlikely`` attributes are used as compiler hints.
+The attributes are used to aid the compiler to determine which branch is
+likely or unlikely to be taken. This is done by marking the branch substatement
+with one of the two attributes.
+
+It isn't allowed to annotate a single statement with both ``likely`` and
+``unlikely``. Annotating the ``true`` and ``false`` branch of an ``if``
+statement with the same likelihood attribute will result in a diagnostic and
+the attributes are ignored on both branches.
+
+In a ``switch`` statement it's allowed to annotate multiple ``case`` labels
+or the ``default`` label with the same likelihood attribute. This makes
+* all labels without an attribute have a neutral likelihood,
+* all labels marked ``[[likely]]`` have an equally positive likelihood, and
+* all labels marked ``[[unlikely]]`` have an equally negative likelihood.
+The neutral likelihood is the more likely of path execution than the negative
+likelihood. The positive likelihood is the more likely of path of execution
+than the neutral likelihood.
+
+These attributes have no effect on the generated code when using
+PGO (Profile-Guided Optimization) or at optimization level 0.
+
+In Clang, the attributes will be ignored if they're not placed on
+* the ``case`` or ``default`` label of a ``switch`` statement,
+* or on the substatement of an ``if`` or ``else`` statement,
+* or on the substatement of an ``for`` or ``while`` statement.
+The C++ Standard recommends to honor them on every statement in the
+path of execution, but that can be confusing:
+
+.. code-block:: c++
+
+  if (b) {
+    [[unlikely]] --b; // In the path of execution,
+                      // this branch is considered unlikely.
+  }
+
+  if (b) {
+    --b;
+    if(b)
+      return;
+    [[unlikely]] --b; // Not in the path of execution,
+  }                   // the branch has no likelihood information.
+
+  if (b) {
+    --b;
+    foo(b);
+    // Whether or not the next statement is in the path of execution depends
+    // on the declaration of foo():
+    // In the path of execution: void foo(int);
+    // Not in the path of execution: [[noreturn]] void foo(int);
+    // This means the likelihood of the branch depends on the declaration
+    // of foo().
+    [[unlikely]] --b;
+  }
+
+
+Below are some example usages of the likelihood attributes and their effects:
+
+.. code-block:: c++
+
+  if (b) [[likely]] { // Placement on the first statement in the branch.
+    // The compiler will optimize to execute the code here.
+  } else {
+  }
+
+  if (b)
+    [[unlikely]] b++; // Placement on the first statement in the branch.
+  else {
+    // The compiler will optimize to execute the code here.
+  }
+
+  if (b) {
+    [[unlikely]] b++; // Placement on the second statement in the branch.
+  }                   // The attribute will be ignored.
+
+  if (b) [[likely]] {
+    [[unlikely]] b++; // No contradiction since the second attribute
+  }                   // is ignored.
+
+  if (b)
+    ;
+  else [[likely]] {
+    // The compiler will optimize to execute the code here.
+  }
+
+  if (b)
+    ;
+  else
+    // The compiler will optimize to execute the next statement.
+    [[likely]] b = f();
+
+  if (b) [[likely]]; // Both branches are likely. A diagnostic is issued
+  else [[likely]];   // and the attributes are ignored.
+
+  if (b)
+    [[likely]] int i = 5; // Issues a diagnostic since the attribute
+                          // isn't allowed on a declaration.
+
+  switch (i) {
+    [[likely]] case 1:    // This value is likely
+      ...
+      break;
+
+    [[unlikely]] case 2:  // This value is unlikely
+      ...
+      [[fallthrough]];
+
+    case 3:               // No likelihood attribute
+      ...
+      [[likely]] break;   // No effect
+
+    case 4: [[likely]] {  // attribute on substatement has no effect
+      ...
+      break;
+      }
+
+    [[unlikely]] default: // All other values are unlikely
+      ...
+      break;
+  }
+
+  switch (i) {
+    [[likely]] case 0:    // This value and code path is likely
+      ...
+      [[fallthrough]];
+
+    case 1:               // No likelihood attribute, code path is neutral
+      break;              // falling through has no effect on the likelihood
+
+    case 2:               // No likelihood attribute, code path is neutral
+      [[fallthrough]];
+
+    [[unlikely]] default: // This value and code path are both unlikely
+      break;
+  }
+
+  for(int i = 0; i != size; ++i) [[likely]] {
+    ...               // The loop is the likely path of execution
+  }
+
+  for(const auto &E : Elements) [[likely]] {
+    ...               // The loop is the likely path of execution
+  }
+
+  while(i != size) [[unlikely]] {
+    ...               // The loop is the unlikely path of execution
+  }                   // The generated code will optimize to skip the loop body
+
+  while(true) [[unlikely]] {
+    ...               // The attribute has no effect
+  }                   // Clang elides the comparison and generates an infinite
+                      // loop
+
   }];
 }
 
@@ -1756,7 +2218,35 @@ Clang supports the ``__attribute__((preserve_access_index))``
 attribute for the BPF target. This attribute may be attached to a
 struct or union declaration, where if -g is specified, it enables
 preserving struct or union member access debuginfo indices of this
-struct or union, similar to clang ``__builtin_preserve_acceess_index()``.
+struct or union, similar to clang ``__builtin_preserve_access_index()``.
+  }];
+}
+def BTFDeclTagDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the ``__attribute__((btf_decl_tag("ARGUMENT")))`` attribute for
+all targets. This attribute may be attached to a struct/union, struct/union
+field, function, function parameter, variable or typedef declaration. If -g is
+specified, the ``ARGUMENT`` info will be preserved in IR and be emitted to
+dwarf. For BPF targets, the ``ARGUMENT`` info will be emitted to .BTF ELF
+section too.
+  }];
+}
+
+def BTFTypeTagDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+Clang supports the ``__attribute__((btf_type_tag("ARGUMENT")))`` attribute for
+all targets. It only has effect when ``-g`` is specified on the command line and
+is currently silently ignored when not applied to a pointer type (note: this
+scenario may be diagnosed in the future).
+
+The ``ARGUMENT`` string will be preserved in IR and emitted to DWARF for the
+types used in variable declarations, function declarations, or typedef
+declarations.
+
+For BPF targets, the ``ARGUMENT`` string will also be emitted to .BTF ELF
+section.
   }];
 }
 
@@ -1824,7 +2314,7 @@ only be added to function declarations and change the code generated
 by the compiler when directly calling the function. The ``near`` attribute
 allows calls to the function to be made using the ``jal`` instruction, which
 requires the function to be located in the same naturally aligned 256MB
-segment as the caller.  The ``long_call`` and ``far`` attributes are synonyms
+segment as the caller. The ``long_call`` and ``far`` attributes are synonyms
 and require the use of a different call sequence that works regardless
 of the distance between the functions.
 
@@ -1846,7 +2336,7 @@ and change the code generated by the compiler when directly calling
 the function. The ``short_call`` and ``near`` attributes are synonyms and
 allow calls to the function to be made using the ``jal`` instruction, which
 requires the function to be located in the same naturally aligned 256MB segment
-as the caller.  The ``long_call`` and ``far`` attributes are synonyms and
+as the caller. The ``long_call`` and ``far`` attributes are synonyms and
 require the use of a different call sequence that works regardless
 of the distance between the functions.
 
@@ -1857,130 +2347,277 @@ as ``-mlong-calls`` and ``-mno-long-calls``.
   }];
 }
 
-def IntelFPGADoublePumpAttrDocs : Documentation {
+def SYCLIntelDoublePumpAttrDocs : Documentation {
 let Category = DocCatVariable;
-  let Heading = "doublepump (IntelFPGA)";
+  let Heading = "intel::doublepump";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in a memory
 that is clocked at twice the rate of its accessors.
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::doublepump]] int var_doublepump;
+  }
+
+  struct foo {
+    [[intel::doublepump]] unsigned int doublepump[64];
+  };
+
   }];
 }
 
-def IntelFPGASinglePumpAttrDocs : Documentation {
+def SYCLIntelSinglePumpAttrDocs : Documentation {
 let Category = DocCatVariable;
-  let Heading = "singlepump (IntelFPGA)";
+  let Heading = "intel::singlepump";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in a memory
 that is clocked at the same rate as its accessors.
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::singlepump]] int var_singlepump;
+  }
+
+  struct foo {
+    [[intel::singlepump]] unsigned int singlepump[64];
+  };
+
   }];
 }
 
-def IntelFPGAMemoryAttrDocs : Documentation {
+def SYCLIntelMemoryAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "memory (IntelFPGA)";
+  let Heading = "intel::fpga_memory";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in memory
 rather than promoting to register(s).  If the optional parameter is specified
 it indicates what type of memory to use.
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::fpga_memory]] int memory;
+  }
+
+  struct foo {
+    [[intel::fpga_memory]] unsigned int memory[64];
+    [[intel::fpga_memory("MLAB")]] unsigned int memory_mlab[64];
+    [[intel::fpga_memory("BLOCK_RAM")]] unsigned int mem_blockram[32];
+  };
+
   }];
 }
 
-def IntelFPGARegisterAttrDocs : Documentation {
+def SYCLIntelRegisterAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "register (IntelFPGA)";
+  let Heading = "intel::fpga_register";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to promote the variable or struct member to register(s)
 if possible.
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::fpga_register]] int var_reg;
+  }
+
+  struct foo {
+    [[intel::fpga_register]] unsigned int reg[64];
+  };
+
   }];
 }
 
-def IntelFPGABankWidthAttrDocs : Documentation {
+def SYCLIntelBankWidthAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "bankwidth (IntelFPGA)";
+  let Heading = "intel::bankwidth";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in a memory
 with banks that are N bytes wide.
+
+.. code-block:: c++
+
+  struct foo {
+    [[intel::bankwidth(4)]] unsigned int bankwidth[32];
+  };
+
+  template <int N>
+  void bar() {
+    [[intel::bankwidth(N)]] unsigned int bank_bits_width;
+  }
+
   }];
 }
 
-def IntelFPGANumBanksAttrDocs : Documentation {
+def SYCLIntelNumBanksAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "numbanks (IntelFPGA)";
+  let Heading = "intel::numbanks";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in a memory
 with N banks.
+
+.. code-block:: c++
+
+  struct foo {
+    [[intel::numbanks(8)]] unsigned int numbanks[64];
+  };
+
+  template <int N>
+  void bar() {
+    [[intel::numbanks(N)]] unsigned int numbanks;
+  }
+
   }];
 }
 
-def IntelFPGAPrivateCopiesAttrDocs : Documentation {
+def SYCLIntelPrivateCopiesAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "private_copies (IntelFPGA)";
+  let Heading = "intel::private_copies";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to replicate the memory generated for the variable or
 struct member sufficiently to enable the specified number of simultaneous
 threads or loop iterations.
+
+.. code-block:: c++
+
+  struct foo {
+    [[intel::private_copies(4)]] unsigned int private_copies[64];
+  };
+
+  template <int N>
+  void bar() {
+    [[intel::private_copies(N)]] unsigned int private_copies;
+  }
+
   }];
 }
 
-def IntelFPGAMergeAttrDocs : Documentation {
+def SYCLIntelMergeAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "merge (IntelFPGA)";
+  let Heading = "intel::merge";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to merge the memories used to implement any variable or
 struct members that are annotated with this attribute and the same first
 argument. The second argument indicates if the memories should be merged in a
 depth-wise or width-wise manner.
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::merge("mrg1", "depth")]] int merge_depth;
+    [[intel::merge("mrg2", "width")]] int merge_width;
+  }
+
+  struct foo {
+    [[intel::merge("mrg1", "depth")]] unsigned int merge_depth[64];
+    [[intel::merge("mrg2", "width")]] unsigned int merge_width[64];
+  };
+
   }];
 }
 
-def IntelFPGAMaxReplicatesAttrDocs : Documentation {
+def SYCLIntelMaxReplicatesAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "max_replicates (IntelFPGA)";
+  let Heading = "intel::max_replicates";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to replicate the memory generated for the variable or
 struct member no more than the specified maximum number of times to enable
 simultaneous accesses from different load/store sites in the program.
+
+.. code-block:: c++
+
+  struct foo {
+    [[intel::max_replicates(2)]] unsigned int max_replicates[64];
+  };
+
+  template <int N>
+  void bar() {
+    [[intel::max_replicates(N)]] unsigned int max_replicates;
+  }
+
   }];
 }
 
-def IntelFPGASimpleDualPortAttrDocs : Documentation {
+def SYCLIntelSimpleDualPortAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "simple_dual_port (IntelFPGA)";
+  let Heading = "intel::simple_dual_port";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in a memory
 with simple dual port configuration (no memory port services both stores and
 loads).
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::simple_dual_port]] int var_dual_port;
+  }
+
+  struct foo {
+    [[intel::simple_dual_port]] unsigned int dual_port[64];
+  };
+
   }];
 }
 
-def IntelFPGABankBitsDocs : Documentation {
+def SYCLIntelBankBitsDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "bank_bits (IntelFPGA)";
+  let Heading = "intel::bank_bits";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 instructs the backend to implement the variable or struct member in a banked
 memory with 2^(N+1) banks, where the (b0, ..., bn) bits specified determine the
 pointer address bits to bank on.
+
+.. code-block:: c++
+
+  void bar() {
+    [[intel::bank_bits(2, 3)]] int var_bank_bits;
+  }
+
+  struct foo {
+    [[intel::bank_bits(1, 2)]] unsigned int bb_bb[4]
+    [[intel::bank_bits(2, 3, 4, 5)]] unsigned int bankbits[64];
+  };
+
+  template <int N>
+  void bar() {
+    [[intel::bank_bits(N, 3)]] unsigned int bank_bits;
+  }
+
   }];
 }
 
-def IntelFPGAForcePow2DepthAttrDocs : Documentation {
+def SYCLIntelForcePow2DepthAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "force_pow2_depth (IntelFPGA)";
+  let Heading = "intel::force_pow2_depth";
   let Content = [{
 This attribute may be attached to a variable or struct member declaration and
 provides explicit control over the geometry of memory blocks used in a given
 memory system.
+
+.. code-block:: c++
+
+  struct foo {
+    [[intel::force_pow2_depth(1)]] int var_force_p2d;
+    [[intel::force_pow2_depth(1)]] const int const_force_p2d[64] = {0, 1};
+  };
+
+  template <int N>
+  void bar() {
+    [[intel::force_pow2_depth(N)]] unsigned int reg_force_p2d[64];
+  }
 
 In the presence of this attribute, the compiler:
 
@@ -1988,9 +2625,22 @@ In the presence of this attribute, the compiler:
 force_pow2_depth is set to 1, and will prefer width-stitching of RAM blocks
 over depth-stitching.
 
+.. code-block:: c++
+
+  void func() {
+    [[intel::force_pow2_depth(1)]] unsigned int arr_force_p2d_1[64];
+  }
+
 2. Will not size the memory to the next largest power of 2 if force_pow2_depth
 is set to 0, and will prefer depth-stitching over width-stitching if RAM usage
 can be lowered.
+
+.. code-block:: c++
+
+  void func() {
+    [[intel::force_pow2_depth(0)]] unsigned int arr_force_p2d_0[64];
+  }
+
   }];
 }
 
@@ -2007,8 +2657,9 @@ lambda capture, or function object member, of the callable to which the
 attribute was applied. This effect is equivalent to annotating restrict on
 **all** kernel pointer arguments in an OpenCL or SPIR-V kernel.
 
-If ``intel::kernel_args_restrict`` is applied to a function called from a device
-kernel, the attribute is ignored and it is not propagated to a kernel.
+In SYCL 1.2.1 mode, the ``intel::kernel_args_restrict`` attribute is propagated
+from the function it is applied to onto the kernel which calls the function.
+In SYCL 2020 mode, the attribute is not propagated to the kernel.
 
 The attribute forms an unchecked assertion, in that implementations
 do not need to check/confirm the pre-condition in any way. If a user applies
@@ -2028,17 +2679,174 @@ program is ill-formed and no diagnostic is required.
 
 The ``intel::kernel_args_restrict`` attribute has an effect when applied to a
 function, and no effect otherwise.
+
+.. code-block:: c++
+
+  [[intel::kernel_args_restrict]] void func() {}
+
+  struct bar {
+    [[intel::kernel_args_restrict]] void operator()() const {}
+  };
+
   }];
 }
 
 def SYCLIntelNumSimdWorkItemsAttrDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "num_simd_work_items (IntelFPGA)";
+  let Heading = "intel::num_simd_work_items";
   let Content = [{
 Applies to a device function/lambda function. Indicates the number of work
 items that should be processed in parallel. Valid values are positive integers.
-If ``intelfpga::num_simd_work_items`` is applied to a function called from a
-device kernel, the attribute is ignored and it is not propagated to a kernel.
+
+In SYCL 1.2.1 mode, the ``intel::num_simd_work_items`` attribute is propagated
+from the function it is applied to onto the kernel which calls the function.
+In SYCL 2020 mode, the attribute is not propagated to the kernel.
+
+.. code-block:: c++
+
+  [[intel::num_simd_work_items(4)]] void foo() {}
+
+  template<int N>
+  [[intel::num_simd_work_items(N)]] void bar() {}
+
+  class Foo {
+  public:
+    [[intel::num_simd_work_items(6)]] void operator()() const {}
+  };
+
+  template <int N>
+  class Functor {
+  public:
+    [[intel::num_simd_work_items(N)]] void operator()() const {}
+  };
+
+If the ``reqd_work_group_size`` attribute is specified on a declaration along
+with ``num_simd_work_items``, the required work group size specified
+by ``num_simd_work_items`` attribute must evenly divide the index that
+increments fastest in the ``reqd_work_group_size`` attribute.
+
+The arguments to ``reqd_work_group_size`` are ordered based on which index
+increments the fastest. In OpenCL, the first argument is the index that
+increments the fastest, and in SYCL, the last argument is the index that
+increments the fastest.
+
+In OpenCL, all three arguments are required.
+
+In SYCL, the attribute accepts either one, two, or three arguments; in each
+form, the last (or only) argument is the index that increments fastest.
+The number of arguments passed to the attribute must match the dimensionality
+of the kernel the attribute is applied to.
+
+.. code-block:: c++
+
+  // Note, '64' is evenly divisible by '4'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  struct func {
+    [[intel::num_simd_work_items(4)]]
+    [[sycl::reqd_work_group_size(7, 4, 64)]]
+    void operator()() const {}
+  };
+
+  // Note, '8' is evenly divisible by '8'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  struct bar {
+    [[sycl::reqd_work_group_size(1, 1, 8)]]
+    [[intel::num_simd_work_items(8)]]
+    void operator()() const {}
+  };
+
+  // Note, '10' is evenly divisible by '5'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  [[cl::reqd_work_group_size(7, 5, 10)]]
+  [[intel::num_simd_work_items(5)]] void fun2() {}
+
+  // Note, '8' is evenly divisible by '4'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  [[intel::num_simd_work_items(4)]]
+  [[cl::reqd_work_group_size(5, 4, 8)]] void fun3() {}
+
+  // Note, '8' is evenly divisible by '8'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  struct func1 {
+    [[intel::num_simd_work_items(8)]]
+    [[cl::reqd_work_group_size(1, 1, 8)]]
+    void operator()() const {}
+  };
+
+  // Note, '8' is evenly divisible by '4'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  struct bar1 {
+    [[cl::reqd_work_group_size(7, 4, 8)]]
+    [[intel::num_simd_work_items(4)]]
+    void operator()() const {}
+  };
+
+  // Note, '4' is evenly divisible by '2'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  [[intel::num_simd_work_items(2)]]
+  __attribute__((reqd_work_group_size(3, 2, 4))) void test();
+
+  // Note, '8' is evenly divisible by '2'; in SYCL, the last
+  // argument to the attribute is the one which increments fastest.
+  __attribute__((reqd_work_group_size(3, 2, 8)))
+  [intel::num_simd_work_items(2)]] void test();
+
+  }];
+}
+
+def SYCLIntelUseStallEnableClustersAttrDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "intel::use_stall_enable_clusters";
+  let Content = [{
+The ``intel::use_stall_enable_clusters`` attribute requires SYCL.
+When applied to a lambda function, function definition, or function call
+operator (of a function object) on device, this requests, to the
+extent possible, that statically-scheduled clusters handle stalls using a
+stall-enable signal to freeze computation within the cluster. This attribute
+is ignored on the host.
+
+The ``intel::use_stall_enable_clusters`` attribute takes no argument and has an
+effect when applied to a function, and no effect otherwise.
+
+If ``intel::use_stall_enable_clusters`` is applied to a function called from a device
+kernel, the attribute is ignored and it is not propagated to the kernel.
+
+.. code-block:: c++
+
+  class Foo {
+  public:
+    [[intel::use_stall_enable_clusters]] void operator()() const {}
+  };
+
+  [[intel::use_stall_enable_clusters]] void test() {}
+
+  struct FuncObj {
+    [[intel::use_stall_enable_clusters]] void operator()() const {}
+  };
+
+  class Functor
+  {
+      [[intel::use_stall_enable_clusters]] void operator()(item<1> item)
+      {
+          /* kernel code */
+      }
+  }
+
+The ``intel::use_stall_enable_clusters`` attribute supports a nonconforming
+behavior when applied to a lambda in the type position.
+
+.. code-block:: c++
+
+  void test1() {
+    auto lambda = []() [[intel::use_stall_enable_clusters]]{};
+    lambda();
+  }
+
+  kernel<class kernel_name>(
+  []() [[intel::use_stall_enable_clusters]] {
+       /* kernel code */
+  });
+
   }];
 }
 
@@ -2055,64 +2863,304 @@ generated code appropriately for the kernel to which attribute is applied.
 While semantic of this attribute is the same between OpenCL and SYCL,
 spelling is a bit different: 
 
-SYCL 1.2.1 describes ``[[cl::reqd_work_group_size(X, Y, Z)]]`` spelling: this
-attribute is legal on device functions and is propagated down to any caller of 
-those device functions, such that the kernel attributes are the sum of all 
-attributes of all device functions called in this kernel.
-See section 6.7 Attributes for more details.
+SYCL 2020 describes the ``[[sycl::reqd_work_group_size(X, Y, Z)]]`` spelling
+in detail. This attribute indicates that the kernel must be launched with the
+specified work-group size. The order of the arguments matches the constructor
+of the group class. Each argument to the attribute must be an integral constant
+expression. The dimensionality of the attribute variant used must match the
+dimensionality of the work-group used to invoke the kernel. This spelling
+allows the Y and Z arguments to be optional. If not provided by the user, the
+value of Y and Z defaults to 1. See section 5.8.1 Kernel Attributes for more
+details.
 
-As Intel extension, ``[[intel::reqd_work_group_size(X, Y, Z)]]`` spelling is allowed
-which features optional arguments `Y` and `Z`, those simplifies its usage if
-only 1- or 2-dimensional ND-range is assumed by a programmer. These arguments
-defaults to ``1``.
+In SYCL 1.2.1 mode, the ``cl::reqd_work_group_size`` and
+``sycl::reqd_work_group_size`` attributes are propagated from the function they
+are applied to onto the kernel which calls the function. In SYCL 2020 mode, the
+attributes are not propagated to the kernel.
 
-In OpenCL C, this attribute is available in GNU spelling
+.. code-block:: c++
+
+  [[sycl::reqd_work_group_size(4, 4, 4)]] void foo() {}
+
+  class Foo {
+  public:
+    [[sycl::reqd_work_group_size(2)]] void operator()() const {} // optional arguments default to 1
+  };
+
+  template <int N, int N1, int N2>
+  class Functor {
+  public:
+    [[sycl::reqd_work_group_size(N, N1, N2)]] void operator()() const {}
+  };
+
+  template <int N, int N1, int N2>
+  [[sycl::reqd_work_group_size(N, N1, N2)]] void func() {}
+
+The ``[[cl::reqd_work_group_size(X, Y, Z)]]`` and
+``__attribute__((reqd_work_group_size(X, Y, Z)))`` spellings are both
+deprecated in SYCL 2020.
+
+In OpenCL C, this attribute is available with the GNU spelling
 (``__attribute__((reqd_work_group_size(X, Y, Z)))``), see section
 6.7.2 Optional Attribute Qualifiers of OpenCL 1.2 specification for details.
+
+.. code-block:: c++
+
+  __kernel __attribute__((reqd_work_group_size(8, 16, 32))) void test() {}
+
+  }];
+}
+
+def WorkGroupSizeHintAttrDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Applies to a device function/lambda function. Hint to the compiler on the work-
+group size most likely to be used when launching the kernel at runtime. Each
+argument must be a nonzero integral constant expression whose value is
+unsigned. The number of dimensional values defined provide additional
+information to the compiler on the dimensionality most likely to be used when
+launching the kernel at runtime.
+
+The GNU spelling is deprecated in SYCL mode.
+
+.. code-block:: c++
+
+  [[sycl::work_group_size_hint(4, 4, 4)]] void foo() {}
+
+  class Foo {
+  public:
+    [[sycl::work_group_size_hint(2, 2, 2)]] void operator()() const {}
+  };
+
+The arguments to ``work_group_size_hint`` are ordered based on which index
+increments the fastest. In OpenCL, the first argument is the index that
+increments the fastest, and in SYCL, the last argument is the index that
+increments the fastest.
+
+In OpenCL C, this attribute is available with the GNU spelling
+(``__attribute__((work_group_size_hint(X, Y, Z)))``) and all 
+three arguments are required.
+
+In SYCL, the attribute accepts either one, two, or three arguments; in each
+form, the last (or only) argument is the index that increments fastest. The
+number of arguments passed to the attribute must match the dimensionality of
+the kernel the attribute is applied to.
+
+In SYCL 1.2.1 mode, the ``sycl::work_group_size_hint`` attribute is propagated 
+from the function it is applied to onto the kernel which calls the function. 
+In SYCL 2020 mode, the attribute is not propagated to the kernel.
   }];
 }
 
 def SYCLIntelMaxWorkGroupSizeAttrDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "max_work_group_size (IntelFPGA)";
+  let Heading = "intel::max_work_group_size";
   let Content = [{
 Applies to a device function/lambda function. Indicates the maximum dimensions
 of a work group. Values must be positive integers. This is similar to
 reqd_work_group_size, but allows work groups that are smaller or equal to the
 specified sizes.
-If ``intelfpga::max_work_group_size`` is applied to a function called from a
-device kernel, the attribute is ignored and it is not propagated to a kernel.
+
+In SYCL 1.2.1 mode, the ``intel::max_work_group_size`` attribute is propagated
+from the function it is applied to onto the kernel which calls the function.
+In SYCL 2020 mode, the attribute is not propagated to the kernel.
+
+.. code-block:: c++
+
+  [[intel::max_work_group_size(4, 4, 4)]] void foo() {}
+
+  class Foo {
+  public:
+    [[intel::max_work_group_size(2, 2, 2)]] void operator()() const {}
+  };
+
+  template <int N, int N1, int N2>
+  class Functor {
+  public:
+    [[intel::max_work_group_size(N, N1, N2)]] void operator()() const {}
+  };
+
+  template <int N, int N1, int N2>
+  [[intel::max_work_group_size(N, N1, N2)]] void func() {}
+
   }];
 }
 
 def SYCLIntelMaxGlobalWorkDimAttrDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "max_global_work_dim (IntelFPGA)";
+  let Heading = "intel::max_global_work_dim";
   let Content = [{
 Applies to a device function/lambda function or function call operator (of a
 function object). Indicates the largest valid global work dimension that will be
 accepted when running the kernel on a device. Valid values are integers in a
-range of [0, 3]. A kernel with max_global_work_dim(0) must be invoked with a
-'single_task' and if ``intelfpga::max_work_group_size`` or
+range of [0, 3].
+
+In SYCL 1.2.1 mode, the ``intel::max_global_work_dim`` attribute is propagated
+from the function it is applied to onto the kernel which calls the function.
+In SYCL 2020 mode, the attribute is not propagated to the kernel.
+
+.. code-block:: c++
+
+  [[intel::max_global_work_dim(1)]] void foo() {}
+
+  template<int N>
+  [[intel::max_global_work_dim(N)]] void bar() {}
+
+  class Foo {
+  public:
+    [[intel::max_global_work_dim(1)]] void operator()() const {}
+  };
+
+  template <int N>
+  class Functor {
+  public:
+    [[intel::max_global_work_dim(N)]] void operator()() const {}
+  };
+
+A kernel with ``intel::max_global_work_dim(0)`` must be invoked with a
+'single_task' and if ``intel::max_work_group_size`` or
 ``cl::reqd_work_group_size`` are applied to the kernel as well - they shall
 have arguments of (1, 1, 1).
-If ``intelfpga::max_global_work_dim`` is applied to a function called from a
-device kernel, the attribute is ignored and it is not propagated to a kernel.
+
+.. code-block:: c++
+
+  struct TRIFuncObjGood {
+    [[intel::max_global_work_dim(0)]]
+    [[intel::max_work_group_size(1, 1, 1)]]
+    [[cl::reqd_work_group_size(1, 1, 1)]]
+    void operator()() const {}
+  };
+
+  }];
+}
+
+def SYCLIntelSchedulerTargetFmaxMhzAttrDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "intel::scheduler_target_fmax_mhz";
+  let Content = [{
+Applies to a device function/lambda function. Indicates that the kernel should
+be pipelined so as to achieve the specified target clock frequency (Fmax) of N
+MHz. The argument N may be a template parameter. This attribute should be
+ignored for the FPGA emulator device.
+
+``[[intel::scheduler_target_fmax_mhz(N)]]``
+Valid values of N are integers in the range [0, 1048576]. The upper limit,
+although too high to be a realistic value for frequency, is chosen to be future
+proof. The FPGA backend emits a diagnostic message if the passed value is
+unachievable by the device.
+
+This attribute enables communication of the desired maximum frequency of the
+device operation, guiding the FPGA backend to insert the appropriate number of
+registers to break-up the combinational logic circuit, and thereby controlling
+the length of the longest combinational path.
+
+In SYCL 1.2.1 mode, the ``intel::scheduler_target_fmax_mhz`` attribute is
+propagated from the function it is applied to onto the kernel which calls the
+function. In SYCL 2020 mode, the attribute is not propagated to the kernel.
+
+.. code-block:: c++
+
+  [[intel::scheduler_target_fmax_mhz(4)]] void foo() {}
+
+  template<int N>
+  [[intel::scheduler_target_fmax_mhz(N)]] void bar() {}
+
+  class Foo {
+  public:
+    [[intel::scheduler_target_fmax_mhz(6)]] void operator()() const {}
+  };
+
+  template <int N>
+  class Functor {
+  public:
+    [[intel::scheduler_target_fmax_mhz(N)]] void operator()() const {}
+  };
+
   }];
 }
 
 def SYCLIntelNoGlobalWorkOffsetAttrDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "no_global_work_offset (IntelFPGA)";
+  let Heading = "intel::no_global_work_offset";
   let Content = [{
 Applies to a device function/lambda function or function call operator (of a
 function object). If 1, compiler doesn't use the global work offset values for
 the device function. Valid values are 0 and 1. If used without argument, value
 of 1 is set implicitly.
+
+In SYCL 1.2.1 mode, the ``intel::no_global_work_offset`` attribute is
+propagated from the function it is applied to onto the kernel which calls the
+function. In SYCL 2020 mode, the attribute is not propagated to the kernel.
+
+.. code-block:: c++
+
+  [[intel::no_global_work_offset]]
+  // identical to [[intel::no_global_work_offset(1)]]
+  void quux() {}
+
+  [[intel::no_global_work_offset(0)]] void foo() {}
+
+  class Foo {
+  public:
+    [[intel::no_global_work_offset(1)]] void operator()() const {}
+  };
+
+  template <int N>
+  class Functor {
+  public:
+    [[intel::no_global_work_offset(N)]] void operator()() const {}
+  };
+
+  template <int N>
+  [[intel::no_global_work_offset(N)]] void func() {}
+
   }];
 }
 
-def SYCLFPGAPipeDocs : Documentation {
+def SYCLDeviceGlobalAttrDocs : Documentation {
+  let Category = DocCatType;
+  let Heading = "__sycl_detail__::device_global";
+  let Content = [{
+This attribute is part of support for SYCL device_global feature.
+[[__sycl_detail__::device_global]] attribute is used for checking restrictions
+on variable declarations using the device_global type instead of the class name.
+Global or static variables of type decorated with this attribute have
+`sycl-unique-id`, an LLVM IR attribute, added to the definition of each such
+variable, which provides a unique string identifier using
+__builtin_sycl_unique_stable_id.
+We do not intend to support this as a general attribute that user code can use,
+so we have this attribute in sycl_detail namespace.
+
+.. code-block:: c++
+
+  template<typename T>
+  struct [[__sycl_detail__::device_global]] device_global {}
+
+  device_global<int> Foo;
+  }];
+}
+
+def SYCLGlobalVariableAllowedAttrDocs : Documentation {
+  let Category = DocCatType;
+  let Heading = "__sycl_detail__::global_variable_allowed";
+  let Content = [{
+This attribute is part of support for SYCL device_global feature.
+[[__sycl_detail__::global_variable_allowed]] attribute is used to avoid
+diagnosing an error when global or static variables of type decorated with this
+attribute are referenced in device code. We do not intend to support this as a
+general attribute that user code can use, therefore it is wrapped in
+sycl_detail namespace.
+
+.. code-block:: c++
+  
+  template<typename T>
+  struct [[__sycl_detail__::global_variable_allowed]] device_global {}
+  
+  device_global<int> Foo;
+  }];
+}
+
+def SYCLIntelPipeDocs : Documentation {
   let Category = DocCatStmt;
   let Heading = "pipe (read_only, write_only)";
   let Content = [{
@@ -2136,9 +3184,9 @@ with which a pipe interfaces. The id argument is the name of the I/O interface.
   }];
 }
 
-def SYCLIntelFPGAIVDepAttrDocs : Documentation {
+def SYCLIntelIVDepAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "ivdep";
+  let Heading = "intel::ivdep";
   let Content = [{
 This attribute applies to a loop. If no additional arguments are provided, it
 indicates that the backend may assume that the loop carries no dependences.
@@ -2155,55 +3203,198 @@ is unspecified and is therefore considered infinite.
 In case of ivdep being applied both w/o an array variable and for a particular
 array, the array variables that were not designated a separate ivdep will receive
 the no-array ivdep's safelen, with the correspondent treatment by the backend.
+The ``[[intel::ivdep]]`` attribute applies a safelen value of 0 or 1 that has
+no effect on the loop and emits a suppressible warning when safelen value of 0
+or 1 is used.
+
+.. code-block:: c++
+
+  void foo() {
+    int a[10];
+    [[intel::ivdep]] for (int i = 0; i != 10; ++i) { }
+    [[intel::ivdep(2)]] for (int i = 0; i != 10; ++i) { }
+    [[intel::ivdep(a)]] for (int i = 0; i != 10; ++i) { }
+    [[intel::ivdep(a, 2)]] for (int i = 0; i != 10; ++i) { }
+  }
+
+  template<int N>
+  void bar() {
+    [[intel::ivdep(N)]] for(;;) { }
+  }
+
   }];
 }
 
-def SYCLIntelFPGAIIAttrDocs : Documentation {
+def SYCLIntelInitiationIntervalAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "ii";
+  let Heading = "intel::initiation_interval";
   let Content = [{
-This attribute applies to a loop. Indicates that the loop should be pipelined
-with an initiation interval of N. N must be a positive integer. Cannot be
-applied multiple times to the same loop.
+This attribute applies to a loop or a function. Indicates that the loop or
+function should be pipelined with an initiation interval of N. N must be a
+positive integer. Cannot be applied multiple times to the same loop or function.
+Cannot be used on the same loop or function in conjunction with
+disable_loop_pipelining.
+
+The ``[[intel::ii]]`` attribute spelling is a deprecated synonym for
+``[[intel::initiation_interval]]`` and will be removed in the future.
+
+.. code-block:: c++
+
+  void foo() {
+    int var = 0;
+    [[intel::initiation_interval(4)]] for (int i = 0; i < 10; ++i) var++;
+  }
+
+  [[intel::initiation_interval(4)]] void foo1 { }
+
+  template<int N>
+  void bar() {
+    [[intel::initiation_interval(N)]] for(;;) { }
+  }
+
+  template<int N>
+  [[intel::initiation_interval(N)]] void bar1 { }
+
   }];
 }
 
-def SYCLIntelFPGAMaxConcurrencyAttrDocs : Documentation {
+def SYCLIntelMaxConcurrencyAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "max_concurrency";
+  let Heading = "intel::max_concurrency";
   let Content = [{
-This attribute applies to a loop. Indicates that the loop should allow no more
-than N threads or iterations to execute it simultaneously. N must be a non
-negative integer. '0' indicates the max_concurrency case to be unbounded. Cannot
-be applied multiple times to the same loop.
+This attribute applies to a loop or a function. It indicates that the
+loop/function should allow no more than N threads or iterations to execute it
+simultaneously. N must be a non negative integer. '0' indicates the
+max_concurrency case to be unbounded. Cannot be applied multiple times to the
+same loop or function, or in conjunction with ``disable_loop_pipelining``.
+
+.. code-block:: c++
+
+  void foo() {
+    int a[10];
+    [[intel::max_concurrency(2)]] for (int i = 0; i != 10; ++i) a[i] = 0;
+  }
+
+  [[intel::max_concurrency(2)]] void foo1 { }
+  template<int N>
+  void bar() {
+    [[intel::max_concurrency(N)]] for(;;) { }
+  }
+  template<int N>
+  [[intel::max_concurrency(N)]] void bar1() { }
+
   }];
 }
 
-def SYCLIntelFPGALoopCoalesceAttrDocs : Documentation {
+def SYCLIntelLoopCoalesceAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "loop_coalesce";
+  let Heading = "intel::loop_coalesce";
   let Content = [{
 This attribute applies to a loop. Indicates that the loop nest should be
 coalesced into a single loop without affecting functionality. Parameter N is
 optional. If specified, it shall be a positive integer, and indicates how many
 of the nested loop levels should be coalesced.
+
+.. code-block:: c++
+
+  void foo() {
+    int a[10];
+    [[intel::loop_coalesce]] for (int i = 0; i != 10; ++i) a[i] = 0;
+  }
+
+  template<int N>
+  void loop_coalesce() {
+    int j = 0, n = 48;
+    [[intel::loop_coalesce(N)]]
+    while (j < n) {
+      if (j % 4) {
+        ++j;
+        continue;
+      }
+    }
+    j = 0;
+    [[intel::loop_coalesce]]
+    while (j < n) {
+      if (j % 6) {
+        ++j;
+        continue;
+      }
+    }
+  }
+
   }];
 }
 
-def SYCLIntelFPGADisableLoopPipeliningAttrDocs : Documentation {
+def SYCLIntelDisableLoopPipeliningAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "disable_loop_pipelining";
+  let Heading = "intel::disable_loop_pipelining";
   let Content = [{
-This attribute applies to a loop. Disables pipelining of the loop data path,
-causing the loop to be executed serially. Cannot be used on the same loop in
-conjunction with max_interleaving, speculated_iterations, max_concurrency, ii
-or ivdep.
+This attribute applies to a loop or a function. Takes no arguments and
+disables pipelining of the loop or function data path, causing the loop
+or function to be executed serially. Cannot be used on the same loop or
+function, or in conjunction with ``max_interleaving``,
+``speculated_iterations``, ``max_concurrency``, ``initiation_interval``,
+``ivdep``, ``max_reinvocation_delay`` or ``enable_loop_pipelining`` attribute.
+
+.. code-block:: c++
+
+  void foo() {
+    int var = 0;
+    [[intel::disable_loop_pipelining]] for (int i = 0; i < 10; ++i) var++;
+  }
+
+  [[intel::disable_loop_pipelining]] void foo1() { }
+
   }];
 }
 
-def SYCLIntelFPGAMaxInterleavingAttrDocs : Documentation {
+def SYCLIntelLoopCountAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "max_interleaving";
+  let Heading = "intel::loop_count_min, intel::loop_count_max, intel::loop_count_avg, intel::loop_count";
+  let Content = [{
+The loop count attributes specify the minimum, maximum, or average number of
+iterations for a ``for`` loop. These are hints that the user specify that can be
+used by some of the loop optimization to make decisions such as if the loop
+should be unrolled. It is a way for the user to provide some information without
+using PGO.
+
+.. code-block:: c++
+
+  void foo(int *array, size_t n) {
+    [[intel::loop_count_min(4)]] for (int i = 0; i < n; ++i) array[i] = 0;
+  }
+
+  void zoo(int *array, size_t n) {
+    [[intel::loop_count_max(10)]] for (int i = 0; i < n; ++i) array[i] = 0;
+  }
+
+  void count(int *array, size_t n) {
+    [[intel::loop_count(20)]] for (int i = 0; i < n; ++i) array[i] = 0;
+  }
+
+  void goo(int *array, size_t n) {
+    [[intel::loop_count_min(3)]]
+    [[intel::loop_count_max(10)]]
+    [[intel::loop_count_avg(5)]]
+    [[intel::loop_count(20)]]
+    for (int i = 0; i < n; ++i) array[i] = 0;
+  }
+
+  template<int N>
+  void bar() {
+    [[intel::loop_count_avg(N)]] for(;;) { }
+  }
+
+  template<int A>
+  void func() {
+    [[intel::loop_count(A)]] for(;;) { }
+  }
+  }];
+}
+
+def SYCLIntelMaxInterleavingAttrDocs : Documentation {
+  let Category = DocCatVariable;
+  let Heading = "intel::max_interleaving";
   let Content = [{
 This attribute applies to a loop. Places a maximum limit N on the number of
 interleaved invocations of an inner loop by an outer loop (note, this does not
@@ -2211,18 +3402,406 @@ mean that this attribute can only be applied to inner loops in user code - outer
 loops in user code may still be contained in an implicit loop due to NDRange).
 Parameter N is mandatory, and shall be non-negative integer. Cannot be
 used on the same loop in conjunction with disable_loop_pipelining.
+
+.. code-block:: c++
+
+  void foo() {
+    int a[10];
+    [[intel::max_interleaving(4)]] for (int i = 0; i != 10; ++i) a[i] = 0;
+  }
+
+  template<int N>
+  void bar() {
+    [[intel::max_interleaving(N)]] for(;;) { }
+  }
+
   }];
 }
 
-def SYCLIntelFPGASpeculatedIterationsAttrDocs : Documentation {
+def SYCLIntelSpeculatedIterationsAttrDocs : Documentation {
   let Category = DocCatVariable;
-  let Heading = "speculated_iterations";
+  let Heading = "intel::speculated_iterations";
   let Content = [{
 This attribute applies to a loop. Specifies the number of concurrent speculated
 iterations that will be in flight for a loop invocation (i.e. the exit
 condition for these iterations will not have been evaluated yet).
 Parameter N is mandatory, and may either be 0, or a positive integer. Cannot be
 used on the same loop in conjunction with disable_loop_pipelining.
+
+.. code-block:: c++
+
+  void foo() {
+    int var = 0;
+    [[intel::speculated_iterations(4)]] for (int i = 0; i < 10; ++i) var++;
+  }
+
+  template<int N>
+  void bar() {
+    [[intel::speculated_iterations(N)]] for(;;) { }
+  }
+
+  }];
+}
+
+def SYCLIntelNofusionAttrDocs : Documentation {
+  let Category = DocCatVariable;
+  let Heading = "intel::nofusion";
+  let Content = [{
+This attribute applies to a loop. Indicates that the annotated
+loop should not be fused with any adjacent loop.
+
+.. code-block:: c++
+
+  void foo() {
+    [[intel::nofusion]] for (int i=0; i<10;++i) { }
+  }
+
+  void nofusion() {
+    int a1[10];
+    for (int i = 0; i < 10; ++i) {
+    [[intel::nofusion]] for (int j = 0; j < 10; ++j) {
+      a1[i] += a1[j];
+    }
+  }
+
+  }];
+}
+
+def SYCLIntelMaxReinvocationDelayAttrDocs : Documentation {
+  let Category = DocCatVariable;
+  let Heading = "intel::max_reinvocation_delay";
+  let Content = [{
+This attribute applies to a loop. Specifies the maximum number of cycles allowed
+on the delay between the launch of the last iteration of a loop invocation and
+the launch of the first iteration of a new loop invocation. Parameter N is
+mandatory, and is a positive integer. Cannot be used on the same loop in
+conjunction with disable_loop_pipelining.
+
+.. code-block:: c++
+
+  void foo() {
+    int var = 0;
+    [[intel::max_reinvocation_delay(1)]]
+    for (int i = 0; sycl::log10((float)(x)) < 10; i++) var++;
+  }
+
+  template<int N>
+  void bar() {
+    [[intel::max_reinvocation_delay(N)]] for(;;) { }
+  }
+  }];
+}
+
+def SYCLIntelEnableLoopPipeliningAttrDocs : Documentation {
+  let Category = DocCatVariable;
+  let Heading = "intel::enable_loop_pipelining";
+  let Content = [{
+The ``enable_loop_pipelining`` attribute applies to a loop in SYCL device code.
+Takes no arguments and enables pipelining of the loop. This attribute is useful
+in the low-area flow, in which all loops are unpipelined by default. Cannot be
+used on the same loop in conjunction with ``disable_loop_pipelining`` attribute.
+
+.. code-block:: c++
+
+  void bar() {
+    int a[10];
+    [[[intel::enable_loop_pipelining]] for (int i = 0; i != 10; ++i) a[i] = 0;
+  }
+
+  void Array(int *array, size_t n) {
+    [[intel::enable_loop_pipelining]] for (int i = 0; i < n; ++i) array[i] = 0;
+  }
+
+  void count () {
+    int a1[10], i = 0;
+    [[intel::enable_loop_pipelining]] while (i < 10) {
+      a1[i++] = 3;
+    }
+  }
+
+  void check() {
+    int a = 10;
+    [[intel::enable_loop_pipelining]] do {
+      a = a + 1;
+    } while (a < 20);
+  }
+
+  }];
+}
+
+def SYCLIntelLoopFuseDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "loop_fuse, loop_fuse_independent";
+  let Content = [{
+``[[intel::loop_fuse(N)]]`` and ``[[intel::loop_fuse_independent(N)]]`` attributes apply
+to a function/lambda function. It is a strong request, to the extent possible, to fuse
+the loops within the function, that are contained in at most N-1 other loops within the
+function. If the optional parameter N is omitted, it is a strong request, to the extent
+possible, to fuse loops within the function that are not contained in any other loop
+within the function. ``[[intel::loop_fuse_independent(N)]]`` also guarantees that fusion
+safety analysis can ignore negative-distance dependences between these loops.
+
+.. code-block:: c++
+
+  [[intel::loop_fuse(N)]]
+  int foo() {}
+
+  [[intel::loop_fuse_independent(N)]]
+  int foo() {}
+
+
+``[[intel::loop_fuse(N)]]`` and ``[[intel::loop_fuse_independent(N)]]`` takes one optional
+parameter that is a constant unsigned integer expression. The parameter N may be a template
+parameter.
+
+  }];
+}
+
+def SYCLAddIRAttributesFunctionDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "add_ir_attributes_function";
+  let Content = [{
+This attribute can be applied to a function declaration or a function definition
+to add LLVM IR attributes to the resulting LLVM IR function.
+The attribute must contain N*2 arguments where N is the number of IR attributes
+to add to the resulting LLVM IR function declaration. Each of the first N of
+these arguments must be either string literals or ``constexpr const char *``.
+These will be the names of the added LLVM IR attributes. The following N
+arguments are the values of the LLVM IR attributes and must be integer, floating
+point, character, boolean, ``const char *``, or an enumeration as either a
+literal or ``constexpr`` value.
+No LLVM IR attribute is generated if the attribute name is an empty string.
+
+.. code-block:: c++
+
+  [[__sycl_detail__::add_ir_attributes_function("Attr1", "Attr2", true, 1)]]
+  void foo() {}
+  // Resulting LLVM IR function definition of foo will have the attributes
+  // "Attr1"="true" and "Attr2"="1".
+
+Optionally, the first argument of the attribute can be an initializer list
+containing only string literals. This initializer list acts as a filter,
+allowing only attributes with names in the initializer list to be generated.
+If this intializer list is present, the attribute must have N*2+1 arguments,
+where the last N*2 are as described above.
+
+.. code-block:: c++
+
+  [[__sycl_detail__::add_ir_attributes_function(
+      {"Attr2"}, "Attr1", "Attr2", true, 1)]]
+  void foo() {}
+  // Resulting LLVM IR function definition of foo will only have the
+  // "Attr2"="1" attribute.
+
+.. Note:: This attribute will only generate LLVM IR attributes in SYCL device
+  code.
+
+.. Note:: This attribute is not currently allowed on virtual, overridden, final,
+  defaulted, and deleted functions.
+
+.. Note:: This attribute is intended as an internal implementation detail and is
+  not intended to be used by external users.
+  }];
+}
+
+def SYCLAddIRAttributesKernelParameterDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "add_ir_attributes_kernel_parameter";
+  let Content = [{
+This attribute can be applied to parameters of the ``__init`` member function
+associated with a class with the ``__attribute__((sycl_special_class))``. If a
+parameter of a kernel function was adopted from an ``__init`` member function,
+the attribute will cause the corresponding parameter in the generated LLVM IR to
+have the LLVM IR attributes specified by the arguments of the attribute.
+The attribute must contain N*2 arguments where N is the number of IR attributes
+to add to the resulting LLVM IR function parameter declaration. Each of the
+first N of these arguments must be either string literals or
+``constexpr const char *``. These will be the names of the added LLVM IR
+attributes. The following N arguments are the values of the LLVM IR attributes
+and must be integer, floating point, character, boolean, ``const char *``, or
+an enumeration as either a literal or ``constexpr`` value.
+No LLVM IR attribute is generated if the attribute name is an empty string.
+
+.. code-block:: c++
+
+  class __attribute__((sycl_special_class)) Foo {
+  public:
+    ...
+
+  #ifdef __SYCL_DEVICE_ONLY__
+    void __init(
+        [[__sycl_detail__::add_ir_attributes_kernel_parameter(
+            "Attr1", "Attr2", "Attribute value", 3.14)]]
+        int x) {
+      ...
+    }
+  #endif
+  };
+  // Resulting LLVM IR kernel function using Foo will have a parameter for x
+  // with attributes "Attr1"="Attribute value" and "Attr2"="3.14".
+
+Optionally, the first argument of the attribute can be an initializer list
+containing only string literals. This initializer list acts as a filter,
+allowing only attributes with names in the initializer list to be generated.
+If this intializer list is present, the attribute must have N*2+1 arguments,
+where the last N*2 are as described above.
+
+.. code-block:: c++
+
+  class __attribute__((sycl_special_class)) Foo {
+  public:
+    ...
+
+  #ifdef __SYCL_DEVICE_ONLY__
+    void __init(
+        [[__sycl_detail__::add_ir_attributes_kernel_parameter(
+            {"Attr1"}, "Attr1", "Attr2", "Attribute value", 3.14)]]
+        int x) {
+      ...
+    }
+  #endif
+  };
+  // Resulting LLVM IR kernel function using Foo will have a parameter for x
+  // with only the "Attr1"="Attribute value" attribute.
+
+.. Note:: This attribute will only generate LLVM IR attributes in SYCL device
+  code.
+
+.. Note:: This attribute is intended as an internal implementation detail and is
+  not intended to be used by external users.
+  }];
+}
+
+def SYCLAddIRAttributesGlobalVariableDocs : Documentation {
+  let Category = DocCatDecl;
+  let Heading = "add_ir_attributes_global_variable";
+  let Content = [{
+This attribute can be applied to a class definition. Global variables of a class
+with this attribute will have the LLVM IR attributes specified by the arguments
+of the attribute.
+The attribute must contain N*2 arguments where N is the number of IR attributes
+to add to the resulting LLVM IR global variable declaration. Each of the first N
+of these arguments must be either string literals or ``constexpr const char *``.
+These will be the names of the added LLVM IR attributes. The following N
+arguments are the values of the LLVM IR attributes and must be integer, floating
+point, character, boolean, ``const char *``, or an enumeration as either a
+literal or ``constexpr`` value.
+No LLVM IR attribute is generated if the attribute name is an empty string.
+
+.. code-block:: c++
+
+  template <typename... NameValues> struct
+  #ifdef __SYCL_DEVICE_ONLY__
+      [[__sycl_detail__::add_ir_attributes_global_variable(
+          "Attr1", "Attr2", "Attr3", false, 1.234, true)]]
+  #endif
+      Foo {...};
+  Foo a;
+  // Resulting LLVM IR global variable for a will have the attributes
+  // "Attr1"="false", "Attr2"="1.234", and "Attr3"="true".
+
+Optionally, the first argument of the attribute can be an initializer list
+containing only string literals. This initializer list acts as a filter,
+allowing only attributes with names in the initializer list to be generated.
+If this intializer list is present, the attribute must have N*2+1 arguments,
+where the last N*2 are as described above.
+
+.. code-block:: c++
+
+  template <typename... NameValues> struct
+  #ifdef __SYCL_DEVICE_ONLY__
+      [[__sycl_detail__::add_ir_attributes_global_variable(
+          {"Attr1", "Attr3"}, "Attr1", "Attr2", "Attr3", false, 1.234, true)]]
+  #endif
+      Foo {...};
+  Foo a;
+  // Resulting LLVM IR global variable for a will have the attributes
+  // "Attr1"="false" and "Attr3"="true".
+
+.. Note:: This attribute will only generate LLVM IR attributes in SYCL device
+  code.
+
+.. Note:: This attribute is intended as an internal implementation detail and is
+  not intended to be used by external users.
+  }];
+}
+
+def SYCLAddIRAnnotationsMemberDocs : Documentation {
+  let Category = DocCatVariable;
+  let Heading = "add_ir_annotations_member";
+  let Content = [{
+This attribute can be applied to a non-static field. Access to a field with this
+attribute will generate a call to ``llvm.ptr.annotation`` with the arguments
+paired.
+The attribute must contain N*2 arguments. Each of the first N of these arguments
+must be either string literals or ``constexpr const char *``. The following N
+must be integer, floating point, character, boolean, ``const char *``, or an
+enumeration as either a literal or ``constexpr`` value. The first N arguments
+and the second N arguments are zipped into pairs when creating the call to
+``llvm.ptr.annotation``, i.e. in the constant global variable pointed to by the
+generated annotation intrinsic call, the N+1'th argument of the attribute will
+occur after the first argument of the attribute, the N+2'th argument of the
+attribute will occur after the second argument of the attribute, etc.
+The generated call to ``llvm.ptr.annotation`` will have the following arguments
+in this order:
+
+  * First argument is a pointer to the field.
+  * A pointer to a string literal in a constant global variable. This will
+    always be "sycl-properties".
+  * A pointer to a string literal in a constant global variable with the name of
+    the source file.
+  * The line number of the field declaration in the source file.
+  * A pointer to a constant global variable containing pointers to string
+    literals in constant global variables. These pointers to string literals
+    occur in pairs. If the second value of a pair was a ``nullptr`` or an empty
+    string then the pointer will be a null-pointer.
+
+A pair will not be in the call to ``llvm.ptr.annotation`` if the first value of
+the pair is an empty string.
+
+.. code-block:: c++
+
+  struct Foo {
+    int *ptr
+  #ifdef __SYCL_DEVICE_ONLY__
+        [[__sycl_detail__::add_ir_annotations_member(
+            "Attr1", "Attr2", "Attribute value", 3.14)]]
+  #endif
+        ;
+  };
+  // Accessing the 'ptr' field of 'Foo' will result in a call to
+  // 'llvm.ptr.annotation' with the second argument pointing to a constant
+  // global variable containing "sycl-properties" and the fifth argument
+  // pointing to a constant global variable with pointers to string literals
+  // "Attr1", "Attribute value", "Attr2", "3.14" in that order.
+
+Optionally, the first argument of the attribute can be an initializer list
+containing only string literals. This initializer list acts as a filter,
+allowing only pairs with the first value in the initializer list to be
+generated. If this intializer list is present, the attribute must have N*2+1
+arguments, where the last N*2 are as described above.
+
+.. code-block:: c++
+
+  struct Foo {
+    int *ptr
+  #ifdef __SYCL_DEVICE_ONLY__
+        [[__sycl_detail__::add_ir_annotations_member(
+            {"Attr2"}, "Attr1", "Attr2", "Attribute value", 3.14)]]
+  #endif
+        ;
+  };
+  // Accessing the 'ptr' field of 'Foo' will result in a call to
+  // 'llvm.ptr.annotation' with the second argument pointing to a constant
+  // global variable containing "sycl-properties" and the fifth argument
+  // pointing to a constant global variable with pointers to string literals
+  // "Attr2", "3.14" in that order.
+
+.. Note:: This attribute will only generate a call to ``llvm.ptr.annotation`` in
+  SYCL device code.
+
+.. Note:: This attribute is intended as an internal implementation detail and is
+  not intended to be used by external users.
   }];
 }
 
@@ -2241,8 +3820,17 @@ cannot be optimized out due to reachability analysis or by any other
 optimization.
 
 This attribute allows to pass name and address of the function to a special
-``cl::sycl::intel::get_device_func_ptr`` API call which extracts the device
+``sycl::intel::get_device_func_ptr`` API call which extracts the device
 function pointer for the specified function.
+
+.. code-block:: c++
+
+  [[intel::device_indirectly_callable]] int func3() {}
+
+  class A {
+    [[intel::device_indirectly_callable]] A() {}
+  };
+
   }];
 }
 
@@ -2259,7 +3847,7 @@ implicitly inherit this attribute.
 
 def RISCVInterruptDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "interrupt (RISCV)";
+  let Heading = "interrupt (RISC-V)";
   let Content = [{
 Clang supports the GNU style ``__attribute__((interrupt))`` attribute on RISCV
 targets. This attribute may be attached to a function definition and instructs
@@ -2278,6 +3866,37 @@ https://riscv.org/specifications/privileged-isa/
 The RISC-V Instruction Set Manual Volume II: Privileged Architecture
 Version 1.10.
   }];
+}
+
+def RISCVRVVVectorBitsDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+On RISC-V targets, the ``riscv_rvv_vector_bits(N)`` attribute is used to define
+fixed-length variants of sizeless types.
+
+For example:
+
+.. code-block:: c
+
+  #include <riscv_vector.h>
+
+  #if defined(__riscv_v_fixed_vlen)
+  typedef vint8m1_t fixed_vint8m1_t __attribute__((riscv_rvv_vector_bits(__riscv_v_fixed_vlen)));
+  #endif
+
+Creates a type ``fixed_vint8m1_t_t`` that is a fixed-length variant of
+``vint8m1_t`` that contains exactly 512 bits. Unlike ``vint8m1_t``, this type
+can be used in globals, structs, unions, and arrays, all of which are
+unsupported for sizeless types.
+
+The attribute can be attached to a single RVV vector (such as ``vint8m1_t``).
+The attribute will be rejected unless
+``N==__riscv_v_fixed_vlen``, the implementation defined feature macro that
+is enabled under the ``-mrvv-vector-bits`` flag. ``__riscv_v_fixed_vlen`` can
+only be a power of 2 between 64 and 65536.
+
+Only ``*m1_t`` (LMUL=1) types are supported at this time.
+}];
 }
 
 def AVRInterruptDocs : Documentation {
@@ -2321,9 +3940,15 @@ the target with or without a "-mno-" in front corresponding to the absence
 of the feature, as well as ``arch="CPU"`` which will change the default "CPU"
 for the function.
 
-For AArch64, the attribute also allows the "branch-protection=<args>" option,
-where the permissible arguments and their effect on code generation are the same
-as for the command-line option ``-mbranch-protection``.
+For X86, the attribute also allows ``tune="CPU"`` to optimize the generated
+code for the given CPU without changing the available instructions.
+
+For AArch64, ``arch="Arch"`` will set the architecture, similar to the -march
+command line options. ``cpu="CPU"`` can be used to select a specific cpu,
+as per the ``-mcpu`` option, similarly for ``tune=``. The attribute also allows the
+"branch-protection=<args>" option, where the permissible arguments and their
+effect on code generation are the same as for the command-line option
+``-mbranch-protection``.
 
 Example "subtarget features" from the x86 backend include: "mmx", "sse", "sse4.2",
 "avx", "xop" and largely correspond to the machine specific options handled by
@@ -2334,7 +3959,7 @@ x86/x86-64 targets, which can be used to create multiple implementations of the
 same function that will be resolved at runtime based on the priority of their
 ``target`` attribute strings. A function is considered a multiversioned function
 if either two declarations of the function have different ``target`` attribute
-strings, or if it has a ``target`` attribute string of ``default``.  For
+strings, or if it has a ``target`` attribute string of ``default``. For
 example:
 
   .. code-block:: c++
@@ -2347,6 +3972,70 @@ example:
 All multiversioned functions must contain a ``default`` (fallback)
 implementation, otherwise usages of the function are considered invalid.
 Additionally, a function may not become multiversioned after its first use.
+}];
+}
+
+def TargetVersionDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+For AArch64 target clang supports function multiversioning by
+``__attribute__((target_version("OPTIONS")))`` attribute. When applied to a
+function it instructs compiler to emit multiple function versions based on
+``target_version`` attribute strings, which resolved at runtime depend on their
+priority and target features availability. One of the versions is always
+( implicitly or explicitly ) the ``default`` (fallback). Attribute strings can
+contain dependent features names joined by the "+" sign.
+}];
+}
+
+def TargetClonesDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the ``target_clones("OPTIONS")`` attribute. This attribute may be
+attached to a function declaration and causes function multiversioning, where
+multiple versions of the function will be emitted with different code
+generation options.  Additionally, these versions will be resolved at runtime
+based on the priority of their attribute options. All ``target_clone`` functions
+are considered multiversioned functions.
+
+For AArch64 target:
+The attribute contains comma-separated strings of target features joined by "+"
+sign. For example:
+
+  .. code-block:: c++
+
+    __attribute__((target_clones("sha2+memtag2", "fcma+sve2-pmull128")))
+    void foo() {}
+
+For every multiversioned function a ``default`` (fallback) implementation
+always generated if not specified directly.
+
+For x86/x86-64 targets:
+All multiversioned functions must contain a ``default`` (fallback)
+implementation, otherwise usages of the function are considered invalid.
+Additionally, a function may not become multiversioned after its first use.
+
+All multiversioned functions must contain a ``default`` (fallback)
+implementation, otherwise usages of the function are considered invalid.
+Additionally, a function may not become multiversioned after its first use.
+
+The options to ``target_clones`` can either be a target-specific architecture
+(specified as ``arch=CPU``), or one of a list of subtarget features.
+
+Example "subtarget features" from the x86 backend include: "mmx", "sse", "sse4.2",
+"avx", "xop" and largely correspond to the machine specific options handled by
+the front end.
+
+The versions can either be listed as a comma-separated sequence of string
+literals or as a single string literal containing a comma-separated list of
+versions.  For compatibility with GCC, the two formats can be mixed.  For
+example, the following will emit 4 versions of the function:
+
+  .. code-block:: c++
+
+    __attribute__((target_clones("arch=atom,avx2","arch=ivybridge","default")))
+    void foo() {}
+
 }];
 }
 
@@ -2523,6 +4212,32 @@ the Arm Developer website.
   }];
 }
 
+def AArch64SVEPcsDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On AArch64 targets, this attribute changes the calling convention of a
+function to preserve additional Scalable Vector registers and Scalable
+Predicate registers relative to the default calling convention used for
+AArch64.
+
+This means it is more efficient to call such functions from code that performs
+extensive scalable vector and scalable predicate calculations, because fewer
+live SVE registers need to be saved. This property makes it well-suited for SVE
+math library functions, which are typically leaf functions that require a small
+number of registers.
+
+However, using this attribute also means that it is more expensive to call
+a function that adheres to the default calling convention from within such
+a function. Therefore, it is recommended that this attribute is only used
+for leaf functions.
+
+For more information, see the documentation for `aarch64_sve_pcs` in the
+ARM C Language Extension (ACLE) documentation.
+
+.. _`aarch64_sve_pcs`: https://github.com/ARM-software/acle/blob/main/main/acle.md#scalable-vector-extension-procedure-call-standard-attribute
+  }];
+}
+
 def RegparmDocs : Documentation {
   let Category = DocCatCallingConvs;
   let Content = [{
@@ -2558,7 +4273,7 @@ On 32-bit x86 targets, this attribute changes the calling convention of a
 function to clear parameters off of the stack on return. This convention does
 not support variadic calls or unprototyped functions in C, and has no effect on
 x86_64 targets. This calling convention is used widely by the Windows API and
-COM applications.  See the documentation for `__stdcall`_ on MSDN.
+COM applications. See the documentation for `__stdcall`_ on MSDN.
 
 .. _`__stdcall`: http://msdn.microsoft.com/en-us/library/zxk0tw93.aspx
   }];
@@ -2573,7 +4288,7 @@ the stack on return. This convention does not support variadic calls or
 unprototyped functions in C, and has no effect on x86_64 targets. This calling
 convention is supported primarily for compatibility with existing code. Users
 seeking register parameters should use the ``regparm`` attribute, which does
-not require callee-cleanup.  See the documentation for `__fastcall`_ on MSDN.
+not require callee-cleanup. See the documentation for `__fastcall`_ on MSDN.
 
 .. _`__fastcall`: http://msdn.microsoft.com/en-us/library/6xa169sk.aspx
   }];
@@ -2613,7 +4328,7 @@ convention of a function to pass vector parameters in SSE registers.
 
 On 32-bit x86 targets, this calling convention is similar to ``__fastcall``.
 The first two integer parameters are passed in ECX and EDX. Subsequent integer
-parameters are passed in memory, and callee clears the stack.  On x86_64
+parameters are passed in memory, and callee clears the stack. On x86_64
 targets, the callee does *not* clear the stack, and integer parameters are
 passed in RCX, RDX, R8, and R9 as is done for the default Windows x64 calling
 convention.
@@ -2644,7 +4359,7 @@ def SetTypestateDocs : Documentation {
   let Category = DocCatConsumed;
   let Content = [{
 Annotate methods that transition an object into a new state with
-``__attribute__((set_typestate(new_state)))``.  The new state must be
+``__attribute__((set_typestate(new_state)))``. The new state must be
 unconsumed, consumed, or unknown.
   }];
 }
@@ -2653,8 +4368,8 @@ def CallableWhenDocs : Documentation {
   let Category = DocCatConsumed;
   let Content = [{
 Use ``__attribute__((callable_when(...)))`` to indicate what states a method
-may be called in.  Valid states are unconsumed, consumed, or unknown.  Each
-argument to this attribute must be a quoted string.  E.g.:
+may be called in. Valid states are unconsumed, consumed, or unknown. Each
+argument to this attribute must be a quoted string. E.g.:
 
 ``__attribute__((callable_when("unconsumed", "unknown")))``
   }];
@@ -2671,9 +4386,9 @@ returns true if the object is in the specified state..
 def ParamTypestateDocs : Documentation {
   let Category = DocCatConsumed;
   let Content = [{
-This attribute specifies expectations about function parameters.  Calls to an
+This attribute specifies expectations about function parameters. Calls to an
 function with annotated parameters will issue a warning if the corresponding
-argument isn't in the expected state.  The attribute is also used to set the
+argument isn't in the expected state. The attribute is also used to set the
 initial state of the parameter when analyzing the function's body.
   }];
 }
@@ -2683,12 +4398,12 @@ def ReturnTypestateDocs : Documentation {
   let Content = [{
 The ``return_typestate`` attribute can be applied to functions or parameters.
 When applied to a function the attribute specifies the state of the returned
-value.  The function's body is checked to ensure that it always returns a value
-in the specified state.  On the caller side, values returned by the annotated
+value. The function's body is checked to ensure that it always returns a value
+in the specified state. On the caller side, values returned by the annotated
 function are initialized to the given state.
 
 When applied to a function parameter it modifies the state of an argument after
-a call to the function returns.  The function's body is checked to ensure that
+a call to the function returns. The function's body is checked to ensure that
 the parameter is in the expected state before returning.
   }];
 }
@@ -2697,11 +4412,22 @@ def ConsumableDocs : Documentation {
   let Category = DocCatConsumed;
   let Content = [{
 Each ``class`` that uses any of the typestate annotations must first be marked
-using the ``consumable`` attribute.  Failure to do so will result in a warning.
+using the ``consumable`` attribute. Failure to do so will result in a warning.
 
 This attribute accepts a single parameter that must be one of the following:
 ``unknown``, ``consumed``, or ``unconsumed``.
   }];
+}
+
+def NoProfileInstrumentFunctionDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Use the ``no_profile_instrument_function`` attribute on a function declaration
+to denote that the compiler should not instrument the function with
+profile-related instrumentation, such as via the
+``-fprofile-generate`` / ``-fprofile-instr-generate`` /
+``-fcs-profile-generate`` / ``-fprofile-arcs`` flags.
+}];
 }
 
 def NoSanitizeDocs : Documentation {
@@ -2709,15 +4435,32 @@ def NoSanitizeDocs : Documentation {
   let Content = [{
 Use the ``no_sanitize`` attribute on a function or a global variable
 declaration to specify that a particular instrumentation or set of
-instrumentations should not be applied. The attribute takes a list of
-string literals, which have the same meaning as values accepted by the
-``-fno-sanitize=`` flag. For example,
-``__attribute__((no_sanitize("address", "thread")))`` specifies that
-AddressSanitizer and ThreadSanitizer should not be applied to the
-function or variable.
+instrumentations should not be applied.
+
+The attribute takes a list of string literals with the following accepted
+values:
+* all values accepted by ``-fno-sanitize=``;
+* ``coverage``, to disable SanitizerCoverage instrumentation.
+
+For example, ``__attribute__((no_sanitize("address", "thread")))`` specifies
+that AddressSanitizer and ThreadSanitizer should not be applied to the function
+or variable. Using ``__attribute__((no_sanitize("coverage")))`` specifies that
+SanitizerCoverage should not be applied to the function.
 
 See :ref:`Controlling Code Generation <controlling-code-generation>` for a
 full list of supported sanitizer flags.
+  }];
+}
+
+def DisableSanitizerInstrumentationDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Use the ``disable_sanitizer_instrumentation`` attribute on a function,
+Objective-C method, or global variable, to specify that no sanitizer
+instrumentation should be applied.
+
+This is not the same as ``__attribute__((no_sanitize(...)))``, which depending
+on the tool may still insert instrumentation to prevent false positive reports.
   }];
 }
 
@@ -2785,7 +4528,7 @@ checks, ensure that -Wtype-safety is enabled. Use cases include:
 * checking types of variadic functions' arguments for functions like
   ``fcntl()`` and ``ioctl()``.
 
-You can detect support for these attributes with ``__has_attribute()``.  For
+You can detect support for these attributes with ``__has_attribute()``. For
 example:
 
 .. code-block:: c++
@@ -2795,7 +4538,7 @@ example:
         __has_attribute(pointer_with_type_tag) && \
         __has_attribute(type_tag_for_datatype)
   #    define ATTR_MPI_PWT(buffer_idx, type_idx) __attribute__((pointer_with_type_tag(mpi,buffer_idx,type_idx)))
-  /* ... other macros ...  */
+  /* ... other macros ... */
   #  endif
   #endif
 
@@ -2950,14 +4693,14 @@ values for this optional third argument:
       /* In user code */
       struct my_pair { double a; int b; };
       struct my_pair *buffer;
-      MPI_Send(buffer, 1, MPI_DOUBLE_INT /*, ...  */); // no warning because the
+      MPI_Send(buffer, 1, MPI_DOUBLE_INT /*, ... */); // no warning because the
                                                        // layout of my_pair is
                                                        // compatible with that of
                                                        // internal_mpi_double_int
 
       struct my_int_pair { int a; int b; }
       struct my_int_pair *buffer2;
-      MPI_Send(buffer2, 1, MPI_DOUBLE_INT /*, ...  */); // warning because the
+      MPI_Send(buffer2, 1, MPI_DOUBLE_INT /*, ... */); // warning because the
                                                         // layout of my_int_pair
                                                         // does not match that of
                                                         // internal_mpi_double_int
@@ -2982,7 +4725,7 @@ values for this optional third argument:
       /* In user code */
       struct my_pair { double a; int b; };
       struct my_pair *buffer;
-      MPI_Send(buffer, 1, MPI_DATATYPE_NULL /*, ...  */); // warning: MPI_DATATYPE_NULL
+      MPI_Send(buffer, 1, MPI_DATATYPE_NULL /*, ... */); // warning: MPI_DATATYPE_NULL
                                                           // was specified but buffer
                                                           // is not a null pointer
   }];
@@ -3002,8 +4745,8 @@ def FormatDocs : Documentation {
   let Content = [{
 
 Clang supports the ``format`` attribute, which indicates that the function
-accepts a ``printf`` or ``scanf``-like format string and corresponding
-arguments or a ``va_list`` that contains these arguments.
+accepts (among other possibilities) a ``printf`` or ``scanf``-like format string
+and corresponding arguments or a ``va_list`` that contains these arguments.
 
 Please see `GCC documentation about format attribute
 <http://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html>`_ to find details
@@ -3013,18 +4756,18 @@ Clang implements two kinds of checks with this attribute.
 
 #. Clang checks that the function with the ``format`` attribute is called with
    a format string that uses format specifiers that are allowed, and that
-   arguments match the format string.  This is the ``-Wformat`` warning, it is
+   arguments match the format string. This is the ``-Wformat`` warning, it is
    on by default.
 
-#. Clang checks that the format string argument is a literal string.  This is
+#. Clang checks that the format string argument is a literal string. This is
    the ``-Wformat-nonliteral`` warning, it is off by default.
 
    Clang implements this mostly the same way as GCC, but there is a difference
    for functions that accept a ``va_list`` argument (for example, ``vprintf``).
    GCC does not emit ``-Wformat-nonliteral`` warning for calls to such
-   functions.  Clang does not warn if the format string comes from a function
+   functions. Clang does not warn if the format string comes from a function
    parameter, where the function is annotated with a compatible attribute,
-   otherwise it warns.  For example:
+   otherwise it warns. For example:
 
    .. code-block:: c
 
@@ -3055,8 +4798,41 @@ Clang implements two kinds of checks with this attribute.
      }
 
    In this case Clang does not warn because the format string ``s`` and
-   the corresponding arguments are annotated.  If the arguments are
+   the corresponding arguments are annotated. If the arguments are
    incorrect, the caller of ``foo`` will receive a warning.
+
+As an extension to GCC's behavior, Clang accepts the ``format`` attribute on
+non-variadic functions. Clang checks non-variadic format functions for the same
+classes of issues that can be found on variadic functions, as controlled by the
+same warning flags, except that the types of formatted arguments is forced by
+the function signature. For example:
+
+.. code-block:: c
+
+  __attribute__((__format__(__printf__, 1, 2)))
+  void fmt(const char *s, const char *a, int b);
+
+  void bar(void) {
+    fmt("%s %i", "hello", 123); // OK
+    fmt("%i %g", "hello", 123); // warning: arguments don't match format
+    extern const char *fmt;
+    fmt(fmt, "hello", 123); // warning: format string is not a string literal
+  }
+
+When using the format attribute on a variadic function, the first data parameter
+_must_ be the index of the ellipsis in the parameter list. Clang will generate
+a diagnostic otherwise, as it wouldn't be possible to forward that argument list
+to `printf`-family functions. For instance, this is an error:
+
+.. code-block:: c
+
+  __attribute__((__format__(__printf__, 1, 2)))
+  void fmt(const char *s, int b, ...);
+  // ^ error: format attribute parameter 3 is out of bounds
+  // (must be __printf__, 1, 3)
+
+Using the ``format`` attribute on a non-variadic function emits a GCC
+compatibility diagnostic.
   }];
 }
 
@@ -3095,7 +4871,14 @@ def AsmLabelDocs : Documentation {
   let Content = [{
 This attribute can be used on a function or variable to specify its symbol name.
 
-On some targets, all C symbols are prefixed by default with a single character, typically ``_``.  This was done historically to distinguish them from symbols used by other languages.  (This prefix is also added to the standard Itanium C++ ABI prefix on "mangled" symbol names, so that e.g. on such targets the true symbol name for a C++ variable declared as ``int cppvar;`` would be ``__Z6cppvar``; note the two underscores.)  This prefix is *not* added to the symbol names specified by the ``asm`` attribute; programmers wishing to match a C symbol name must compensate for this.
+On some targets, all C symbols are prefixed by default with a single character,
+typically ``_``. This was done historically to distinguish them from symbols
+used by other languages. (This prefix is also added to the standard Itanium
+C++ ABI prefix on "mangled" symbol names, so that e.g. on such targets the true
+symbol name for a C++ variable declared as ``int cppvar;`` would be
+``__Z6cppvar``; note the two underscores.)  This prefix is *not* added to the
+symbol names specified by the ``asm`` attribute; programmers wishing to match a
+C symbol name must compensate for this.
 
 For example, consider the following C code:
 
@@ -3110,7 +4893,11 @@ For example, consider the following C code:
 
 Clang's implementation of this attribute is compatible with GCC's, `documented here <https://gcc.gnu.org/onlinedocs/gcc/Asm-Labels.html>`_.
 
-While it is possible to use this attribute to name a special symbol used internally by the compiler, such as an LLVM intrinsic, this is neither recommended nor supported and may cause the compiler to crash or miscompile.  Users who wish to gain access to intrinsic behavior are strongly encouraged to request new builtin functions.
+While it is possible to use this attribute to name a special symbol used
+internally by the compiler, such as an LLVM intrinsic, this is neither
+recommended nor supported and may cause the compiler to crash or miscompile.
+Users who wish to gain access to intrinsic behavior are strongly encouraged to
+request new builtin functions.
   }];
 }
 
@@ -3186,16 +4973,55 @@ It is only supported when using the Microsoft C++ ABI.
 def LifetimeBoundDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-The ``lifetimebound`` attribute indicates that a resource owned by
-a function parameter or implicit object parameter
-is retained by the return value of the annotated function
-(or, for a parameter of a constructor, in the value of the constructed object).
-It is only supported in C++.
+The ``lifetimebound`` attribute on a function parameter or implicit object
+parameter indicates that objects that are referred to by that parameter may
+also be referred to by the return value of the annotated function (or, for a
+parameter of a constructor, by the value of the constructed object). It is only
+supported in C++.
 
-This attribute provides an experimental implementation of the facility
-described in the C++ committee paper `P0936R0 <http://wg21.link/p0936r0>`_,
-and is subject to change as the design of the corresponding functionality
-changes.
+By default, a reference is considered to refer to its referenced object, a
+pointer is considered to refer to its pointee, a ``std::initializer_list<T>``
+is considered to refer to its underlying array, and aggregates (arrays and
+simple ``struct``\s) are considered to refer to all objects that their
+transitive subobjects refer to.
+
+Clang warns if it is able to detect that an object or reference refers to
+another object with a shorter lifetime. For example, Clang will warn if a
+function returns a reference to a local variable, or if a reference is bound to
+a temporary object whose lifetime is not extended. By using the
+``lifetimebound`` attribute, this determination can be extended to look through
+user-declared functions. For example:
+
+.. code-block:: c++
+
+    // Returns m[key] if key is present, or default_value if not.
+    template<typename T, typename U>
+    const U &get_or_default(const std::map<T, U> &m [[clang::lifetimebound]],
+                            const T &key, /* note, not lifetimebound */
+                            const U &default_value [[clang::lifetimebound]]);
+
+    std::map<std::string, std::string> m;
+    // warning: temporary "bar"s that might be bound to local reference 'val'
+    // will be destroyed at the end of the full-expression
+    const std::string &val = get_or_default(m, "foo"s, "bar"s);
+
+    // No warning in this case.
+    std::string def_val = "bar"s;
+    const std::string &val = get_or_default(m, "foo"s, def_val);
+
+The attribute can be applied to the implicit ``this`` parameter of a member
+function by writing the attribute after the function type:
+
+.. code-block:: c++
+
+    struct string {
+      // The returned pointer should not outlive ``*this``.
+      const char *data() const [[clang::lifetimebound]];
+    };
+
+This attribute is inspired by the C++ committee paper `P0936R0
+<http://wg21.link/p0936r0>`_, but does not affect whether temporary objects
+have their lifetimes extended.
   }];
 }
 
@@ -3231,11 +5057,16 @@ If a type is trivial for the purposes of calls, has a non-trivial destructor,
 and is passed as an argument by value, the convention is that the callee will
 destroy the object before returning.
 
+If a type is trivial for the purpose of calls, it is assumed to be trivially
+relocatable for the purpose of ``__is_trivially_relocatable``.
+
 Attribute ``trivial_abi`` has no effect in the following cases:
 
 - The class directly declares a virtual base or virtual methods.
+- Copy constructors and move constructors of the class are all deleted.
 - The class has a base class that is non-trivial for the purposes of calls.
-- The class has a non-static data member whose type is non-trivial for the purposes of calls, which includes:
+- The class has a non-static data member whose type is non-trivial for the
+  purposes of calls, which includes:
 
   - classes that are non-trivial for the purposes of calls
   - __weak-qualified types in Objective-C++
@@ -3255,7 +5086,7 @@ varies in size and alignment depending on the definition of the underlying
 class.
 
 However, this is problematic when a forward declaration is only available and
-no definition has been made yet.  In such cases, Clang is forced to utilize the
+no definition has been made yet. In such cases, Clang is forced to utilize the
 most general representation that is available to it.
 
 These keywords make it possible to use a pointer-to-member representation other
@@ -3304,9 +5135,9 @@ def OptnoneDocs : Documentation {
   let Content = [{
 The ``optnone`` attribute suppresses essentially all optimizations
 on a function or method, regardless of the optimization level applied to
-the compilation unit as a whole.  This is particularly useful when you
+the compilation unit as a whole. This is particularly useful when you
 need to debug a particular function, but it is infeasible to build the
-entire application without optimization.  Avoiding optimization on the
+entire application without optimization. Avoiding optimization on the
 specified function can improve the quality of the debugging information
 for that function.
 
@@ -3336,7 +5167,9 @@ def UnrollHintDocs : Documentation {
   let Content = [{
 Loop unrolling optimization hints can be specified with ``#pragma unroll`` and
 ``#pragma nounroll``. The pragma is placed immediately before a for, while,
-do-while, or c++11 range-based for loop.
+do-while, or c++11 range-based for loop. GCC's loop unrolling hints
+``#pragma GCC unroll`` and ``#pragma GCC nounroll`` are also supported and have
+identical semantics to ``#pragma unroll`` and ``#pragma nounroll``.
 
 Specifying ``#pragma unroll`` without a parameter directs the loop unroller to
 attempt to fully unroll the loop if the trip count is known at compile time and
@@ -3351,7 +5184,7 @@ time:
   }
 
 Specifying the optional parameter, ``#pragma unroll _value_``, directs the
-unroller to unroll the loop ``_value_`` times.  The parameter may optionally be
+unroller to unroll the loop ``_value_`` times. The parameter may optionally be
 enclosed in parentheses:
 
 .. code-block:: c++
@@ -3376,9 +5209,9 @@ Specifying ``#pragma nounroll`` indicates that the loop should not be unrolled:
   }
 
 ``#pragma unroll`` and ``#pragma unroll _value_`` have identical semantics to
-``#pragma clang loop unroll(full)`` and
+``#pragma clang loop unroll(enable)`` and
 ``#pragma clang loop unroll_count(_value_)`` respectively. ``#pragma nounroll``
-is equivalent to ``#pragma clang loop unroll(disable)``.  See
+is equivalent to ``#pragma clang loop unroll(disable)``. See
 `language extensions
 <http://clang.llvm.org/docs/LanguageExtensions.html#extensions-for-loop-hint-optimizations>`_
 for further details including limitations of the unroll hints.
@@ -3457,23 +5290,35 @@ used to specify full unrolling or partial unrolling by a specified amount.
 
 def IntelReqdSubGroupSizeDocs : Documentation {
   let Category = DocCatStmt;
+  let Heading = "intel_reqd_sub_group_size";
   let Content = [{
 This attribute can be used in both OpenCL and SYCL.
 
 OpenCL documentation:
 The optional attribute intel_reqd_sub_group_size can be used to indicate that
-the kernel must be compiled and executed with the specified subgroup size. When
+the kernel must be compiled and executed with the specified sub group size. When
 this attribute is present, get_max_sub_group_size() is guaranteed to return the
-specified integer value. This is important for the correctness of many subgroup
+specified integer value. This is important for the correctness of many sub group
 algorithms, and in some cases may be used by the compiler to generate more optimal
 code. See `cl_intel_required_subgroup_size
 <https://www.khronos.org/registry/OpenCL/extensions/intel/cl_intel_required_subgroup_size.txt>`
 for details.
 
 SYCL documentation:
-The [[cl::intel_reqd_sub_group_size(n)]] attribute indicates that the kernel
-must be compiled and executed with a sub-group of size n. The value of n must be
-set to a sub-group size supported by the device, or device compilation will fail.
+The [[intel::reqd_sub_group_size(n)]] attribute indicates that the kernel must
+be compiled and executed with a sub-group of size n. The value of n must be set
+to a sub-group size supported by the device, or device compilation will fail.
+
+The ``[[intel::sub_group_size(n)]]`` attribute has the same effect as the other
+attribute spellings, except that it follows the SYCL 2020 Attribute Rules. See
+the ``[[intel::named_sub_group_size(NAME)]]`` documentation for clarification.
+
+This attribute is mutually exclusive with ``[[intel::named_sub_group_size(NAME)]]``
+and ``[[intel::sycl_explicit_simd]]``.
+
+In SYCL 1.2.1 mode, the ``intel::reqd_sub_group_size`` attribute is propagated
+from the function it is applied to onto the kernel which calls the function.
+In SYCL 2020 mode, the attribute is not propagated to the kernel.
 
 In addition to device functions, the required sub-group size attribute may also
 be specified in the definition of a named functor object and lambda functions,
@@ -3483,19 +5328,60 @@ as in the examples below:
 
   class Functor
   {
-      void operator()(item<1> item) [[cl::intel_reqd_sub_group_size(16)]]
+      [[intel::reqd_sub_group_size(16)]] void operator()(item<1> item)
       {
           /* kernel code */
       }
   }
 
   kernel<class kernel_name>(
-  []() [[cl::intel_reqd_sub_group_size(n)]] {
+  []() [[intel::reqd_sub_group_size(n)]] {
        /* kernel code */
   });
 
 See Sub-groups for NDRange Parallelism proposal in sycl/doc/extensions/sub_group_ndrange/sub_group_ndrange.md
   }];
+}
+
+def IntelNamedSubGroupSizeDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``[[intel::named_sub_group_size(NAME)]]`` attribute works similar to
+``[[intel::sub_group_size(N)]]`` attribute in that it defines the specific
+sub group size for the kernel. The ``[[intel::named_sub_group_size(NAME)]]``
+form accepts a required parameter of either ``automatic`` or ``primary``.
+
+``automatic`` specifies that the implementation is free to select any of the
+valid sub-group sizes associated with the device to which the kernel is
+submitted.  ``primary`` specifies that the implementation should select the
+device's primary sub-group size as reported by
+``info::device::primary_sub_group_size``.
+
+This attribute may not be combined with ``[[intel::sub_group_size(N)]]``, as
+the two attributes have different meanings. It is also mutually exclusive with
+``[[intel::sycl_explicit_simd]]``.
+
+In addition to the attributes, a default sub-group size strategy may be
+specified by the ``-fsycl-default-sub-group-size`` command line option, which
+accepts either ``automatic``, ``primary``, or a default size as an integer.
+These values match and have the same behavior as the ``automatic``, ``primary``,
+and ``[[intel::sub_group_size(N)]]`` values respectively.
+
+SYCL 2020 Attribute Rules:
+SYCL 2020 specifies that kernel-type attributes should only be specified on the
+kernel or a ``SYCL_EXTERNAL`` function. This implementation permits these
+attributes to appear on all function declarations for the purposes of
+self-documenting declarations. However, these attributes must match the kernel's
+sub-group size as configured by the command line, or via an attribute
+specifically.
+
+In addition to the SYCL 2020 Attribute Rules, this attribute and the
+``[[intel::sub_group_size(N)]]`` attribute also require that any
+``SYCL_EXTERNAL`` functions defined in a different translation unit must have a
+matching sub-group size specification, so ``SYCL_EXTERNAL`` functions not
+defined in this translation unit must also have a matching sub-group
+specification to the kernel function that calls it.
+}];
 }
 
 def OpenCLAccessDocs : Documentation {
@@ -3585,14 +5471,28 @@ scope) variables and static local variable as well.
   }];
 }
 
-def OpenCLGlobalAddressSpacesDocs : Documentation {
+def OpenCLAddressSpaceGlobalExtDocs : Documentation {
   let Category = DocOpenCLAddressSpaces;
   let Heading = "[[clang::opencl_global_device]], [[clang::opencl_global_host]]";
   let Content = [{
-The (global_device) and (global_host) address space attributes specify that an
-object is allocated in global memory on the device/host. It helps distinguishing
-USM pointers that access device memory and accessors that access global memory
-from those that access host memory.
+The ``global_device`` and ``global_host`` address space attributes specify that
+an object is allocated in global memory on the device/host. It helps to
+distinguish USM (Unified Shared Memory) pointers that access global device
+memory from those that access global host memory. These new address spaces are
+a subset of the ``__global/opencl_global`` address space, the full address space
+set model for OpenCL 2.0 with the extension looks as follows:
+
+  | generic->global->host
+  |                ->device
+  |        ->private
+  |        ->local
+  | constant
+
+As ``global_device`` and ``global_host`` are a subset of
+``__global/opencl_global`` address spaces it is allowed to convert
+``global_device`` and ``global_host`` address spaces to
+``__global/opencl_global`` address spaces (following ISO/IEC TR 18037 5.1.3
+"Address space nesting and rules for pointers").
   }];
 }
 
@@ -3673,9 +5573,25 @@ extended when converted to a 64-bit pointer.
 
 def NullabilityDocs : DocumentationCategory<"Nullability Attributes"> {
   let Content = [{
-Whether a particular pointer may be "null" is an important concern when working with pointers in the C family of languages. The various nullability attributes indicate whether a particular pointer can be null or not, which makes APIs more expressive and can help static analysis tools identify bugs involving null pointers. Clang supports several kinds of nullability attributes: the ``nonnull`` and ``returns_nonnull`` attributes indicate which function or method parameters and result types can never be null, while nullability type qualifiers indicate which pointer types can be null (``_Nullable``) or cannot be null (``_Nonnull``).
+Whether a particular pointer may be "null" is an important concern when working
+with pointers in the C family of languages. The various nullability attributes
+indicate whether a particular pointer can be null or not, which makes APIs more
+expressive and can help static analysis tools identify bugs involving null
+pointers. Clang supports several kinds of nullability attributes: the 
+``nonnull`` and ``returns_nonnull`` attributes indicate which function or
+method parameters and result types can never be null, while nullability type
+qualifiers indicate which pointer types can be null (``_Nullable``) or cannot
+be null (``_Nonnull``).
 
-The nullability (type) qualifiers express whether a value of a given pointer type can be null (the ``_Nullable`` qualifier), doesn't have a defined meaning for null (the ``_Nonnull`` qualifier), or for which the purpose of null is unclear (the ``_Null_unspecified`` qualifier). Because nullability qualifiers are expressed within the type system, they are more general than the ``nonnull`` and ``returns_nonnull`` attributes, allowing one to express (for example) a nullable pointer to an array of nonnull pointers. Nullability qualifiers are written to the right of the pointer to which they apply. For example:
+The nullability (type) qualifiers express whether a value of a given pointer
+type can be null (the ``_Nullable`` qualifier), doesn't have a defined meaning
+for null (the ``_Nonnull`` qualifier), or for which the purpose of null is
+unclear (the ``_Null_unspecified`` qualifier). Because nullability qualifiers
+are expressed within the type system, they are more general than the
+``nonnull`` and ``returns_nonnull`` attributes, allowing one to express (for
+example) a nullable pointer to an array of nonnull pointers. Nullability
+qualifiers are written to the right of the pointer to which they apply. For
+example:
 
   .. code-block:: c
 
@@ -3690,7 +5606,9 @@ The nullability (type) qualifiers express whether a value of a given pointer typ
     // A nullable pointer to non-null pointers to const characters.
     const char *join_strings(const char * _Nonnull * _Nullable strings, unsigned n);
 
-In Objective-C, there is an alternate spelling for the nullability qualifiers that can be used in Objective-C methods and properties using context-sensitive, non-underscored keywords. For example:
+In Objective-C, there is an alternate spelling for the nullability qualifiers
+that can be used in Objective-C methods and properties using context-sensitive,
+non-underscored keywords. For example:
 
   .. code-block:: objective-c
 
@@ -3705,20 +5623,28 @@ In Objective-C, there is an alternate spelling for the nullability qualifiers th
 def TypeNonNullDocs : Documentation {
   let Category = NullabilityDocs;
   let Content = [{
-The ``_Nonnull`` nullability qualifier indicates that null is not a meaningful value for a value of the ``_Nonnull`` pointer type. For example, given a declaration such as:
+The ``_Nonnull`` nullability qualifier indicates that null is not a meaningful
+value for a value of the ``_Nonnull`` pointer type. For example, given a
+declaration such as:
 
   .. code-block:: c
 
     int fetch(int * _Nonnull ptr);
 
-a caller of ``fetch`` should not provide a null value, and the compiler will produce a warning if it sees a literal null value passed to ``fetch``. Note that, unlike the declaration attribute ``nonnull``, the presence of ``_Nonnull`` does not imply that passing null is undefined behavior: ``fetch`` is free to consider null undefined behavior or (perhaps for backward-compatibility reasons) defensively handle null.
+a caller of ``fetch`` should not provide a null value, and the compiler will
+produce a warning if it sees a literal null value passed to ``fetch``. Note
+that, unlike the declaration attribute ``nonnull``, the presence of
+``_Nonnull`` does not imply that passing null is undefined behavior: ``fetch``
+is free to consider null undefined behavior or (perhaps for
+backward-compatibility reasons) defensively handle null.
   }];
 }
 
 def TypeNullableDocs : Documentation {
   let Category = NullabilityDocs;
   let Content = [{
-The ``_Nullable`` nullability qualifier indicates that a value of the ``_Nullable`` pointer type can be null. For example, given:
+The ``_Nullable`` nullability qualifier indicates that a value of the
+``_Nullable`` pointer type can be null. For example, given:
 
   .. code-block:: c
 
@@ -3728,17 +5654,48 @@ a caller of ``fetch_or_zero`` can provide null.
   }];
 }
 
+def TypeNullableResultDocs : Documentation {
+  let Category = NullabilityDocs;
+  let Content = [{
+The ``_Nullable_result`` nullability qualifier means that a value of the
+``_Nullable_result`` pointer can be ``nil``, just like ``_Nullable``. Where this
+attribute differs from ``_Nullable`` is when it's used on a parameter to a
+completion handler in a Swift async method. For instance, here:
+
+  .. code-block:: objc
+
+    -(void)fetchSomeDataWithID:(int)identifier
+             completionHandler:(void (^)(Data *_Nullable_result result, NSError *error))completionHandler;
+
+This method asynchronously calls ``completionHandler`` when the data is
+available, or calls it with an error. ``_Nullable_result`` indicates to the
+Swift importer that this is the uncommon case where ``result`` can get ``nil``
+even if no error has occurred, and will therefore import it as a Swift optional
+type. Otherwise, if ``result`` was annotated with ``_Nullable``, the Swift
+importer will assume that ``result`` will always be non-nil unless an error
+occurred.
+}];
+}
+
 def TypeNullUnspecifiedDocs : Documentation {
   let Category = NullabilityDocs;
   let Content = [{
-The ``_Null_unspecified`` nullability qualifier indicates that neither the ``_Nonnull`` nor ``_Nullable`` qualifiers make sense for a particular pointer type. It is used primarily to indicate that the role of null with specific pointers in a nullability-annotated header is unclear, e.g., due to overly-complex implementations or historical factors with a long-lived API.
+The ``_Null_unspecified`` nullability qualifier indicates that neither the
+``_Nonnull`` nor ``_Nullable`` qualifiers make sense for a particular pointer
+type. It is used primarily to indicate that the role of null with specific
+pointers in a nullability-annotated header is unclear, e.g., due to
+overly-complex implementations or historical factors with a long-lived API.
   }];
 }
 
 def NonNullDocs : Documentation {
   let Category = NullabilityDocs;
   let Content = [{
-The ``nonnull`` attribute indicates that some function parameters must not be null, and can be used in several different ways. It's original usage (`from GCC <https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#Common-Function-Attributes>`_) is as a function (or Objective-C method) attribute that specifies which parameters of the function are nonnull in a comma-separated list. For example:
+The ``nonnull`` attribute indicates that some function parameters must not be
+null, and can be used in several different ways. It's original usage
+(`from GCC <https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#Common-Function-Attributes>`_)
+is as a function (or Objective-C method) attribute that specifies which
+parameters of the function are nonnull in a comma-separated list. For example:
 
   .. code-block:: c
 
@@ -3746,34 +5703,58 @@ The ``nonnull`` attribute indicates that some function parameters must not be nu
                     __attribute__((nonnull (1, 2)));
 
 Here, the ``nonnull`` attribute indicates that parameters 1 and 2
-cannot have a null value. Omitting the parenthesized list of parameter indices means that all parameters of pointer type cannot be null:
+cannot have a null value. Omitting the parenthesized list of parameter indices
+means that all parameters of pointer type cannot be null:
 
   .. code-block:: c
 
     extern void * my_memcpy (void *dest, const void *src, size_t len)
                     __attribute__((nonnull));
 
-Clang also allows the ``nonnull`` attribute to be placed directly on a function (or Objective-C method) parameter, eliminating the need to specify the parameter index ahead of type. For example:
+Clang also allows the ``nonnull`` attribute to be placed directly on a function
+(or Objective-C method) parameter, eliminating the need to specify the
+parameter index ahead of type. For example:
 
   .. code-block:: c
 
     extern void * my_memcpy (void *dest __attribute__((nonnull)),
                              const void *src __attribute__((nonnull)), size_t len);
 
-Note that the ``nonnull`` attribute indicates that passing null to a non-null parameter is undefined behavior, which the optimizer may take advantage of to, e.g., remove null checks. The ``_Nonnull`` type qualifier indicates that a pointer cannot be null in a more general manner (because it is part of the type system) and does not imply undefined behavior, making it more widely applicable.
+Note that the ``nonnull`` attribute indicates that passing null to a non-null
+parameter is undefined behavior, which the optimizer may take advantage of to,
+e.g., remove null checks. The ``_Nonnull`` type qualifier indicates that a
+pointer cannot be null in a more general manner (because it is part of the type
+system) and does not imply undefined behavior, making it more widely applicable.
+  }];
+}
+
+def RestrictDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "malloc";
+  let Content = [{
+The ``malloc`` attribute indicates that the function acts like a system memory
+allocation function, returning a pointer to allocated storage disjoint from the
+storage for any other object accessible to the caller.
   }];
 }
 
 def ReturnsNonNullDocs : Documentation {
   let Category = NullabilityDocs;
   let Content = [{
-The ``returns_nonnull`` attribute indicates that a particular function (or Objective-C method) always returns a non-null pointer. For example, a particular system ``malloc`` might be defined to terminate a process when memory is not available rather than returning a null pointer:
+The ``returns_nonnull`` attribute indicates that a particular function (or
+Objective-C method) always returns a non-null pointer. For example, a
+particular system ``malloc`` might be defined to terminate a process when
+memory is not available rather than returning a null pointer:
 
   .. code-block:: c
 
     extern void * malloc (size_t size) __attribute__((returns_nonnull));
 
-The ``returns_nonnull`` attribute implies that returning a null pointer is undefined behavior, which the optimizer may take advantage of. The ``_Nonnull`` type qualifier indicates that a pointer cannot be null in a more general manner (because it is part of the type system) and does not imply undefined behavior, making it more widely applicable
+The ``returns_nonnull`` attribute implies that returning a null pointer is
+undefined behavior, which the optimizer may take advantage of. The ``_Nonnull``
+type qualifier indicates that a pointer cannot be null in a more general manner
+(because it is part of the type system) and does not imply undefined behavior, 
+making it more widely applicable
 }];
 }
 
@@ -3783,6 +5764,243 @@ def NoAliasDocs : Documentation {
 The ``noalias`` attribute indicates that the only memory accesses inside
 function are loads and stores from objects pointed to by its pointer-typed
 arguments, with arbitrary offsets.
+  }];
+}
+
+def NSErrorDomainDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+In Cocoa frameworks in Objective-C, one can group related error codes in enums
+and categorize these enums with error domains.
+
+The ``ns_error_domain`` attribute indicates a global ``NSString`` or
+``CFString`` constant representing the error domain that an error code belongs
+to. For pointer uniqueness and code size this is a constant symbol, not a
+literal.
+
+The domain and error code need to be used together. The ``ns_error_domain``
+attribute links error codes to their domain at the source level.
+
+This metadata is useful for documentation purposes, for static analysis, and for
+improving interoperability between Objective-C and Swift. It is not used for
+code generation in Objective-C.
+
+For example:
+
+  .. code-block:: objc
+
+    #define NS_ERROR_ENUM(_type, _name, _domain)  \
+      enum _name : _type _name; enum __attribute__((ns_error_domain(_domain))) _name : _type
+
+    extern NSString *const MyErrorDomain;
+    typedef NS_ERROR_ENUM(unsigned char, MyErrorEnum, MyErrorDomain) {
+      MyErrFirst,
+      MyErrSecond,
+    };
+  }];
+}
+
+def SwiftDocs : DocumentationCategory<"Customizing Swift Import"> {
+  let Content = [{
+Clang supports additional attributes for customizing how APIs are imported into
+Swift.
+  }];
+}
+
+def SwiftAsyncNameDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_async_name";
+  let Content = [{
+The ``swift_async_name`` attribute provides the name of the ``async`` overload for
+the given declaration in Swift. If this attribute is absent, the name is
+transformed according to the algorithm built into the Swift compiler.
+
+The argument is a string literal that contains the Swift name of the function or
+method. The name may be a compound Swift name. The function or method with such
+an attribute must have more than zero parameters, as its last parameter is
+assumed to be a callback that's eliminated in the Swift ``async`` name.
+
+  .. code-block:: objc
+
+    @interface URL
+    + (void) loadContentsFrom:(URL *)url callback:(void (^)(NSData *))data __attribute__((__swift_async_name__("URL.loadContentsFrom(_:)")))
+    @end
+  }];
+}
+
+def SwiftAttrDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_attr";
+  let Content = [{
+The ``swift_attr`` provides a Swift-specific annotation for the declaration
+to which the attribute appertains to. It can be used on any declaration
+in Clang. This kind of annotation is ignored by Clang as it doesn't have any
+semantic meaning in languages supported by Clang. The Swift compiler can
+interpret these annotations according to its own rules when importing C or
+Objective-C declarations.
+}];
+}
+
+def SwiftBridgeDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_bridge";
+  let Content = [{
+The ``swift_bridge`` attribute indicates that the declaration to which the
+attribute appertains is bridged to the named Swift type.
+
+  .. code-block:: objc
+
+    __attribute__((__objc_root__))
+    @interface Base
+    - (instancetype)init;
+    @end
+
+    __attribute__((__swift_bridge__("BridgedI")))
+    @interface I : Base
+    @end
+
+In this example, the Objective-C interface ``I`` will be made available to Swift
+with the name ``BridgedI``. It would be possible for the compiler to refer to
+``I`` still in order to bridge the type back to Objective-C.
+  }];
+}
+
+def SwiftBridgedTypedefDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_bridged";
+  let Content = [{
+The ``swift_bridged_typedef`` attribute indicates that when the typedef to which
+the attribute appertains is imported into Swift, it should refer to the bridged
+Swift type (e.g. Swift's ``String``) rather than the Objective-C type as written
+(e.g. ``NSString``).
+
+  .. code-block:: objc
+
+    @interface NSString;
+    typedef NSString *AliasedString __attribute__((__swift_bridged_typedef__));
+
+    extern void acceptsAliasedString(AliasedString _Nonnull parameter);
+
+In this case, the function ``acceptsAliasedString`` will be imported into Swift
+as a function which accepts a ``String`` type parameter.
+  }];
+}
+
+def SwiftObjCMembersDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_objc_members";
+  let Content = [{
+This attribute indicates that Swift subclasses and members of Swift extensions
+of this class will be implicitly marked with the ``@objcMembers`` Swift
+attribute, exposing them back to Objective-C.
+  }];
+}
+
+def SwiftErrorDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_error";
+  let Content = [{
+The ``swift_error`` attribute controls whether a particular function (or
+Objective-C method) is imported into Swift as a throwing function, and if so,
+which dynamic convention it uses.
+
+All of these conventions except ``none`` require the function to have an error
+parameter. Currently, the error parameter is always the last parameter of type
+``NSError**`` or ``CFErrorRef*``. Swift will remove the error parameter from
+the imported API. When calling the API, Swift will always pass a valid address
+initialized to a null pointer.
+
+* ``swift_error(none)`` means that the function should not be imported as
+  throwing. The error parameter and result type will be imported normally.
+
+* ``swift_error(null_result)`` means that calls to the function should be
+  considered to have thrown if they return a null value. The return type must be
+  a pointer type, and it will be imported into Swift with a non-optional type.
+  This is the default error convention for Objective-C methods that return
+  pointers.
+
+* ``swift_error(zero_result)`` means that calls to the function should be
+  considered to have thrown if they return a zero result. The return type must be
+  an integral type. If the return type would have been imported as ``Bool``, it
+  is instead imported as ``Void``. This is the default error convention for
+  Objective-C methods that return a type that would be imported as ``Bool``.
+
+* ``swift_error(nonzero_result)`` means that calls to the function should be
+  considered to have thrown if they return a non-zero result. The return type must
+  be an integral type. If the return type would have been imported as ``Bool``,
+  it is instead imported as ``Void``.
+
+* ``swift_error(nonnull_error)`` means that calls to the function should be
+  considered to have thrown if they leave a non-null error in the error parameter.
+  The return type is left unmodified.
+
+  }];
+}
+
+def SwiftNameDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_name";
+  let Content = [{
+The ``swift_name`` attribute provides the name of the declaration in Swift. If
+this attribute is absent, the name is transformed according to the algorithm
+built into the Swift compiler.
+
+The argument is a string literal that contains the Swift name of the function,
+variable, or type. When renaming a function, the name may be a compound Swift
+name. For a type, enum constant, property, or variable declaration, the name
+must be a simple or qualified identifier.
+
+  .. code-block:: objc
+
+    @interface URL
+    - (void) initWithString:(NSString *)s __attribute__((__swift_name__("URL.init(_:)")))
+    @end
+
+    void __attribute__((__swift_name__("squareRoot()"))) sqrt(double v) {
+    }
+  }];
+}
+
+def SwiftNewTypeDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_newtype";
+  let Content = [{
+The ``swift_newtype`` attribute indicates that the typedef to which the
+attribute appertains is imported as a new Swift type of the typedef's name.
+Previously, the attribute was spelt ``swift_wrapper``. While the behaviour of
+the attribute is identical with either spelling, ``swift_wrapper`` is
+deprecated, only exists for compatibility purposes, and should not be used in
+new code.
+
+* ``swift_newtype(struct)`` means that a Swift struct will be created for this
+  typedef.
+
+* ``swift_newtype(enum)`` means that a Swift enum will be created for this
+  typedef.
+
+  .. code-block:: c
+
+    // Import UIFontTextStyle as an enum type, with enumerated values being
+    // constants.
+    typedef NSString * UIFontTextStyle __attribute__((__swift_newtype__(enum)));
+
+    // Import UIFontDescriptorFeatureKey as a structure type, with enumerated
+    // values being members of the type structure.
+    typedef NSString * UIFontDescriptorFeatureKey __attribute__((__swift_newtype__(struct)));
+
+  }];
+}
+
+def SwiftPrivateDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_private";
+  let Content = [{
+Declarations marked with the ``swift_private`` attribute are hidden from the
+framework client but are still made available for use within the framework or
+Swift SDK overlay.
+
+The purpose of this attribute is to permit a more idomatic implementation of
+declarations in Swift while hiding the non-idiomatic one.
   }];
 }
 
@@ -3892,20 +6110,87 @@ Clang provides the following context selector extensions, used via
     match_all
     match_any
     match_none
+    disable_implicit_base
+    allow_templates
+    bind_to_declaration
 
 The match extensions change when the *entire* context selector is considered a
 match for an OpenMP context. The default is ``all``, with ``none`` no trait in the
 selector is allowed to be in the OpenMP context, with ``any`` a single trait in
 both the selector and OpenMP context is sufficient. Only a single match
 extension trait is allowed per context selector.
-
+The disable extensions remove default effects of the ``begin declare variant``
+applied to a definition. If ``disable_implicit_base`` is given, we will not
+introduce an implicit base function for a variant if no base function was
+found. The variant is still generated but will never be called, due to the
+absence of a base function and consequently calls to a base function.
+The allow extensions change when the ``begin declare variant`` effect is
+applied to a definition. If ``allow_templates`` is given, template function
+definitions are considered as specializations of existing or assumed template
+declarations with the same name. The template parameters for the base functions
+are used to instantiate the specialization. If ``bind_to_declaration`` is given,
+apply the same variant rules to function declarations. This allows the user to
+override declarations with only a function declaration.
   }];
+}
+
+def LeafDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+
+The ``leaf`` attribute is used as a compiler hint to improve dataflow analysis
+in library functions. Functions marked with the ``leaf`` attribute are not allowed
+to jump back into the caller's translation unit, whether through invoking a
+callback function, an external function call, use of ``longjmp``, or other means.
+Therefore, they cannot use or modify any data that does not escape the caller function's
+compilation unit.
+
+For more information see
+`gcc documentation <https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html>`
+}];
+}
+
+def AssumptionDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "assume";
+  let Content = [{
+Clang supports the ``__attribute__((assume("assumption")))`` attribute to
+provide additional information to the optimizer. The string-literal, here
+"assumption", will be attached to the function declaration such that later
+analysis and optimization passes can assume the "assumption" to hold.
+This is similar to :ref:`__builtin_assume <langext-__builtin_assume>` but
+instead of an expression that can be assumed to be non-zero, the assumption is
+expressed as a string and it holds for the entire function.
+
+A function can have multiple assume attributes and they propagate from prior
+declarations to later definitions. Multiple assumptions are aggregated into a
+single comma separated string. Thus, one can provide multiple assumptions via
+a comma separated string, i.a.,
+``__attribute__((assume("assumption1,assumption2")))``.
+
+While LLVM plugins might provide more assumption strings, the default LLVM
+optimization passes are aware of the following assumptions:
+
+  .. code-block:: none
+
+    "omp_no_openmp"
+    "omp_no_openmp_routines"
+    "omp_no_parallelism"
+
+The OpenMP standard defines the meaning of OpenMP assumptions ("omp_XYZ" is
+spelled "XYZ" in the `OpenMP 5.1 Standard`_).
+
+.. _`OpenMP 5.1 Standard`: https://www.openmp.org/spec-html/5.1/openmpsu37.html#x56-560002.5.2
+
+}];
 }
 
 def NoStackProtectorDocs : Documentation {
   let Category = DocCatFunction;
+  let Heading = "no_stack_protector, safebuffers";
   let Content = [{
-Clang supports the ``__attribute__((no_stack_protector))`` attribute which disables
+Clang supports the GNU style ``__attribute__((no_stack_protector))`` and Microsoft
+style ``__declspec(safebuffers)`` attribute which disables
 the stack protector on the specified function. This attribute is useful for
 selectively disabling the stack protector on some functions when building with
 ``-fstack-protector`` compiler option.
@@ -3924,10 +6209,33 @@ option.
     }];
 }
 
+def StrictGuardStackCheckDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the Microsoft style ``__declspec((strict_gs_check))`` attribute
+which upgrades the stack protector check from ``-fstack-protector`` to
+``-fstack-protector-strong``.
+
+For example, it upgrades the stack protector for the function ``foo`` to
+``-fstack-protector-strong`` but function ``bar`` will still be built with the
+stack protector with the ``-fstack-protector`` option.
+
+.. code-block:: c
+
+    __declspec((strict_gs_check))
+    int foo(int x); // stack protection will be upgraded for foo.
+
+    int bar(int y); // bar can be built with the standard stack protector checks.
+
+    }];
+}
+
 def NotTailCalledDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-The ``not_tail_called`` attribute prevents tail-call optimization on statically bound calls. It has no effect on indirect calls. Virtual functions, objective-c methods, and functions marked as ``always_inline`` cannot be marked as ``not_tail_called``.
+The ``not_tail_called`` attribute prevents tail-call optimization on statically
+bound calls. Objective-c methods, and functions marked as ``always_inline``
+cannot be marked as ``not_tail_called``.
 
 For example, it prevents tail-call optimization in the following case:
 
@@ -3948,33 +6256,30 @@ However, it doesn't prevent tail-call optimization in this case:
     int foo2(int a) {
       int (*fn)(int) = &foo1;
 
-      // not_tail_called has no effect on an indirect call even if the call can be
-      // resolved at compile time.
+      // not_tail_called has no effect on an indirect call even if the call can
+      // be resolved at compile time.
       return (*fn)(a);
     }
 
-Marking virtual functions as ``not_tail_called`` is an error:
+Generally, marking an overriding virtual function as ``not_tail_called`` is
+not useful, because this attribute is a property of the static type. Calls
+made through a pointer or reference to the base class type will respect
+the ``not_tail_called`` attribute of the base class's member function,
+regardless of the runtime destination of the call:
 
   .. code-block:: c++
 
-    class Base {
-    public:
-      // not_tail_called on a virtual function is an error.
-      [[clang::not_tail_called]] virtual int foo1();
-
-      virtual int foo2();
-
-      // Non-virtual functions can be marked ``not_tail_called``.
-      [[clang::not_tail_called]] int foo3();
+    struct Foo { virtual void f(); };
+    struct Bar : Foo {
+      [[clang::not_tail_called]] void f() override;
     };
-
-    class Derived1 : public Base {
-    public:
-      int foo1() override;
-
-      // not_tail_called on a virtual function is an error.
-      [[clang::not_tail_called]] int foo2() override;
-    };
+    void callera(Bar& bar) {
+      Foo& foo = bar;
+      // not_tail_called has no effect on here, even though the
+      // underlying method is f from Bar.
+      foo.f();
+      bar.f(); // No tail-call optimization on here.
+    }
   }];
 }
 
@@ -3990,13 +6295,25 @@ guaranteed to not throw an exception.
     }];
 }
 
+def NoUwtableDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the ``nouwtable`` attribute which skips emitting
+the unwind table entry for the specified function. This attribute is useful for
+selectively emitting the unwind table entry on some functions when building with
+``-funwind-tables`` compiler option.
+    }];
+}
+
 def InternalLinkageDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-The ``internal_linkage`` attribute changes the linkage type of the declaration to internal.
-This is similar to C-style ``static``, but can be used on classes and class methods. When applied to a class definition,
-this attribute affects all methods and static data members of that class.
-This can be used to contain the ABI of a C++ library by excluding unwanted class methods from the export tables.
+The ``internal_linkage`` attribute changes the linkage type of the declaration
+to internal. This is similar to C-style ``static``, but can be used on classes
+and class methods. When applied to a class definition, this attribute affects
+all methods and static data members of that class. This can be used to contain
+the ABI of a C++ library by excluding unwanted class methods from the export
+tables.
   }];
 }
 
@@ -4065,7 +6382,8 @@ templates.
 def DisableTailCallsDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-The ``disable_tail_calls`` attribute instructs the backend to not perform tail call optimization inside the marked function.
+The ``disable_tail_calls`` attribute instructs the backend to not perform tail
+call optimization inside the marked function.
 
 For example:
 
@@ -4183,13 +6501,13 @@ The ``swiftcall`` attribute indicates that a function should be called
 using the Swift calling convention for a function or function pointer.
 
 The lowering for the Swift calling convention, as described by the Swift
-ABI documentation, occurs in multiple phases.  The first, "high-level"
+ABI documentation, occurs in multiple phases. The first, "high-level"
 phase breaks down the formal parameters and results into innately direct
 and indirect components, adds implicit parameters for the generic
 signature, and assigns the context and error ABI treatments to parameters
-where applicable.  The second phase breaks down the direct parameters
+where applicable. The second phase breaks down the direct parameters
 and results from the first phase and assigns them to registers or the
-stack.  The ``swiftcall`` convention only handles this second phase of
+stack. The ``swiftcall`` convention only handles this second phase of
 lowering; the C function type must accurately reflect the results
 of the first phase, as follows:
 
@@ -4229,12 +6547,12 @@ of the first phase, as follows:
 The parameter ABI treatment attributes are aspects of the function type.
 A function type which applies an ABI treatment attribute to a
 parameter is a different type from an otherwise-identical function type
-that does not.  A single parameter may not have multiple ABI treatment
+that does not. A single parameter may not have multiple ABI treatment
 attributes.
 
 Support for this feature is target-dependent, although it should be
-supported on every target that Swift supports.  Query for this support
-with ``__has_attribute(swiftcall)``.  This implies support for the
+supported on every target that Swift supports. Query for this support
+with ``__has_attribute(swiftcall)``. This implies support for the
 ``swift_context``, ``swift_error_result``, and ``swift_indirect_result``
 attributes.
   }];
@@ -4244,7 +6562,8 @@ def SwiftContextDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``swift_context`` attribute marks a parameter of a ``swiftcall``
-function as having the special context-parameter ABI treatment.
+or ``swiftasynccall`` function as having the special context-parameter
+ABI treatment.
 
 This treatment generally passes the context value in a special register
 which is normally callee-preserved.
@@ -4252,6 +6571,47 @@ which is normally callee-preserved.
 A ``swift_context`` parameter must either be the last parameter or must be
 followed by a ``swift_error_result`` parameter (which itself must always be
 the last parameter).
+
+A context parameter must have pointer or reference type.
+  }];
+}
+
+def SwiftAsyncCallDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``swiftasynccall`` attribute indicates that a function is
+compatible with the low-level conventions of Swift async functions,
+provided it declares the right formal arguments.
+
+In most respects, this is similar to the ``swiftcall`` attribute, except for
+the following:
+
+- A parameter may be marked ``swift_async_context``, ``swift_context``
+  or ``swift_indirect_result`` (with the same restrictions on parameter
+  ordering as ``swiftcall``) but the parameter attribute
+  ``swift_error_result`` is not permitted.
+
+- A ``swiftasynccall`` function must have return type ``void``.
+
+- Within a ``swiftasynccall`` function, a call to a ``swiftasynccall``
+  function that is the immediate operand of a ``return`` statement is
+  guaranteed to be performed as a tail call. This syntax is allowed even
+  in C as an extension (a call to a void-returning function cannot be a
+  return operand in standard C). If something in the calling function would
+  semantically be performed after a guaranteed tail call, such as the
+  non-trivial destruction of a local variable or temporary,
+  then the program is ill-formed.
+  }];
+}
+
+def SwiftAsyncContextDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``swift_async_context`` attribute marks a parameter of a ``swiftasynccall``
+function as having the special asynchronous context-parameter ABI treatment.
+
+If the function is not ``swiftasynccall``, this attribute only generates
+extended frame information.
 
 A context parameter must have pointer or reference type.
   }];
@@ -4272,16 +6632,16 @@ This is modeled in C by pretending that the register is addressable memory:
   the call; if the call returns normally, the value is copied back into the
   variable.
 
-- The callee appears to receive the address of a variable.  This address
+- The callee appears to receive the address of a variable. This address
   is actually a hidden location in its own stack, initialized with the
-  value of the register upon entry.  When the function returns normally,
+  value of the register upon entry. When the function returns normally,
   the value in that hidden location is written back to the register.
 
 A ``swift_error_result`` parameter must be the last parameter, and it must be
 preceded by a ``swift_context`` parameter.
 
 A ``swift_error_result`` parameter must have type ``T**`` or ``T*&`` for some
-type T.  Note that no qualifiers are permitted on the intermediate level.
+type T. Note that no qualifiers are permitted on the intermediate level.
 
 It is undefined behavior if the caller does not pass a pointer or
 reference to a valid object.
@@ -4296,12 +6656,13 @@ def SwiftIndirectResultDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``swift_indirect_result`` attribute marks a parameter of a ``swiftcall``
-function as having the special indirect-result ABI treatment.
+or ``swiftasynccall`` function as having the special indirect-result ABI
+treatment.
 
 This treatment gives the parameter the target's normal indirect-result
 ABI treatment, which may involve passing it differently from an ordinary
-parameter.  However, only the first indirect result will receive this
-treatment.  Furthermore, low-level lowering may decide that a direct result
+parameter. However, only the first indirect result will receive this
+treatment. Furthermore, low-level lowering may decide that a direct result
 must be returned indirectly; if so, this will take priority over the
 ``swift_indirect_result`` parameters.
 
@@ -4309,7 +6670,7 @@ A ``swift_indirect_result`` parameter must either be the first parameter or
 follow another ``swift_indirect_result`` parameter.
 
 A ``swift_indirect_result`` parameter must have type ``T*`` or ``T&`` for
-some object type ``T``.  If ``T`` is a complete type at the point of
+some object type ``T``. If ``T`` is a complete type at the point of
 definition of a function, it is undefined behavior if the argument
 value does not point to storage of adequate size and alignment for a
 value of type ``T``.
@@ -4318,6 +6679,78 @@ Making indirect results explicit in the signature allows C functions to
 directly construct objects into them without relying on language
 optimizations like C++'s named return value optimization (NRVO).
   }];
+}
+
+def SwiftAsyncDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_async";
+  let Content = [{
+The ``swift_async`` attribute specifies if and how a particular function or
+Objective-C method is imported into a swift async method. For instance:
+
+.. code-block:: objc
+
+  @interface MyClass : NSObject
+  -(void)notActuallyAsync:(int)p1 withCompletionHandler:(void (^)())handler
+      __attribute__((swift_async(none)));
+
+  -(void)actuallyAsync:(int)p1 callThisAsync:(void (^)())fun
+      __attribute__((swift_async(swift_private, 1)));
+  @end
+
+Here, ``notActuallyAsync:withCompletionHandler`` would have been imported as
+``async`` (because it's last parameter's selector piece is
+``withCompletionHandler``) if not for the ``swift_async(none)`` attribute.
+Conversely, ``actuallyAsync:callThisAsync`` wouldn't have been imported as
+``async`` if not for the ``swift_async`` attribute because it doesn't match the
+naming convention.
+
+When using ``swift_async`` to enable importing, the first argument to the
+attribute is either ``swift_private`` or ``not_swift_private`` to indicate
+whether the function/method is private to the current framework, and the second
+argument is the index of the completion handler parameter.
+  }];
+}
+
+def SwiftAsyncErrorDocs : Documentation {
+  let Category = SwiftDocs;
+  let Heading = "swift_async_error";
+  let Content = [{
+The ``swift_async_error`` attribute specifies how an error state will be
+represented in a swift async method. It's a bit analogous to the ``swift_error``
+attribute for the generated async method. The ``swift_async_error`` attribute
+can indicate a variety of different ways of representing an error.
+
+- ``__attribute__((swift_async_error(zero_argument, N)))``, specifies that the
+  async method is considered to have failed if the Nth argument to the
+  completion handler is zero.
+
+- ``__attribute__((swift_async_error(nonzero_argument, N)))``, specifies that
+  the async method is considered to have failed if the Nth argument to the
+  completion handler is non-zero.
+
+- ``__attribute__((swift_async_error(nonnull_error)))``, specifies that the
+  async method is considered to have failed if the ``NSError *`` argument to the
+  completion handler is non-null.
+
+- ``__attribute__((swift_async_error(none)))``, specifies that the async method
+  cannot fail.
+
+
+For instance:
+
+.. code-block:: objc
+
+  @interface MyClass : NSObject
+  -(void)asyncMethod:(void (^)(char, int, float))handler
+      __attribute__((swift_async(swift_private, 1)))
+      __attribute__((swift_async_error(zero_argument, 2)));
+  @end
+
+Here, the ``swift_async`` attribute specifies that ``handler`` is the completion
+handler for this method, and the ``swift_async_error`` attribute specifies that
+the ``int`` parameter is the one that represents the error.
+}];
 }
 
 def SuppressDocs : Documentation {
@@ -4360,6 +6793,56 @@ the old mangled name and the new code will use the new mangled name with tags.
   }];
 }
 
+def BuiltinAliasDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "clang::builtin_alias, clang_builtin_alias";
+  let Content = [{
+This attribute is used in the implementation of the C intrinsics.
+It allows the C intrinsic functions to be declared using the names defined
+in target builtins, and still be recognized as clang builtins equivalent to the
+underlying name. For example, ``riscv_vector.h`` declares the function ``vadd``
+with ``__attribute__((clang_builtin_alias(__builtin_rvv_vadd_vv_i8m1)))``.
+This ensures that both functions are recognized as that clang builtin,
+and in the latter case, the choice of which builtin to identify the
+function as can be deferred until after overload resolution.
+
+This attribute can only be used to set up the aliases for certain ARM/RISC-V
+C intrinsic functions; it is intended for use only inside ``arm_*.h`` and
+``riscv_*.h`` and is not a general mechanism for declaring arbitrary aliases
+for clang builtin functions.
+  }];
+}
+
+def PreferredNameDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+The ``preferred_name`` attribute can be applied to a class template, and
+specifies a preferred way of naming a specialization of the template. The
+preferred name will be used whenever the corresponding template specialization
+would otherwise be printed in a diagnostic or similar context.
+
+The preferred name must be a typedef or type alias declaration that refers to a
+specialization of the class template (not including any type qualifiers). In
+general this requires the template to be declared at least twice. For example:
+
+.. code-block:: c++
+
+  template<typename T> struct basic_string;
+  using string = basic_string<char>;
+  using wstring = basic_string<wchar_t>;
+  template<typename T> struct [[clang::preferred_name(string),
+                                clang::preferred_name(wstring)]] basic_string {
+    // ...
+  };
+
+
+Note that the ``preferred_name`` attribute will be ignored when the compiler
+writes a C++20 Module interface now. This is due to a compiler issue
+(https://github.com/llvm/llvm-project/issues/56490) that blocks users to modularize
+declarations with `preferred_name`. This is intended to be fixed in the future.
+  }];
+}
+
 def PreserveMostDocs : Documentation {
   let Category = DocCatCallingConvs;
   let Content = [{
@@ -4376,6 +6859,9 @@ apply for values returned in callee-saved registers.
 - On X86-64 the callee preserves all general purpose registers, except for
   R11. R11 can be used as a scratch register. Floating-point registers
   (XMMs/YMMs) are not preserved and need to be saved by the caller.
+
+- On AArch64 the callee preserve all general purpose registers, except X0-X8 and
+  X16-X18.
 
 The idea behind this convention is to support calls to runtime functions
 that have a hot path and a cold path. The hot path is usually a small piece
@@ -4417,6 +6903,10 @@ returned in callee-saved registers.
   R11. R11 can be used as a scratch register. Furthermore it also preserves
   all floating-point registers (XMMs/YMMs).
 
+- On AArch64 the callee preserve all general purpose registers, except X0-X8 and
+  X16-X18. Furthermore it also preserves lower 128 bits of V8-V31 SIMD - floating
+  point registers.
+
 The idea behind this convention is to support calls to runtime functions
 that don't need to call out to any other functions.
 
@@ -4451,13 +6941,23 @@ string argument which is the message to display when emitting the warning.
 def IFuncDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-``__attribute__((ifunc("resolver")))`` is used to mark that the address of a declaration should be resolved at runtime by calling a resolver function.
+``__attribute__((ifunc("resolver")))`` is used to mark that the address of a
+declaration should be resolved at runtime by calling a resolver function.
 
-The symbol name of the resolver function is given in quotes.  A function with this name (after mangling) must be defined in the current translation unit; it may be ``static``.  The resolver function should return a pointer.
+The symbol name of the resolver function is given in quotes. A function with
+this name (after mangling) must be defined in the current translation unit; it
+may be ``static``. The resolver function should return a pointer.
 
-The ``ifunc`` attribute may only be used on a function declaration.  A function declaration with an ``ifunc`` attribute is considered to be a definition of the declared entity.  The entity must not have weak linkage; for example, in C++, it cannot be applied to a declaration if a definition at that location would be considered inline.
+The ``ifunc`` attribute may only be used on a function declaration. A function
+declaration with an ``ifunc`` attribute is considered to be a definition of the
+declared entity. The entity must not have weak linkage; for example, in C++,
+it cannot be applied to a declaration if a definition at that location would be
+considered inline.
 
-Not all targets support this attribute. ELF target support depends on both the linker and runtime linker, and is available in at least lld 4.0 and later, binutils 2.20.1 and later, glibc v2.11.1 and later, and FreeBSD 9.1 and later. Non-ELF targets currently do not support this attribute.
+Not all targets support this attribute. ELF target support depends on both the
+linker and runtime linker, and is available in at least lld 4.0 and later,
+binutils 2.20.1 and later, glibc v2.11.1 and later, and FreeBSD 9.1 and later.
+Non-ELF targets currently do not support this attribute.
   }];
 }
 
@@ -4475,7 +6975,7 @@ def RenderScriptKernelAttributeDocs : Documentation {
 RenderScript.
 
 In RenderScript, ``kernel`` functions are used to express data-parallel
-computations.  The RenderScript runtime efficiently parallelizes ``kernel``
+computations. The RenderScript runtime efficiently parallelizes ``kernel``
 functions to run on computational resources such as multi-core CPUs and GPUs.
 See the RenderScript_ documentation for more information.
 
@@ -4487,13 +6987,23 @@ def XRayDocs : Documentation {
   let Category = DocCatFunction;
   let Heading = "xray_always_instrument, xray_never_instrument, xray_log_args";
   let Content = [{
-``__attribute__((xray_always_instrument))`` or ``[[clang::xray_always_instrument]]`` is used to mark member functions (in C++), methods (in Objective C), and free functions (in C, C++, and Objective C) to be instrumented with XRay. This will cause the function to always have space at the beginning and exit points to allow for runtime patching.
+``__attribute__((xray_always_instrument))`` or
+``[[clang::xray_always_instrument]]`` is used to mark member functions (in C++),
+methods (in Objective C), and free functions (in C, C++, and Objective C) to be
+instrumented with XRay. This will cause the function to always have space at
+the beginning and exit points to allow for runtime patching.
 
-Conversely, ``__attribute__((xray_never_instrument))`` or ``[[clang::xray_never_instrument]]`` will inhibit the insertion of these instrumentation points.
+Conversely, ``__attribute__((xray_never_instrument))`` or
+``[[clang::xray_never_instrument]]`` will inhibit the insertion of these
+instrumentation points.
 
-If a function has neither of these attributes, they become subject to the XRay heuristics used to determine whether a function should be instrumented or otherwise.
+If a function has neither of these attributes, they become subject to the XRay
+heuristics used to determine whether a function should be instrumented or
+otherwise.
 
-``__attribute__((xray_log_args(N)))`` or ``[[clang::xray_log_args(N)]]`` is used to preserve N function arguments for the logging function.  Currently, only N==1 is supported.
+``__attribute__((xray_log_args(N)))`` or ``[[clang::xray_log_args(N)]]`` is
+used to preserve N function arguments for the logging function. Currently,
+only N==1 is supported.
   }];
 }
 
@@ -4504,9 +7014,27 @@ def PatchableFunctionEntryDocs : Documentation {
 before the function entry and N-M NOPs after the function entry. This attribute
 takes precedence over the command line option ``-fpatchable-function-entry=N,M``.
 ``M`` defaults to 0 if omitted.
+
+This attribute is only supported on
+aarch64/aarch64-be/loongarch32/loongarch64/riscv32/riscv64/i386/x86-64 targets.
 }];
 }
 
+def HotFunctionEntryDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+``__attribute__((hot))`` marks a function as hot, as a manual alternative to PGO hotness data.
+If PGO data is available, the annotation ``__attribute__((hot))`` overrides the profile count based hotness (unlike ``__attribute__((cold))``).
+}];
+}
+
+def ColdFunctionEntryDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+``__attribute__((cold))`` marks a function as cold, as a manual alternative to PGO hotness data.
+If PGO data is available, the profile count based hotness overrides the ``__attribute__((cold))`` annotation (unlike ``__attribute__((hot))``).
+}];
+}
 def TransparentUnionDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{
@@ -4551,8 +7079,8 @@ def ObjCDirectDocs : Documentation {
   let Category = DocCatDecl;
   let Content = [{
 The ``objc_direct`` attribute can be used to mark an Objective-C method as
-being *direct*.  A direct method is treated statically like an ordinary method,
-but dynamically it behaves more like a C function.  This lowers some of the costs
+being *direct*. A direct method is treated statically like an ordinary method,
+but dynamically it behaves more like a C function. This lowers some of the costs
 associated with the method but also sacrifices some of the ordinary capabilities
 of Objective-C methods.
 
@@ -4599,7 +7127,7 @@ It is an error to do any of the following:
 If any of these rules would be violated if every method defined in an
 ``@implementation`` within a single linkage unit were declared in an
 appropriate class interface, the program is ill-formed with no diagnostic
-required.  If a violation of this rule is not diagnosed, behavior remains
+required. If a violation of this rule is not diagnosed, behavior remains
 well-defined; this paragraph is simply reserving the right to diagnose such
 conflicts in the future, not to treat them as undefined behavior.
 
@@ -4611,11 +7139,11 @@ For the purpose of these rules, a "class interface" includes a class's primary
 and all the class interfaces of its superclasses.
 
 An Objective-C property can be declared with the ``direct`` property
-attribute.  If a direct property declaration causes an implicit declaration of
+attribute. If a direct property declaration causes an implicit declaration of
 a getter or setter method (that is, if the given method is not explicitly
 declared elsewhere), the method is declared to be direct.
 
-Some programmers may wish to make many methods direct at once.  In order
+Some programmers may wish to make many methods direct at once. In order
 to simplify this, the ``objc_direct_members`` attribute is provided; see its
 documentation for more information.
   }];
@@ -4626,12 +7154,12 @@ def ObjCDirectMembersDocs : Documentation {
   let Content = [{
 The ``objc_direct_members`` attribute can be placed on an Objective-C
 ``@interface`` or ``@implementation`` to mark that methods declared
-therein should be considered direct by default.  See the documentation
+therein should be considered direct by default. See the documentation
 for ``objc_direct`` for more information about direct methods.
 
 When ``objc_direct_members`` is placed on an ``@interface`` block, every
-method in the block is considered to be declared as direct.  This includes any
-implicit method declarations introduced by property declarations.  If the method
+method in the block is considered to be declared as direct. This includes any
+implicit method declarations introduced by property declarations. If the method
 redeclares a non-direct method, the declaration is ill-formed, exactly as if the
 method was annotated with the ``objc_direct`` attribute.
 
@@ -4640,6 +7168,22 @@ methods defined in the block are considered to be declared as direct unless
 they have been previously declared as non-direct in any interface of the class.
 This includes the implicit method definitions introduced by synthesized
 properties, including auto-synthesized properties.
+  }];
+}
+
+def ObjCNonRuntimeProtocolDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+The ``objc_non_runtime_protocol`` attribute can be used to mark that an
+Objective-C protocol is only used during static type-checking and doesn't need
+to be represented dynamically. This avoids several small code-size and run-time
+overheads associated with handling the protocol's metadata. A non-runtime
+protocol cannot be used as the operand of a ``@protocol`` expression, and
+dynamic attempts to find it with ``objc_getProtocol`` will fail.
+
+If a non-runtime protocol inherits from any ordinary protocols, classes and
+derived protocols that declare conformance to the non-runtime protocol will
+dynamically list their conformance to those bare protocols.
   }];
 }
 
@@ -4758,8 +7302,8 @@ accessed. The following are examples of valid expressions where may not be diagn
   p = &s->a;
   p = &(*s).a;
 
-``noderef`` is currently only supported for pointers and arrays and not usable for
-references or Objective-C object pointers.
+``noderef`` is currently only supported for pointers and arrays and not usable
+for references or Objective-C object pointers.
 
 .. code-block: c++
 
@@ -4936,6 +7480,59 @@ in the future.
   }];
 }
 
+def CalledOnceDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``called_once`` attribute specifies that the annotated function or method
+parameter is invoked exactly once on all execution paths. It only applies
+to parameters with function-like types, i.e. function pointers or blocks. This
+concept is particularly useful for asynchronous programs.
+
+Clang implements a check for ``called_once`` parameters,
+``-Wcalled-once-parameter``. It is on by default and finds the following
+violations:
+
+* Parameter is not called at all.
+
+* Parameter is called more than once.
+
+* Parameter is not called on one of the execution paths.
+
+In the latter case, Clang pinpoints the path where parameter is not invoked
+by showing the control-flow statement where the path diverges.
+
+.. code-block:: objc
+
+  void fooWithCallback(void (^callback)(void) __attribute__((called_once))) {
+    if (somePredicate()) {
+      ...
+      callback();
+    } else {
+      callback(); // OK: callback is called on every path
+    }
+  }
+
+  void barWithCallback(void (^callback)(void) __attribute__((called_once))) {
+    if (somePredicate()) {
+      ...
+      callback(); // note: previous call is here
+    }
+    callback(); // warning: callback is called twice
+  }
+
+  void foobarWithCallback(void (^callback)(void) __attribute__((called_once))) {
+    if (somePredicate()) {  // warning: callback is not called when condition is false
+      ...
+      callback();
+    }
+  }
+
+This attribute is useful for API developers who want to double-check if they
+implemented their method correctly.
+
+  }];
+}
+
 def GnuInlineDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -5081,6 +7678,15 @@ attribute can also be written using C++11 syntax: ``[[mig::server_routine]]``.
 }];
 }
 
+def MinSizeDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+This function attribute indicates that optimization passes and code generator passes
+make choices that keep the function code size as small as possible. Optimizations may
+also sacrifice runtime performance in order to minimize the size of the generated code.
+  }];
+}
+
 def MSAllocatorDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -5137,6 +7743,17 @@ template when declaring the texture reference. A texture reference variable
 could be accessed on the host side and, on the device side, might be translated
 into an internal texture object, which is established through texture bind and
 unbind runtime APIs.
+  }];
+}
+
+def HIPManagedAttrDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+The ``__managed__`` attribute can be applied to a global variable declaration in HIP.
+A managed variable is emitted as an undefined global symbol in the device binary and is
+registered by ``__hipRegisterManagedVariable`` in init functions. The HIP runtime allocates
+managed memory and uses it to define the symbol when loading the device binary.
+A managed variable can be accessed in both device and host code.
   }];
 }
 
@@ -5227,15 +7844,16 @@ This attribute can only be used to set up the aliases for certain Arm
 intrinsic functions; it is intended for use only inside ``arm_*.h``
 and is not a general mechanism for declaring arbitrary aliases for
 clang builtin functions.
+
+In order to avoid duplicating the attribute definitions for similar
+purpose for other architecture, there is a general form for the
+attribute `clang_builtin_alias`.
   }];
 }
 
 def NoBuiltinDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-.. Note:: This attribute is not yet fully implemented, it is validated but has
-          no effect on the generated code.
-
 The ``__attribute__((no_builtin))`` is similar to the ``-fno-builtin`` flag
 except it is specific to the body of a function. The attribute may also be
 applied to a virtual function but has no effect on the behavior of overriding
@@ -5267,6 +7885,31 @@ once.
   }];
 }
 
+def UsingIfExistsDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+The ``using_if_exists`` attribute applies to a using-declaration. It allows
+programmers to import a declaration that potentially does not exist, instead
+deferring any errors to the point of use. For instance:
+
+.. code-block:: c++
+
+  namespace empty_namespace {};
+  __attribute__((using_if_exists))
+  using empty_namespace::does_not_exist; // no error!
+
+  does_not_exist x; // error: use of unresolved 'using_if_exists'
+
+The C++ spelling of the attribute (`[[clang::using_if_exists]]`) is also
+supported as a clang extension, since ISO C++ doesn't support attributes in this
+position. If the entity referred to by the using-declaration is found by name
+lookup, the attribute has no effect. This attribute is useful for libraries
+(primarily, libc++) that wish to redeclare a set of declarations in another
+namespace, when the availability of those declarations is difficult or
+impossible to detect at compile time with the preprocessor.
+  }];
+}
+
 def HandleDocs : DocumentationCategory<"Handle Attributes"> {
   let Content = [{
 Handles are a way to identify resources like files, sockets, and processes.
@@ -5285,19 +7928,21 @@ def AcquireHandleDocs : Documentation {
 If this annotation is on a function or a function type it is assumed to return
 a new handle. In case this annotation is on an output parameter,
 the function is assumed to fill the corresponding argument with a new
-handle.
+handle. The attribute requires a string literal argument which used to
+identify the handle with later uses of ``use_handle`` or
+``release_handle``.
 
 .. code-block:: c++
 
   // Output arguments from Zircon.
   zx_status_t zx_socket_create(uint32_t options,
-                               zx_handle_t __attribute__((acquire_handle)) * out0,
-                               zx_handle_t* out1 [[clang::acquire_handle]]);
+                               zx_handle_t __attribute__((acquire_handle("zircon"))) * out0,
+                               zx_handle_t* out1 [[clang::acquire_handle("zircon")]]);
 
 
   // Returned handle.
-  [[clang::acquire_handle]] int open(const char *path, int oflag, ... );
-  int open(const char *path, int oflag, ... ) __attribute__((acquire_handle));
+  [[clang::acquire_handle("tag")]] int open(const char *path, int oflag, ... );
+  int open(const char *path, int oflag, ... ) __attribute__((acquire_handle("tag")));
   }];
 }
 
@@ -5305,12 +7950,13 @@ def UseHandleDocs : Documentation {
   let Category = HandleDocs;
   let Content = [{
 A function taking a handle by value might close the handle. If a function
-parameter is annotated with ``use_handle`` it is assumed to not to change
+parameter is annotated with ``use_handle(tag)`` it is assumed to not to change
 the state of the handle. It is also assumed to require an open handle to work with.
+The attribute requires a string literal argument to identify the handle being used.
 
 .. code-block:: c++
 
-  zx_status_t zx_port_wait(zx_handle_t handle [[clang::use_handle]],
+  zx_status_t zx_port_wait(zx_handle_t handle [[clang::use_handle("zircon")]],
                            zx_time_t deadline,
                            zx_port_packet_t* packet);
   }];
@@ -5319,13 +7965,170 @@ the state of the handle. It is also assumed to require an open handle to work wi
 def ReleaseHandleDocs : Documentation {
   let Category = HandleDocs;
   let Content = [{
-If a function parameter is annotated with ``release_handle`` it is assumed to
-close the handle. It is also assumed to require an open handle to work with.
+If a function parameter is annotated with ``release_handle(tag)`` it is assumed to
+close the handle. It is also assumed to require an open handle to work with. The
+attribute requires a string literal argument to identify the handle being released.
 
 .. code-block:: c++
 
-  zx_status_t zx_handle_close(zx_handle_t handle [[clang::release_handle]]);
+  zx_status_t zx_handle_close(zx_handle_t handle [[clang::release_handle("tag")]]);
   }];
+}
+
+def UnsafeBufferUsageDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The attribute ``[[clang::unsafe_buffer_usage]]`` should be placed on functions
+that need to be avoided as they are prone to buffer overflows. It is designed to
+work together with the off-by-default compiler warning ``-Wunsafe-buffer-usage``
+to help codebases transition away from raw pointer based buffer management,
+in favor of safer abstractions such as C++20 ``std::span``. The attribute causes
+``-Wunsafe-buffer-usage`` to warn on every use of the function, and it may
+enable ``-Wunsafe-buffer-usage`` to emit automatic fix-it hints
+which would help the user replace such unsafe functions with safe
+alternatives, though the attribute can be used even when the fix can't be automated.
+
+The attribute does not suppress ``-Wunsafe-buffer-usage`` inside the function
+to which it is attached. These warnings still need to be addressed.
+
+The attribute is warranted even if the only way a function can overflow
+the buffer is by violating the function's preconditions. For example, it
+would make sense to put the attribute on function ``foo()`` below because
+passing an incorrect size parameter would cause a buffer overflow:
+
+.. code-block:: c++
+
+  [[clang::unsafe_buffer_usage]]
+  void foo(int *buf, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+      buf[i] = i;
+    }
+  }
+
+The attribute is NOT warranted when the function uses safe abstractions,
+assuming that these abstractions weren't misused outside the function.
+For example, function ``bar()`` below doesn't need the attribute,
+because assuming that the container ``buf`` is well-formed (has size that
+fits the original buffer it refers to), overflow cannot occur:
+
+.. code-block:: c++
+
+  void bar(std::span<int> buf) {
+    for (size_t i = 0; i < buf.size(); ++i) {
+      buf[i] = i;
+    }
+  }
+
+In this case function ``bar()`` enables the user to keep the buffer
+"containerized" in a span for as long as possible. On the other hand,
+Function ``foo()`` in the previous example may have internal
+consistency, but by accepting a raw buffer it requires the user to unwrap
+their span, which is undesirable according to the programming model
+behind ``-Wunsafe-buffer-usage``.
+
+The attribute is warranted when a function accepts a raw buffer only to
+immediately put it into a span:
+
+.. code-block:: c++
+
+  [[clang::unsafe_buffer_usage]]
+  void baz(int *buf, size_t size) {
+    std::span<int> sp{ buf, size };
+    for (size_t i = 0; i < sp.size(); ++i) {
+      sp[i] = i;
+    }
+  }
+
+In this case ``baz()`` does not contain any unsafe operations, but the awkward
+parameter type causes the caller to unwrap the span unnecessarily.
+Note that regardless of the attribute, code inside ``baz()`` isn't flagged
+by ``-Wunsafe-buffer-usage`` as unsafe. It is definitely undesirable,
+but if ``baz()`` is on an API surface, there is no way to improve it
+to make it as safe as ``bar()`` without breaking the source and binary
+compatibility with existing users of the function. In such cases
+the proper solution would be to create a different function (possibly
+an overload of ``baz()``) that accepts a safe container like ``bar()``,
+and then use the attribute on the original ``baz()`` to help the users
+update their code to use the new function.
+  }];
+}
+
+def DiagnoseAsBuiltinDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``diagnose_as_builtin`` attribute indicates that Fortify diagnostics are to
+be applied to the declared function as if it were the function specified by the
+attribute. The builtin function whose diagnostics are to be mimicked should be
+given. In addition, the order in which arguments should be applied must also
+be given.
+
+For example, the attribute can be used as follows.
+
+.. code-block:: c
+
+  __attribute__((diagnose_as_builtin(__builtin_memset, 3, 2, 1)))
+  void *mymemset(int n, int c, void *s) {
+    // ...
+  }
+
+This indicates that calls to ``mymemset`` should be diagnosed as if they were
+calls to ``__builtin_memset``. The arguments ``3, 2, 1`` indicate by index the
+order in which arguments of ``mymemset`` should be applied to
+``__builtin_memset``. The third argument should be applied first, then the
+second, and then the first. Thus (when Fortify warnings are enabled) the call
+``mymemset(n, c, s)`` will diagnose overflows as if it were the call
+``__builtin_memset(s, c, n)``.
+
+For variadic functions, the variadic arguments must come in the same order as
+they would to the builtin function, after all normal arguments. For instance,
+to diagnose a new function as if it were `sscanf`, we can use the attribute as
+follows.
+
+.. code-block:: c
+
+  __attribute__((diagnose_as_builtin(sscanf, 1, 2)))
+  int mysscanf(const char *str, const char *format, ...)  {
+    // ...
+  }
+
+Then the call `mysscanf("abc def", "%4s %4s", buf1, buf2)` will be diagnosed as
+if it were the call `sscanf("abc def", "%4s %4s", buf1, buf2)`.
+
+This attribute cannot be applied to non-static member functions.
+}];
+}
+
+def ArmSveVectorBitsDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+The ``arm_sve_vector_bits(N)`` attribute is defined by the Arm C Language
+Extensions (ACLE) for SVE. It is used to define fixed-length (VLST) variants of
+sizeless types (VLAT).
+
+For example:
+
+.. code-block:: c
+
+  #include <arm_sve.h>
+
+  #if __ARM_FEATURE_SVE_BITS==512
+  typedef svint32_t fixed_svint32_t __attribute__((arm_sve_vector_bits(512)));
+  #endif
+
+Creates a type ``fixed_svint32_t`` that is a fixed-length variant of
+``svint32_t`` that contains exactly 512-bits. Unlike ``svint32_t``, this type
+can be used in globals, structs, unions, and arrays, all of which are
+unsupported for sizeless types.
+
+The attribute can be attached to a single SVE vector (such as ``svint32_t``) or
+to the SVE predicate type ``svbool_t``, this excludes tuple types such as
+``svint32x4_t``. The behavior of the attribute is undefined unless
+``N==__ARM_FEATURE_SVE_BITS``, the implementation defined feature macro that is
+enabled under the ``-msve-vector-bits`` flag.
+
+For more information See `Arm C Language Extensions for SVE
+<https://developer.arm.com/documentation/100987/latest>`_ for more information.
+}];
 }
 
 def ArmMveStrictPolymorphismDocs : Documentation {
@@ -5373,7 +8176,7 @@ other than overloading.
 def ArmCmseNSCallDocs : Documentation {
   let Category = DocCatType;
   let Content = [{
-This attribute declares a non-secure function type.  When compiling for secure
+This attribute declares a non-secure function type. When compiling for secure
 state, a call to such a function would switch from secure to non-secure state.
 All non-secure function calls must happen only through a function pointer, and
 a non-secure function type should only be used as a base type of a pointer.
@@ -5392,5 +8195,443 @@ to and from secure state, respectively, and prevent flow of information
 to non-secure state, except via return values. See `ARMv8-M Security Extensions:
 Requirements on Development Tools - Engineering Specification Documentation
 <https://developer.arm.com/docs/ecm0359818/latest/>`_ for more information.
+  }];
+}
+
+def AlwaysInlineDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Inlining heuristics are disabled and inlining is always attempted regardless of
+optimization level.
+
+``[[clang::always_inline]]`` spelling can be used as a statement attribute; other
+spellings of the attribute are not supported on statements. If a statement is
+marked ``[[clang::always_inline]]`` and contains calls, the compiler attempts
+to inline those calls.
+
+.. code-block:: c
+
+  int example(void) {
+    int i;
+    [[clang::always_inline]] foo(); // attempts to inline foo
+    [[clang::always_inline]] i = bar(); // attempts to inline bar
+    [[clang::always_inline]] return f(42, baz(bar())); // attempts to inline everything
+  }
+
+A declaration statement, which is a statement, is not a statement that can have an
+attribute associated with it (the attribute applies to the declaration, not the
+statement in that case). So this use case will not work:
+
+.. code-block:: c
+
+  int example(void) {
+    [[clang::always_inline]] int i = bar();
+    return i;
+  }
+
+This attribute does not guarantee that inline substitution actually occurs.
+
+<ins>Note: applying this attribute to a coroutine at the `-O0` optimization level
+has no effect; other optimization levels may only partially inline and result in a
+diagnostic.</ins>
+
+See also `the Microsoft Docs on Inline Functions`_, `the GCC Common Function
+Attribute docs`_, and `the GCC Inline docs`_.
+
+.. _the Microsoft Docs on Inline Functions: https://docs.microsoft.com/en-us/cpp/cpp/inline-functions-cpp
+.. _the GCC Common Function Attribute docs: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html
+.. _the GCC Inline docs: https://gcc.gnu.org/onlinedocs/gcc/Inline.html
+
+}];
+  let Heading = "always_inline, __force_inline";
+}
+
+def EnforceTCBDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+  The ``enforce_tcb`` attribute can be placed on functions to enforce that a
+  trusted compute base (TCB) does not call out of the TCB. This generates a
+  warning every time a function not marked with an ``enforce_tcb`` attribute is
+  called from a function with the ``enforce_tcb`` attribute. A function may be a
+  part of multiple TCBs. Invocations through function pointers are currently
+  not checked. Builtins are considered to a part of every TCB.
+
+  - ``enforce_tcb(Name)`` indicates that this function is a part of the TCB named ``Name``
+  }];
+}
+
+def EnforceTCBLeafDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+  The ``enforce_tcb_leaf`` attribute satisfies the requirement enforced by
+  ``enforce_tcb`` for the marked function to be in the named TCB but does not
+  continue to check the functions called from within the leaf function.
+
+  - ``enforce_tcb_leaf(Name)`` indicates that this function is a part of the TCB named ``Name``
+  }];
+}
+
+def ErrorAttrDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "error, warning";
+  let Content = [{
+The ``error`` and ``warning`` function attributes can be used to specify a
+custom diagnostic to be emitted when a call to such a function is not
+eliminated via optimizations. This can be used to create compile time
+assertions that depend on optimizations, while providing diagnostics
+pointing to precise locations of the call site in the source.
+
+.. code-block:: c++
+
+  __attribute__((warning("oh no"))) void dontcall();
+  void foo() {
+    if (someCompileTimeAssertionThatsTrue)
+      dontcall(); // Warning
+
+    dontcall(); // Warning
+
+    if (someCompileTimeAssertionThatsFalse)
+      dontcall(); // No Warning
+    sizeof(dontcall()); // No Warning
+  }
+  }];
+}
+
+def ZeroCallUsedRegsDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+This attribute, when attached to a function, causes the compiler to zero a
+subset of all call-used registers before the function returns. It's used to
+increase program security by either mitigating `Return-Oriented Programming`_
+(ROP) attacks or preventing information leakage through registers.
+
+The term "call-used" means registers which are not guaranteed to be preserved
+unchanged for the caller by the current calling convention. This could also be
+described as "caller-saved" or "not callee-saved".
+
+The `choice` parameters gives the programmer flexibility to choose the subset
+of the call-used registers to be zeroed:
+
+- ``skip`` doesn't zero any call-used registers. This choice overrides any
+  command-line arguments.
+- ``used`` only zeros call-used registers used in the function. By ``used``, we
+  mean a register whose contents have been set or referenced in the function.
+- ``used-gpr`` only zeros call-used GPR registers used in the function.
+- ``used-arg`` only zeros call-used registers used to pass arguments to the
+  function.
+- ``used-gpr-arg`` only zeros call-used GPR registers used to pass arguments to
+  the function.
+- ``all`` zeros all call-used registers.
+- ``all-gpr`` zeros all call-used GPR registers.
+- ``all-arg`` zeros all call-used registers used to pass arguments to the
+  function.
+- ``all-gpr-arg`` zeros all call-used GPR registers used to pass arguments to
+  the function.
+
+The default for the attribute is controlled by the ``-fzero-call-used-regs``
+flag.
+
+.. _Return-Oriented Programming: https://en.wikipedia.org/wiki/Return-oriented_programming
+  }];
+}
+
+def NumThreadsDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``numthreads`` attribute applies to HLSL shaders where explcit thread counts
+are required. The ``X``, ``Y``, and ``Z`` values provided to the attribute
+dictate the thread id. Total number of threads executed is ``X * Y * Z``.
+
+The full documentation is available here: https://docs.microsoft.com/en-us/windows/win32/direct3dhlsl/sm5-attributes-numthreads
+  }];
+}
+
+def HLSLSV_ShaderTypeAttrDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``shader`` type attribute applies to HLSL shader entry functions to
+identify the shader type for the entry function.
+The syntax is:
+
+.. code-block:: text
+
+  ``[shader(string-literal)]``
+
+where the string literal is one of: "pixel", "vertex", "geometry", "hull",
+"domain", "compute", "raygeneration", "intersection", "anyhit", "closesthit",
+"miss", "callable", "mesh", "amplification". Normally the shader type is set
+by shader target with the ``-T`` option like ``-Tps_6_1``. When compiling to a
+library target like ``lib_6_3``, the shader type attribute can help the
+compiler to identify the shader type. It is mostly used by Raytracing shaders
+where shaders must be compiled into a library and linked at runtime.
+  }];
+}
+
+def ClangRandomizeLayoutDocs : Documentation {
+  let Category = DocCatDecl;
+  let Heading = "randomize_layout, no_randomize_layout";
+  let Content = [{
+The attribute ``randomize_layout``, when attached to a C structure, selects it
+for structure layout field randomization; a compile-time hardening technique. A
+"seed" value, is specified via the ``-frandomize-layout-seed=`` command line flag.
+For example:
+
+.. code-block:: bash
+
+  SEED=`od -A n -t x8 -N 32 /dev/urandom | tr -d ' \n'`
+  make ... CFLAGS="-frandomize-layout-seed=$SEED" ...
+
+You can also supply the seed in a file with ``-frandomize-layout-seed-file=``.
+For example:
+
+.. code-block:: bash
+
+  od -A n -t x8 -N 32 /dev/urandom | tr -d ' \n' > /tmp/seed_file.txt
+  make ... CFLAGS="-frandomize-layout-seed-file=/tmp/seed_file.txt" ...
+
+The randomization is deterministic based for a given seed, so the entire
+program should be compiled with the same seed, but keep the seed safe
+otherwise.
+
+The attribute ``no_randomize_layout``, when attached to a C structure,
+instructs the compiler that this structure should not have its field layout
+randomized.
+  }];
+}
+
+def HLSLSV_GroupIndexDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``SV_GroupIndex`` semantic, when applied to an input parameter, specifies a
+data binding to map the group index to the specified parameter. This attribute
+is only supported in compute shaders.
+
+The full documentation is available here: https://docs.microsoft.com/en-us/windows/win32/direct3dhlsl/sv-groupindex
+  }];
+}
+
+def HLSLResourceBindingDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The resource binding attribute sets the virtual register and logical register space for a resource.
+Attribute spelling in HLSL is: ``register(slot [, space])``.
+``slot`` takes the format ``[type][number]``,
+where ``type`` is a single character specifying the resource type and ``number`` is the virtual register number.
+
+Register types are:
+t for shader resource views (SRV),
+s for samplers,
+u for unordered access views (UAV),
+b for constant buffer views (CBV).
+
+Register space is specified in the format ``space[number]`` and defaults to ``space0`` if omitted.
+Here're resource binding examples with and without space:
+.. code-block:: c++
+
+  RWBuffer<float> Uav : register(u3, space1);
+  Buffer<float> Buf : register(t1);
+
+The full documentation is available here: https://docs.microsoft.com/en-us/windows/win32/direct3d12/resource-binding-in-hlsl
+  }];
+}
+
+def HLSLSV_DispatchThreadIDDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``SV_DispatchThreadID`` semantic, when applied to an input parameter,
+specifies a data binding to map the global thread offset within the Dispatch
+call (per dimension of the group) to the specified parameter.
+When applied to a field of a struct, the data binding is specified to the field
+when the struct is used as a parameter type.
+The semantic on the field is ignored when not used as a parameter.
+This attribute is only supported in compute shaders.
+
+The full documentation is available here: https://docs.microsoft.com/en-us/windows/win32/direct3dhlsl/sv-dispatchthreadid
+  }];
+}
+
+def HLSLGroupSharedAddressSpaceDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+HLSL enables threads of a compute shader to exchange values via shared memory.
+HLSL provides barrier primitives such as GroupMemoryBarrierWithGroupSync,
+and so on to ensure the correct ordering of reads and writes to shared memory
+in the shader and to avoid data races.
+Here's an example to declare a groupshared variable.
+.. code-block:: c++
+
+  groupshared GSData data[5*5*1];
+
+The full documentation is available here: https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx-graphics-hlsl-variable-syntax#group-shared
+  }];
+}
+
+def AnnotateTypeDocs : Documentation {
+  let Category = DocCatType;
+  let Heading = "annotate_type";
+  let Content = [{
+This attribute is used to add annotations to types, typically for use by static
+analysis tools that are not integrated into the core Clang compiler (e.g.,
+Clang-Tidy checks or out-of-tree Clang-based tools). It is a counterpart to the
+`annotate` attribute, which serves the same purpose, but for declarations.
+
+The attribute takes a mandatory string literal argument specifying the
+annotation category and an arbitrary number of optional arguments that provide
+additional information specific to the annotation category. The optional
+arguments must be constant expressions of arbitrary type.
+
+For example:
+
+.. code-block:: c++
+
+  int* [[clang::annotate_type("category1", "foo", 1)]] f(int[[clang::annotate_type("category2")]] *);
+
+The attribute does not have any effect on the semantics of the type system,
+neither type checking rules, nor runtime semantics. In particular:
+
+- ``std::is_same<T, T [[clang::annotate_type("foo")]]>`` is true for all types
+  ``T``.
+
+- It is not permissible for overloaded functions or template specializations
+  to differ merely by an ``annotate_type`` attribute.
+
+- The presence of an ``annotate_type`` attribute will not affect name
+  mangling.
+  }];
+}
+
+def WeakDocs : Documentation {
+  let Category = DocCatDecl;
+  let Content = [{
+
+In supported output formats the ``weak`` attribute can be used to
+specify that a variable or function should be emitted as a symbol with
+``weak`` (if a definition) or ``extern_weak`` (if a declaration of an
+external symbol) `linkage
+<https://llvm.org/docs/LangRef.html#linkage-types>`_.
+
+If there is a non-weak definition of the symbol the linker will select
+that over the weak. They must have same type and alignment (variables
+must also have the same size), but may have a different value.
+
+If there are multiple weak definitions of same symbol, but no non-weak
+definition, they should have same type, size, alignment and value, the
+linker will select one of them (see also selectany_ attribute).
+
+If the ``weak`` attribute is applied to a ``const`` qualified variable
+definition that variable is no longer consider a compiletime constant
+as its value can change during linking (or dynamic linking). This
+means that it can e.g no longer be part of an initializer expression.
+
+.. code-block:: c
+
+  const int ANSWER __attribute__ ((weak)) = 42;
+
+  /* This function may be replaced link-time */
+  __attribute__ ((weak)) void debug_log(const char *msg)
+  {
+      fprintf(stderr, "DEBUG: %s\n", msg);
+  }
+
+  int main(int argc, const char **argv)
+  {
+      debug_log ("Starting up...");
+
+      /* This may print something else than "6 * 7 = 42",
+         if there is a non-weak definition of "ANSWER" in
+	 an object linked in */
+      printf("6 * 7 = %d\n", ANSWER);
+
+      return 0;
+   }
+
+If an external declaration is marked weak and that symbol does not
+exist during linking (possibly dynamic) the address of the symbol will
+evaluate to NULL.
+
+.. code-block:: c
+
+  void may_not_exist(void) __attribute__ ((weak));
+
+  int main(int argc, const char **argv)
+  {
+      if (may_not_exist) {
+          may_not_exist();
+      } else {
+          printf("Function did not exist\n");
+      }
+      return 0;
+  }
+  }];
+}
+
+def FunctionReturnThunksDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The attribute ``function_return`` can replace return instructions with jumps to
+target-specific symbols. This attribute supports 2 possible values,
+corresponding to the values supported by the ``-mfunction-return=`` command
+line flag:
+
+* ``__attribute__((function_return("keep")))`` to disable related transforms.
+  This is useful for undoing global setting from ``-mfunction-return=`` locally
+  for individual functions.
+* ``__attribute__((function_return("thunk-extern")))`` to replace returns with
+  jumps, while NOT emitting the thunk.
+
+The values ``thunk`` and ``thunk-inline`` from GCC are not supported.
+
+The symbol used for ``thunk-extern`` is target specific:
+* X86: ``__x86_return_thunk``
+
+As such, this function attribute is currently only supported on X86 targets.
+  }];
+}
+
+def ReadOnlyPlacementDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{This attribute is attached to a structure, class or union declaration.
+  When attached to a record declaration/definition, it checks if all instances
+  of this type can be placed in the read-only data segment of the program. If it
+  finds an instance that can not be placed in a read-only segment, the compiler
+  emits a warning at the source location where the type was used.
+
+  Examples:
+  * ``struct __attribute__((enforce_read_only_placement)) Foo;``
+  * ``struct __attribute__((enforce_read_only_placement)) Bar { ... };``
+
+  Both ``Foo`` and ``Bar`` types have the ``enforce_read_only_placement`` attribute.
+
+  The goal of introducing this attribute is to assist developers with writing secure
+  code. A ``const``-qualified global is generally placed in the read-only section
+  of the memory that has additional run time protection from malicious writes. By
+  attaching this attribute to a declaration, the developer can express the intent
+  to place all instances of the annotated type in the read-only program memory.
+
+  Note 1: The attribute doesn't guarantee that the object will be placed in the
+  read-only data segment as it does not instruct the compiler to ensure such
+  a placement. It emits a warning if something in the code can be proven to prevent
+  an instance from being placed in the read-only data segment.
+
+  Note 2: Currently, clang only checks if all global declarations of a given type 'T'
+  are ``const``-qualified. The following conditions would also prevent the data to be
+  put into read only segment, but the corresponding warnings are not yet implemented.
+
+  1. An instance of type ``T`` is allocated on the heap/stack.
+  2. Type ``T`` defines/inherits a mutable field.
+  3. Type ``T`` defines/inherits non-constexpr constructor(s) for initialization.
+  4. A field of type ``T`` is defined by type ``Q``, which does not bear the
+     ``enforce_read_only_placement`` attribute.
+  5. A type ``Q`` inherits from type ``T`` and it does not have the
+     ``enforce_read_only_placement`` attribute.
+  }];
+}
+
+def WebAssemblyFuncrefDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+Clang supports the ``__funcref`` attribute for the WebAssembly target. 
+This attribute may be attached to a function pointer type, where it modifies 
+its underlying representation to be a WebAssembly ``funcref``.
   }];
 }

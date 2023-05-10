@@ -1,4 +1,4 @@
-// RUN: %clangxx -fsyntax-only -Xclang -verify -DCL_TARGET_OPENCL_VERSION=220 %s -I %sycl_include -Xclang -verify-ignore-unexpected=note,warning
+// RUN: %clangxx -fsycl -fsyntax-only -Xclang -verify -DCL_TARGET_OPENCL_VERSION=220 %s -Xclang -verify-ignore-unexpected=note,warning
 // expected-no-diagnostics
 //
 //==-- unable-to-redeclare-device.cpp --------------------------------------==//
@@ -11,7 +11,7 @@
 // This test checks that the following symbols (Device, GroupOperation) are not
 // defined in global namespace by sycl.hpp and available to user
 //===----------------------------------------------------------------------===//
-#include <CL/sycl.hpp>
+#include <sycl/sycl.hpp>
 
 enum GroupOperation {
   ADD, SUB

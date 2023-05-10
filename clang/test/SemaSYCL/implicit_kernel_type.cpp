@@ -1,18 +1,18 @@
-// RUN: %clang_cc1 -I %S/Inputs -fsycl -fsycl-is-device -fsycl-int-header=%t.h -fsyntax-only -verify %s -Werror=sycl-strict -DERROR
-// RUN: %clang_cc1 -I %S/Inputs -fsycl -fsycl-is-device -fsycl-int-header=%t.h -fsyntax-only -verify %s -Wsycl-strict -DWARN
-// RUN: %clang_cc1 -I %S/Inputs -fsycl -fsycl-is-device -fsycl-int-header=%t.h -fsycl-unnamed-lambda -fsyntax-only -verify %s -Werror=sycl-strict
-#include <sycl.hpp>
+// RUN: %clang_cc1 -fsycl-is-device -internal-isystem %S/Inputs -fno-sycl-unnamed-lambda -fsyntax-only -sycl-std=2020 -verify %s -Werror=sycl-strict -DERROR
+// RUN: %clang_cc1 -fsycl-is-device -internal-isystem %S/Inputs -fno-sycl-unnamed-lambda -fsyntax-only -sycl-std=2020 -verify %s  -Wsycl-strict -DWARN
+// RUN: %clang_cc1 -fsycl-is-device -internal-isystem %S/Inputs -fsyntax-only -sycl-std=2020 -verify %s  -Werror=sycl-strict -DERROR
 
-#ifdef __SYCL_UNNAMED_LAMBDA__
-// expected-no-diagnostics
-#endif
+// This test verifies that incorrect kernel names are diagnosed correctly.
 
-using namespace cl::sycl;
+#include "sycl.hpp"
 
+using namespace sycl;
+
+// user-defined function
 void function() {
 }
 
-// user-defined class
+// user-defined struct
 struct myWrapper {
 };
 
@@ -20,34 +20,47 @@ struct myWrapper {
 class myWrapper2;
 
 int main() {
-  cl::sycl::queue q;
-#ifndef __SYCL_UNNAMED_LAMBDA__
-  // expected-note@+1 {{InvalidKernelName1 declared here}}
+  queue q;
+
   class InvalidKernelName1 {};
-  q.submit([&](cl::sycl::handler &h) {
-    // expected-error@+1 {{kernel needs to have a globally-visible name}}
+  // expected-error@#KernelSingleTask {{'InvalidKernelName1' is invalid; kernel name should be forward declarable at namespace scope}}
+  // expected-note@+2 {{in instantiation of function template specialization}}
+  q.submit([&](handler &h) {
     h.single_task<InvalidKernelName1>([]() {});
   });
-#endif
+
 #if defined(WARN)
-  // expected-warning@+6 {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
-  // expected-note@+5 {{fake_kernel declared here}}
+  // expected-warning@#KernelSingleTask {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
 #elif defined(ERROR)
-  // expected-error@+3 {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
+  // expected-error@#KernelSingleTask {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
+#endif
+
+  q.submit([&](handler &h) {
   // expected-note@+2 {{fake_kernel declared here}}
-#endif
-  cl::sycl::kernel_single_task<class fake_kernel>([]() { function(); });
-#if defined(WARN)
-  // expected-warning@+6 {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
-  // expected-note@+5 {{fake_kernel2 declared here}}
-#elif defined(ERROR)
-  // expected-error@+3 {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
-  // expected-note@+2 {{fake_kernel2 declared here}}
-#endif
-  cl::sycl::kernel_single_task<class fake_kernel2>([]() {
-    auto l = [](auto f) { f(); };
+  // expected-note@+1 {{in instantiation of function template specialization}}
+    h.single_task<class fake_kernel>([]() { function(); });
   });
-  cl::sycl::kernel_single_task<class myWrapper>([]() { function(); });
-  cl::sycl::kernel_single_task<class myWrapper2>([]() { function(); });
+
+#if defined(WARN)
+  // expected-warning@#KernelSingleTask {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
+#elif defined(ERROR)
+  // expected-error@#KernelSingleTask {{SYCL 1.2.1 specification requires an explicit forward declaration for a kernel type name; your program may not be portable}}
+#endif
+
+  q.submit([&](handler &h) {
+  // expected-note@+2 {{fake_kernel2 declared here}}
+  // expected-note@+1 {{in instantiation of function template specialization}}
+    h.single_task<class fake_kernel2>([]() {
+      auto l = [](auto f) { f(); };
+    });
+  });
+
+  q.submit([&](handler &h) {
+    h.single_task<class myWrapper>([]() { function(); });
+  });
+
+  q.submit([&](handler &h) {
+    h.single_task<class myWrapper2>([]() { function(); });
+  });
   return 0;
 }

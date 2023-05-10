@@ -12,11 +12,8 @@ from lldbsuite.test import lldbutil
 
 class CModulesTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
-    @skipIfFreeBSD
     @expectedFailureAll(
-        oslist=["linux"],
+        oslist=["freebsd", "linux"],
         bugnumber="http://llvm.org/pr23456 'fopen' has unknown return type")
     @expectedFailureAll(
         oslist=["windows"],
@@ -40,11 +37,10 @@ class CModulesTestCase(TestBase):
                              'stop reason = breakpoint'])
 
         # The breakpoint should have a hit count of 1.
-        self.expect("breakpoint list -f", BREAKPOINT_HIT_ONCE,
-                    substrs=[' resolved, hit count = 1'])
+        lldbutil.check_breakpoint(self, bpno = 1, expected_hit_count = 1)
 
         # Enable logging of the imported AST.
-        log_file = os.path.join(self.getBuildDir(), "lldb-ast-log.txt")
+        log_file = self.getBuildArtifact("lldb-ast-log.txt")
         self.runCmd("log enable lldb ast -f '%s'" % log_file)
 
         self.expect(

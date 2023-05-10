@@ -1,4 +1,4 @@
-add_lldb_library(lldbBreakpoint
+add_lldb_library(lldbBreakpoint NO_PLUGIN_DEPENDENCIES
   Breakpoint.cpp
   BreakpointID.cpp
   BreakpointIDList.cpp
@@ -19,7 +19,7 @@ add_lldb_library(lldbBreakpoint
   BreakpointSiteList.cpp
   Stoppoint.cpp
   StoppointCallbackContext.cpp
-  StoppointLocation.cpp
+  StoppointSite.cpp
   Watchpoint.cpp
   WatchpointList.cpp
   WatchpointOptions.cpp

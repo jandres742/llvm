@@ -63,7 +63,7 @@ public:
   };
 
 private:
-  TokenKind Kind;
+  TokenKind Kind = TokenKind::Eof;
 
   /// A reference to the entire token contents; this is always a pointer into
   /// a memory buffer owned by the source manager.
@@ -143,10 +143,16 @@ struct MCAsmMacro {
   StringRef Name;
   StringRef Body;
   MCAsmMacroParameters Parameters;
+  std::vector<std::string> Locals;
+  bool IsFunction = false;
 
 public:
   MCAsmMacro(StringRef N, StringRef B, MCAsmMacroParameters P)
       : Name(N), Body(B), Parameters(std::move(P)) {}
+  MCAsmMacro(StringRef N, StringRef B, MCAsmMacroParameters P,
+             std::vector<std::string> L, bool F)
+      : Name(N), Body(B), Parameters(std::move(P)), Locals(std::move(L)),
+        IsFunction(F) {}
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   void dump() const { dump(dbgs()); }

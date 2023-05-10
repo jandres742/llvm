@@ -2,8 +2,20 @@ set(LLVM_TARGET_DEFINITIONS Options.td)
 tablegen(LLVM Options.inc -gen-opt-parser-defs)
 add_public_tablegen_target(ELFOptionsTableGen)
 
-if(NOT LLD_BUILT_STANDALONE)
-  set(tablegen_deps intrinsics_gen)
+if(LLVM_ENABLE_ZLIB)
+  set(imported_libs ZLIB::ZLIB)
+endif()
+
+if(LLVM_ENABLE_ZSTD)
+  if(TARGET zstd::libzstd_shared AND NOT LLVM_USE_STATIC_ZSTD)
+    set(zstd_target zstd::libzstd_shared)
+  else()
+    set(zstd_target zstd::libzstd_static)
+  endif()
+endif()
+
+if(LLVM_ENABLE_ZSTD)
+  list(APPEND imported_libs ${zstd_target})
 endif()
 
 add_lld_library(lldELF
@@ -59,12 +71,14 @@ add_lld_library(lldELF
   Option
   Passes
   Support
+  TargetParser
 
   LINK_LIBS
   lldCommon
+  ${imported_libs}
   ${LLVM_PTHREAD_LIB}
 
   DEPENDS
   ELFOptionsTableGen
-  ${tablegen_deps}
+  intrinsics_gen
   )

@@ -9,10 +9,12 @@
 #ifndef LLDB_TOOLS_LLDB_VSCODE_JSONUTILS_H
 #define LLDB_TOOLS_LLDB_VSCODE_JSONUTILS_H
 
-#include <stdint.h>
+#include "VSCodeForward.h"
+#include "lldb/API/SBModule.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
-#include "VSCodeForward.h"
+#include <cstdint>
+#include <optional>
 
 namespace lldb_vscode {
 
@@ -207,9 +209,10 @@ void SetValueForKey(lldb::SBValue &v, llvm::json::Object &object,
 ///     It is useful to ensure the same line
 ///     provided by the setBreakpoints request are returned to the IDE as a
 ///     fallback.
-void AppendBreakpoint(lldb::SBBreakpoint &bp, llvm::json::Array &breakpoints,
-                      llvm::Optional<llvm::StringRef> request_path = llvm::None,
-                      llvm::Optional<uint32_t> request_line = llvm::None);
+void AppendBreakpoint(
+    lldb::SBBreakpoint &bp, llvm::json::Array &breakpoints,
+    std::optional<llvm::StringRef> request_path = std::nullopt,
+    std::optional<uint32_t> request_line = std::nullopt);
 
 /// Converts breakpoint location to a Visual Studio Code "Breakpoint"
 ///
@@ -234,8 +237,18 @@ void AppendBreakpoint(lldb::SBBreakpoint &bp, llvm::json::Array &breakpoints,
 ///     definition outlined by Microsoft.
 llvm::json::Value
 CreateBreakpoint(lldb::SBBreakpoint &bp,
-                 llvm::Optional<llvm::StringRef> request_path = llvm::None,
-                 llvm::Optional<uint32_t> request_line = llvm::None);
+                 std::optional<llvm::StringRef> request_path = std::nullopt,
+                 std::optional<uint32_t> request_line = std::nullopt);
+
+/// Converts a LLDB module to a VS Code DAP module for use in "modules" events.
+///
+/// \param[in] module
+///     A LLDB module object to convert into a JSON value
+///
+/// \return
+///     A "Module" JSON object with that follows the formal JSON
+///     definition outlined by Microsoft.
+llvm::json::Value CreateModule(lldb::SBModule &module);
 
 /// Create a "Event" JSON object using \a event_name as the event name
 ///
@@ -388,6 +401,18 @@ llvm::json::Value CreateThread(lldb::SBThread &thread);
 ///     definition outlined by Microsoft.
 llvm::json::Value CreateThreadStopped(lldb::SBThread &thread, uint32_t stop_id);
 
+/// \return
+///     The variable name of \a value or a default placeholder.
+const char *GetNonNullVariableName(lldb::SBValue value);
+
+/// VSCode can't display two variables with the same name, so we need to
+/// distinguish them by using a suffix.
+///
+/// If the source and line information is present, we use it as the suffix.
+/// Otherwise, we fallback to the variable address or register location.
+std::string CreateUniqueVariableNameForDisplay(lldb::SBValue v,
+                                               bool is_name_duplicated);
+
 /// Create a "Variable" object for a LLDB thread object.
 ///
 /// This function will fill in the following keys in the returned
@@ -424,11 +449,58 @@ llvm::json::Value CreateThreadStopped(lldb::SBThread &thread, uint32_t stop_id);
 ///     It set to true the variable will be formatted as hex in
 ///     the "value" key value pair for the value of the variable.
 ///
+/// \param[in] is_name_duplicated
+///     Whether the same variable name appears multiple times within the same
+///     context (e.g. locals). This can happen due to shadowed variables in
+///     nested blocks.
+///
+///     As VSCode doesn't render two of more variables with the same name, we
+///     apply a suffix to distinguish duplicated variables.
+///
 /// \return
 ///     A "Variable" JSON object with that follows the formal JSON
 ///     definition outlined by Microsoft.
 llvm::json::Value CreateVariable(lldb::SBValue v, int64_t variablesReference,
-                                 int64_t varID, bool format_hex);
+                                 int64_t varID, bool format_hex,
+                                 bool is_name_duplicated = false);
+
+llvm::json::Value CreateCompileUnit(lldb::SBCompileUnit unit);
+
+/// Create a runInTerminal reverse request object
+///
+/// \param[in] launch_request
+///     The original launch_request object whose fields are used to construct
+///     the reverse request object.
+///
+/// \param[in] debug_adaptor_path
+///     Path to the current debug adaptor. It will be used to delegate the
+///     launch of the target.
+///
+/// \param[in] comm_file
+///     The fifo file used to communicate the with the target launcher.
+///
+/// \param[in] debugger_pid
+///     The PID of the lldb-vscode instance that will attach to the target. The
+///     launcher uses it on Linux tell the kernel that it should allow the
+///     debugger process to attach.
+///
+/// \return
+///     A "runInTerminal" JSON object that follows the specification outlined by
+///     Microsoft.
+llvm::json::Object
+CreateRunInTerminalReverseRequest(const llvm::json::Object &launch_request,
+                                  llvm::StringRef debug_adaptor_path,
+                                  llvm::StringRef comm_file,
+                                  lldb::pid_t debugger_pid);
+
+/// Create a "Terminated" JSON object that contains statistics
+///
+/// \return
+///     A body JSON object with debug info and breakpoint info
+llvm::json::Object CreateTerminatedEventObject();
+
+/// Convert a given JSON object to a string.
+std::string JSONToString(const llvm::json::Value &json);
 
 } // namespace lldb_vscode
 

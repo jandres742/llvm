@@ -6,38 +6,41 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <CL/sycl/detail/sampler_impl.hpp>
 #include <detail/context_impl.hpp>
+#include <detail/sampler_impl.hpp>
+#include <sycl/property_list.hpp>
 
-__SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+__SYCL_INLINE_VER_NAMESPACE(_V1) {
 namespace detail {
 
 sampler_impl::sampler_impl(coordinate_normalization_mode normalizationMode,
                            addressing_mode addressingMode,
-                           filtering_mode filteringMode)
-    : m_CoordNormMode(normalizationMode), m_AddrMode(addressingMode),
-      m_FiltMode(filteringMode) {}
+                           filtering_mode filteringMode,
+                           const property_list &propList)
+    : MCoordNormMode(normalizationMode), MAddrMode(addressingMode),
+      MFiltMode(filteringMode), MPropList(propList) {}
 
 sampler_impl::sampler_impl(cl_sampler clSampler, const context &syclContext) {
 
   RT::PiSampler Sampler = pi::cast<RT::PiSampler>(clSampler);
-  m_contextToSampler[syclContext] = Sampler;
+  MContextToSampler[syclContext] = Sampler;
   const detail::plugin &Plugin = getSyclObjImpl(syclContext)->getPlugin();
   Plugin.call<PiApiKind::piSamplerRetain>(Sampler);
   Plugin.call<PiApiKind::piSamplerGetInfo>(
       Sampler, PI_SAMPLER_INFO_NORMALIZED_COORDS, sizeof(pi_bool),
-      &m_CoordNormMode, nullptr);
+      &MCoordNormMode, nullptr);
   Plugin.call<PiApiKind::piSamplerGetInfo>(
       Sampler, PI_SAMPLER_INFO_ADDRESSING_MODE,
-      sizeof(pi_sampler_addressing_mode), &m_AddrMode, nullptr);
+      sizeof(pi_sampler_addressing_mode), &MAddrMode, nullptr);
   Plugin.call<PiApiKind::piSamplerGetInfo>(Sampler, PI_SAMPLER_INFO_FILTER_MODE,
                                            sizeof(pi_sampler_filter_mode),
-                                           &m_FiltMode, nullptr);
+                                           &MFiltMode, nullptr);
 }
 
 sampler_impl::~sampler_impl() {
-  for (auto &Iter : m_contextToSampler) {
+  std::lock_guard<std::mutex> Lock(MMutex);
+  for (auto &Iter : MContextToSampler) {
     // TODO catch an exception and add it to the list of asynchronous exceptions
     const detail::plugin &Plugin = getSyclObjImpl(Iter.first)->getPlugin();
     Plugin.call<PiApiKind::piSamplerRelease>(Iter.second);
@@ -45,16 +48,20 @@ sampler_impl::~sampler_impl() {
 }
 
 RT::PiSampler sampler_impl::getOrCreateSampler(const context &Context) {
-  if (m_contextToSampler[Context])
-    return m_contextToSampler[Context];
+  {
+    std::lock_guard<std::mutex> Lock(MMutex);
+    auto It = MContextToSampler.find(Context);
+    if (It != MContextToSampler.end())
+      return It->second;
+  }
 
   const pi_sampler_properties sprops[] = {
       PI_SAMPLER_INFO_NORMALIZED_COORDS,
-      static_cast<pi_sampler_properties>(m_CoordNormMode),
+      static_cast<pi_sampler_properties>(MCoordNormMode),
       PI_SAMPLER_INFO_ADDRESSING_MODE,
-      static_cast<pi_sampler_properties>(m_AddrMode),
+      static_cast<pi_sampler_properties>(MAddrMode),
       PI_SAMPLER_INFO_FILTER_MODE,
-      static_cast<pi_sampler_properties>(m_FiltMode),
+      static_cast<pi_sampler_properties>(MFiltMode),
       0};
 
   RT::PiResult errcode_ret = PI_SUCCESS;
@@ -64,25 +71,26 @@ RT::PiSampler sampler_impl::getOrCreateSampler(const context &Context) {
   errcode_ret = Plugin.call_nocheck<PiApiKind::piSamplerCreate>(
       getSyclObjImpl(Context)->getHandleRef(), sprops, &resultSampler);
 
-  if (errcode_ret == PI_INVALID_OPERATION)
+  if (errcode_ret == PI_ERROR_INVALID_OPERATION)
     throw feature_not_supported("Images are not supported by this device.",
                                 errcode_ret);
 
   Plugin.checkPiResult(errcode_ret);
-  m_contextToSampler[Context] = resultSampler;
+  std::lock_guard<std::mutex> Lock(MMutex);
+  MContextToSampler[Context] = resultSampler;
 
-  return m_contextToSampler[Context];
+  return resultSampler;
 }
 
-addressing_mode sampler_impl::get_addressing_mode() const { return m_AddrMode; }
+addressing_mode sampler_impl::get_addressing_mode() const { return MAddrMode; }
 
-filtering_mode sampler_impl::get_filtering_mode() const { return m_FiltMode; }
+filtering_mode sampler_impl::get_filtering_mode() const { return MFiltMode; }
 
 coordinate_normalization_mode
 sampler_impl::get_coordinate_normalization_mode() const {
-  return m_CoordNormMode;
+  return MCoordNormMode;
 }
 
 } // namespace detail
+} // __SYCL_INLINE_VER_NAMESPACE(_V1)
 } // namespace sycl
-} // __SYCL_INLINE_NAMESPACE(cl)

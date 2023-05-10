@@ -9,14 +9,14 @@
 #include "include/signal.h"
 #include "src/signal/raise.h"
 
-#include "utils/UnitTest/Test.h"
+#include "test/UnitTest/Test.h"
 
-TEST(SignalTest, Raise) {
+TEST(LlvmLibcSignalTest, Raise) {
   // SIGCONT is ingored unless stopped, so we can use it to check the return
   // value of raise without needing to block.
   EXPECT_EQ(__llvm_libc::raise(SIGCONT), 0);
 
   // SIGKILL is chosen because other fatal signals could be caught by sanitizers
   // for example and incorrectly report test failure.
-  EXPECT_DEATH([] { __llvm_libc::raise(SIGKILL); }, SIGKILL);
+  EXPECT_DEATH([] { __llvm_libc::raise(SIGKILL); }, WITH_SIGNAL(SIGKILL));
 }

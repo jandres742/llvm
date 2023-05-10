@@ -1,25 +1,26 @@
-get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+add_subdirectory(Support)
 
 add_flang_library(FIRDialect
   FIRAttr.cpp
   FIRDialect.cpp
   FIROps.cpp
   FIRType.cpp
+  FortranVariableInterface.cpp
+  Inliner.cpp
 
   DEPENDS
+  CanonicalizationPatternsIncGen
+  MLIRIR
   FIROpsIncGen
-  ${dialect_libs}
+  intrinsics_gen
 
   LINK_LIBS
-  FIRSupport
-  MLIRTargetLLVMIR
-  MLIRTargetLLVMIRModuleTranslation
-  MLIREDSC
-  MLIRExecutionEngine
-  MLIRParser
-  MLIRSupport
-  MLIRStandardToLLVM
-  MLIRTransforms
+  FIRDialectSupport
+  MLIRArithDialect
+  MLIRBuiltinToLLVMIRTranslation
+  MLIROpenMPToLLVM
+  MLIRLLVMToLLVMIRTranslation
+  MLIRTargetLLVMIRExport
 
   LINK_COMPONENTS
   AsmParser

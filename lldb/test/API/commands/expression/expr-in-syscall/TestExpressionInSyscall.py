@@ -8,29 +8,24 @@ from lldbsuite.test import lldbutil
 
 class ExprSyscallTestCase(TestBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     @expectedFailureAll(
         oslist=["windows"],
         bugnumber="llvm.org/pr21765, getpid() does not exist on Windows")
     @expectedFailureNetBSD
-    @skipIfReproducer
     def test_setpgid(self):
         self.build()
         self.expr_syscall()
 
     def expr_syscall(self):
-        exe = self.getBuildArtifact("a.out")
-
         # Create a target by the debugger.
-        target = self.dbg.CreateTarget(exe)
-        self.assertTrue(target, VALID_TARGET)
+        target = self.createTestTarget()
 
         listener = lldb.SBListener("my listener")
 
         # launch the inferior and don't wait for it to stop
         self.dbg.SetAsync(True)
         error = lldb.SBError()
+        flags = target.GetLaunchInfo().GetLaunchFlags()
         process = target.Launch(listener,
                                 None,      # argv
                                 None,      # envp
@@ -38,7 +33,7 @@ class ExprSyscallTestCase(TestBase):
                                 None,      # stdout_path
                                 None,      # stderr_path
                                 None,      # working directory
-                                0,         # launch flags
+                                flags,     # launch flags
                                 False,     # Stop at entry
                                 error)     # error
 
@@ -73,9 +68,8 @@ class ExprSyscallTestCase(TestBase):
         thread = process.GetSelectedThread()
 
         # try evaluating a couple of expressions in this state
-        self.expect("expr release_flag = 1", substrs=[" = 1"])
-        self.expect("print (int)getpid()",
-                    substrs=[str(process.GetProcessID())])
+        self.expect_expr("release_flag = 1", result_value="1")
+        self.expect_expr("(int)getpid()", result_value=str(process.GetProcessID()))
 
         # and run the process to completion
         process.Continue()
@@ -86,5 +80,5 @@ class ExprSyscallTestCase(TestBase):
             if new_state == lldb.eStateExited:
                 break
 
-        self.assertEqual(process.GetState(), lldb.eStateExited)
+        self.assertState(process.GetState(), lldb.eStateExited)
         self.assertEqual(process.GetExitStatus(), 0)

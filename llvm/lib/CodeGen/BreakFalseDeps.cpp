@@ -17,13 +17,16 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/ReachingDefAnalysis.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/MCInstrDesc.h"
+#include "llvm/MC/MCRegister.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -32,9 +35,9 @@ namespace llvm {
 
 class BreakFalseDeps : public MachineFunctionPass {
 private:
-  MachineFunction *MF;
-  const TargetInstrInfo *TII;
-  const TargetRegisterInfo *TRI;
+  MachineFunction *MF = nullptr;
+  const TargetInstrInfo *TII = nullptr;
+  const TargetRegisterInfo *TRI = nullptr;
   RegisterClassInfo RegClassInfo;
 
   /// List of undefined register reads in this block in forward order.
@@ -43,7 +46,7 @@ private:
   /// Storage for register unit liveness.
   LivePhysRegs LiveRegSet;
 
-  ReachingDefAnalysis *RDA;
+  ReachingDefAnalysis *RDA = nullptr;
 
 public:
   static char ID; // Pass identification, replacement for typeid
@@ -118,7 +121,7 @@ bool BreakFalseDeps::pickBestRegisterForUndef(MachineInstr *MI, unsigned OpIdx,
   if (!MO.isRenamable())
     return false;
 
-  Register OriginalReg = MO.getReg();
+  MCRegister OriginalReg = MO.getReg().asMCReg();
 
   // Update only undef operands that have reg units that are mapped to one root.
   for (MCRegUnitIterator Unit(OriginalReg, TRI); Unit.isValid(); ++Unit) {
@@ -133,6 +136,7 @@ bool BreakFalseDeps::pickBestRegisterForUndef(MachineInstr *MI, unsigned OpIdx,
   // Get the undef operand's register class
   const TargetRegisterClass *OpRC =
     TII->getRegClass(MI->getDesc(), OpIdx, TRI, *MF);
+  assert(OpRC && "Not a valid register class");
 
   // If the instruction has a true dependency, we can hide the false depdency
   // behind it.
@@ -171,8 +175,8 @@ bool BreakFalseDeps::pickBestRegisterForUndef(MachineInstr *MI, unsigned OpIdx,
 
 bool BreakFalseDeps::shouldBreakDependence(MachineInstr *MI, unsigned OpIdx,
                                            unsigned Pref) {
-  Register reg = MI->getOperand(OpIdx).getReg();
-  unsigned Clearance = RDA->getClearance(MI, reg);
+  MCRegister Reg = MI->getOperand(OpIdx).getReg().asMCReg();
+  unsigned Clearance = RDA->getClearance(MI, Reg);
   LLVM_DEBUG(dbgs() << "Clearance: " << Clearance << ", want " << Pref);
 
   if (Pref > Clearance) {
@@ -186,17 +190,24 @@ bool BreakFalseDeps::shouldBreakDependence(MachineInstr *MI, unsigned OpIdx,
 void BreakFalseDeps::processDefs(MachineInstr *MI) {
   assert(!MI->isDebugInstr() && "Won't process debug values");
 
+  const MCInstrDesc &MCID = MI->getDesc();
+
   // Break dependence on undef uses. Do this before updating LiveRegs below.
   // This can remove a false dependence with no additional instructions.
-  unsigned OpNum;
-  unsigned Pref = TII->getUndefRegClearance(*MI, OpNum, TRI);
-  if (Pref) {
-    bool HadTrueDependency = pickBestRegisterForUndef(MI, OpNum, Pref);
-    // We don't need to bother trying to break a dependency if this
-    // instruction has a true dependency on that register through another
-    // operand - we'll have to wait for it to be available regardless.
-    if (!HadTrueDependency && shouldBreakDependence(MI, OpNum, Pref))
-      UndefReads.push_back(std::make_pair(MI, OpNum));
+  for (unsigned i = MCID.getNumDefs(), e = MCID.getNumOperands(); i != e; ++i) {
+    MachineOperand &MO = MI->getOperand(i);
+    if (!MO.isReg() || !MO.getReg() || !MO.isUse() || !MO.isUndef())
+      continue;
+
+    unsigned Pref = TII->getUndefRegClearance(*MI, i, TRI);
+    if (Pref) {
+      bool HadTrueDependency = pickBestRegisterForUndef(MI, i, Pref);
+      // We don't need to bother trying to break a dependency if this
+      // instruction has a true dependency on that register through another
+      // operand - we'll have to wait for it to be available regardless.
+      if (!HadTrueDependency && shouldBreakDependence(MI, i, Pref))
+        UndefReads.push_back(std::make_pair(MI, i));
+    }
   }
 
   // The code below allows the target to create a new instruction to break the
@@ -204,7 +215,6 @@ void BreakFalseDeps::processDefs(MachineInstr *MI) {
   if (MF->getFunction().hasMinSize())
     return;
 
-  const MCInstrDesc &MCID = MI->getDesc();
   for (unsigned i = 0,
     e = MI->isVariadic() ? MI->getNumOperands() : MCID.getNumDefs();
     i != e; ++i) {
@@ -238,7 +248,7 @@ void BreakFalseDeps::processUndefReads(MachineBasicBlock *MBB) {
   MachineInstr *UndefMI = UndefReads.back().first;
   unsigned OpIdx = UndefReads.back().second;
 
-  for (MachineInstr &I : make_range(MBB->rbegin(), MBB->rend())) {
+  for (MachineInstr &I : llvm::reverse(*MBB)) {
     // Update liveness, including the current instruction's defs.
     LiveRegSet.stepBackward(I);
 
@@ -281,10 +291,16 @@ bool BreakFalseDeps::runOnMachineFunction(MachineFunction &mf) {
 
   LLVM_DEBUG(dbgs() << "********** BREAK FALSE DEPENDENCIES **********\n");
 
+  // Skip Dead blocks due to ReachingDefAnalysis has no idea about instructions
+  // in them.
+  df_iterator_default_set<MachineBasicBlock *> Reachable;
+  for (MachineBasicBlock *MBB : depth_first_ext(&mf, Reachable))
+    (void)MBB /* Mark all reachable blocks */;
+
   // Traverse the basic blocks.
-  for (MachineBasicBlock &MBB : mf) {
-    processBasicBlock(&MBB);
-  }
+  for (MachineBasicBlock &MBB : mf)
+    if (Reachable.count(&MBB))
+      processBasicBlock(&MBB);
 
   return false;
 }

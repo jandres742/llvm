@@ -25,8 +25,9 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/Analysis/InstructionPrecedenceTracking.h"
+#include "llvm/IR/EHPersonalities.h"
+#include "llvm/IR/PassManager.h"
 
 namespace llvm {
 
@@ -40,6 +41,7 @@ class Instruction;
 class Loop;
 class LoopInfo;
 class PostDominatorTree;
+class raw_ostream;
 
 /// Captures loop safety information.
 /// It keep information for loop blocks may throw exception or otherwise
@@ -111,17 +113,15 @@ class SimpleLoopSafetyInfo: public LoopSafetyInfo {
   bool HeaderMayThrow = false; // Same as previous, but specific to loop header
 
 public:
-  virtual bool blockMayThrow(const BasicBlock *BB) const;
+  bool blockMayThrow(const BasicBlock *BB) const override;
 
-  virtual bool anyBlockMayThrow() const;
+  bool anyBlockMayThrow() const override;
 
-  virtual void computeLoopSafetyInfo(const Loop *CurLoop);
+  void computeLoopSafetyInfo(const Loop *CurLoop) override;
 
-  virtual bool isGuaranteedToExecute(const Instruction &Inst,
-                                     const DominatorTree *DT,
-                                     const Loop *CurLoop) const;
-
-  virtual ~SimpleLoopSafetyInfo() {};
+  bool isGuaranteedToExecute(const Instruction &Inst,
+                             const DominatorTree *DT,
+                             const Loop *CurLoop) const override;
 };
 
 /// This implementation of LoopSafetyInfo use ImplicitControlFlowTracking to
@@ -138,15 +138,15 @@ class ICFLoopSafetyInfo: public LoopSafetyInfo {
   mutable MemoryWriteTracking MW;
 
 public:
-  virtual bool blockMayThrow(const BasicBlock *BB) const;
+  bool blockMayThrow(const BasicBlock *BB) const override;
 
-  virtual bool anyBlockMayThrow() const;
+  bool anyBlockMayThrow() const override;
 
-  virtual void computeLoopSafetyInfo(const Loop *CurLoop);
+  void computeLoopSafetyInfo(const Loop *CurLoop) override;
 
-  virtual bool isGuaranteedToExecute(const Instruction &Inst,
-                                     const DominatorTree *DT,
-                                     const Loop *CurLoop) const;
+  bool isGuaranteedToExecute(const Instruction &Inst,
+                             const DominatorTree *DT,
+                             const Loop *CurLoop) const override;
 
   /// Returns true if we could not execute a memory-modifying instruction before
   /// we enter \p BB under assumption that \p CurLoop is entered.
@@ -167,8 +167,6 @@ public:
   /// from its block. It will make all cache updates to keep it correct after
   /// this removal.
   void removeInstruction(const Instruction *Inst);
-
-  virtual ~ICFLoopSafetyInfo() {};
 };
 
 bool mayContainIrreducibleControl(const Function &F, const LoopInfo *LI);
@@ -283,9 +281,7 @@ struct MustBeExecutedIterator {
 
   using ExplorerTy = MustBeExecutedContextExplorer;
 
-  MustBeExecutedIterator(const MustBeExecutedIterator &Other)
-      : Visited(Other.Visited), Explorer(Other.Explorer),
-        CurInst(Other.CurInst), Head(Other.Head), Tail(Other.Tail) {}
+  MustBeExecutedIterator(const MustBeExecutedIterator &Other) = default;
 
   MustBeExecutedIterator(MustBeExecutedIterator &&Other)
       : Visited(std::move(Other.Visited)), Explorer(Other.Explorer),
@@ -301,7 +297,7 @@ struct MustBeExecutedIterator {
     return *this;
   }
 
-  ~MustBeExecutedIterator() {}
+  ~MustBeExecutedIterator() = default;
 
   /// Pre- and post-increment operators.
   ///{
@@ -532,10 +528,10 @@ private:
   ///}
 
   /// Map to cache isGuaranteedToTransferExecutionToSuccessor results.
-  DenseMap<const BasicBlock *, Optional<bool>> BlockTransferMap;
+  DenseMap<const BasicBlock *, std::optional<bool>> BlockTransferMap;
 
   /// Map to cache containsIrreducibleCFG results.
-  DenseMap<const Function*, Optional<bool>> IrreducibleControlMap;
+  DenseMap<const Function *, std::optional<bool>> IrreducibleControlMap;
 
   /// Map from instructions to associated must be executed iterators.
   DenseMap<const Instruction *, std::unique_ptr<MustBeExecutedIterator>>
@@ -543,6 +539,23 @@ private:
 
   /// A unique end iterator.
   MustBeExecutedIterator EndIterator;
+};
+
+class MustExecutePrinterPass : public PassInfoMixin<MustExecutePrinterPass> {
+  raw_ostream &OS;
+
+public:
+  MustExecutePrinterPass(raw_ostream &OS) : OS(OS) {}
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+};
+
+class MustBeExecutedContextPrinterPass
+    : public PassInfoMixin<MustBeExecutedContextPrinterPass> {
+  raw_ostream &OS;
+
+public:
+  MustBeExecutedContextPrinterPass(raw_ostream &OS) : OS(OS) {}
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 };
 
 } // namespace llvm

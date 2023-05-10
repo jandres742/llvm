@@ -17,7 +17,6 @@
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Utility/DataBufferHeap.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Path.h"
@@ -91,10 +90,7 @@ Symbols:
 )");
   ASSERT_THAT_EXPECTED(ExpectedFile, llvm::Succeeded());
 
-  ModuleSpec spec{FileSpec(ExpectedFile->name())};
-  spec.GetSymbolFileSpec().SetFile(ExpectedFile->name(),
-                                   FileSpec::Style::native);
-  auto module_sp = std::make_shared<Module>(spec);
+  auto module_sp = std::make_shared<Module>(ExpectedFile->moduleSpec());
   SectionList *list = module_sp->GetSectionList();
   ASSERT_NE(nullptr, list);
 
@@ -212,10 +208,7 @@ Sections:
 )");
   ASSERT_THAT_EXPECTED(ExpectedFile, llvm::Succeeded());
 
-  ModuleSpec spec{FileSpec(ExpectedFile->name())};
-  spec.GetSymbolFileSpec().SetFile(ExpectedFile->name(),
-                                   FileSpec::Style::native);
-  auto module_sp = std::make_shared<Module>(spec);
+  auto module_sp = std::make_shared<Module>(ExpectedFile->moduleSpec());
 
   auto entry_point_addr = module_sp->GetObjectFile()->GetEntryPointAddress();
   ASSERT_TRUE(entry_point_addr.GetOffset() & 1);
@@ -277,10 +270,7 @@ Sections:
 )");
   ASSERT_THAT_EXPECTED(ExpectedFile, llvm::Succeeded());
 
-  ModuleSpec spec{FileSpec(ExpectedFile->name())};
-  spec.GetSymbolFileSpec().SetFile(ExpectedFile->name(),
-                                   FileSpec::Style::native);
-  auto module_sp = std::make_shared<Module>(spec);
+  auto module_sp = std::make_shared<Module>(ExpectedFile->moduleSpec());
 
   auto entry_point_addr = module_sp->GetObjectFile()->GetEntryPointAddress();
   ASSERT_EQ(entry_point_addr.GetAddressClass(), AddressClass::eCode);

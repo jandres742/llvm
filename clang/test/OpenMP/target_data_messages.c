@@ -4,7 +4,7 @@
 // RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify=expected,omp45 -fopenmp-simd -fopenmp-version=45 -ferror-limit 100 -o - %s -Wuninitialized
 // RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -verify=expected,omp50 -fopenmp-simd -fopenmp-version=50 -ferror-limit 100 -o - %s -Wuninitialized
 
-void foo() { }
+void foo(void) { }
 
 void xxx(int argc) {
   int map; // expected-note {{initialize the variable 'map' to silence this warning}}
@@ -45,5 +45,12 @@ int main(int argc, char **argv) {
   {
     foo();
   }
+
+  const int b = 5;
+  int marr[10][10], iarr[5];
+#pragma omp target data map(to: marr[10][0:2:2]) // expected-error {{expected ']'}} expected-note {{to match this '['}}
+  {}
+#pragma omp target data map(alloc: iarr[:2:b]) // expected-error {{expected ']'}} expected-note {{to match this '['}}
+  {}
   return 0;
 }

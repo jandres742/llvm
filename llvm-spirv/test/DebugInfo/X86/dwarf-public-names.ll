@@ -1,6 +1,6 @@
 ; RUN: llvm-as < %s -o %t.bc
 ; RUN: llvm-spirv %t.bc -o %t.spv
-; RUN: llvm-spirv -r %t.spv -o - | llvm-dis -o %t.ll
+; RUN: llvm-spirv -r -emit-opaque-pointers %t.spv -o - | llvm-dis -o %t.ll
 
 ; RUN: llc -mtriple=x86_64-pc-linux-gnu -filetype=obj -o %t.o < %t.ll
 ; RUN: llvm-dwarfdump -debug-pubnames %t.o | FileCheck --check-prefix=LINUX %s
@@ -50,7 +50,7 @@ target triple = "spir64-unknown-unknown"
 
 ; Skip the output to the header of the pubnames section.
 ; LINUX: debug_pubnames
-; LINUX-NEXT: unit_size = 0x00000128
+; LINUX-NEXT: unit_size = 0x0000012b
 
 ; Check for each name in the output.
 ; LINUX-DAG: "ns"

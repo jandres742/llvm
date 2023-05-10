@@ -28,6 +28,19 @@ const Name &GetLastName(const FunctionReference &);
 const Name &GetLastName(const Variable &);
 const Name &GetLastName(const AllocateObject &);
 
+// GetFirstName() isolates and returns a reference to the leftmost Name
+// in a variable or entity declaration.
+const Name &GetFirstName(const Name &);
+const Name &GetFirstName(const StructureComponent &);
+const Name &GetFirstName(const DataRef &);
+const Name &GetFirstName(const Substring &);
+const Name &GetFirstName(const Designator &);
+const Name &GetFirstName(const ProcComponentRef &);
+const Name &GetFirstName(const ProcedureDesignator &);
+const Name &GetFirstName(const Call &);
+const Name &GetFirstName(const FunctionReference &);
+const Name &GetFirstName(const Variable &);
+
 // When a parse tree node is an instance of a specific type wrapped in
 // layers of packaging, return a pointer to that object.
 // Implemented with mutually recursive template functions that are
@@ -49,7 +62,7 @@ struct UnwrapperHelper {
 
   template <typename A, typename... Bs>
   static const A *Unwrap(const std::variant<Bs...> &x) {
-    return std::visit([](const auto &y) { return Unwrap<A>(y); }, x);
+    return common::visit([](const auto &y) { return Unwrap<A>(y); }, x);
   }
 
   template <typename A, typename B>
@@ -59,6 +72,15 @@ struct UnwrapperHelper {
     } else {
       return nullptr;
     }
+  }
+
+  template <typename A, typename B>
+  static const A *Unwrap(const UnlabeledStatement<B> &x) {
+    return Unwrap<A>(x.statement);
+  }
+  template <typename A, typename B>
+  static const A *Unwrap(const Statement<B> &x) {
+    return Unwrap<A>(x.statement);
   }
 
   template <typename A, typename B> static const A *Unwrap(B &x) {
@@ -86,6 +108,8 @@ template <typename A, typename B> A *Unwrap(B &x) {
 // Get the CoindexedNamedObject if the entity is a coindexed object.
 const CoindexedNamedObject *GetCoindexedNamedObject(const AllocateObject &);
 const CoindexedNamedObject *GetCoindexedNamedObject(const DataRef &);
+const CoindexedNamedObject *GetCoindexedNamedObject(const Designator &);
+const CoindexedNamedObject *GetCoindexedNamedObject(const Variable &);
 
 // Detects parse tree nodes with "source" members.
 template <typename A, typename = int> struct HasSource : std::false_type {};
@@ -93,5 +117,10 @@ template <typename A>
 struct HasSource<A, decltype(static_cast<void>(A::source), 0)>
     : std::true_type {};
 
+// Detects parse tree nodes with "typedExpr" members.
+template <typename A, typename = int> struct HasTypedExpr : std::false_type {};
+template <typename A>
+struct HasTypedExpr<A, decltype(static_cast<void>(A::typedExpr), 0)>
+    : std::true_type {};
 } // namespace Fortran::parser
 #endif // FORTRAN_PARSER_TOOLS_H_

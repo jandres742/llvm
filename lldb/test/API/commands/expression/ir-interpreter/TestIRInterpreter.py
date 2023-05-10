@@ -3,8 +3,6 @@ Test the IR interpreter
 """
 
 
-import unittest2
-
 import lldb
 from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
@@ -12,8 +10,6 @@ from lldbsuite.test import lldbutil
 
 
 class IRInterpreterTestCase(TestBase):
-
-    mydir = TestBase.compute_mydir(__file__)
     NO_DEBUG_INFO_TESTCASE = True
 
     def setUp(self):
@@ -44,14 +40,14 @@ class IRInterpreterTestCase(TestBase):
     @expectedFailureAll(
         oslist=['windows'],
         bugnumber="http://llvm.org/pr21765")
-    @expectedFailureNetBSD
     def test_ir_interpreter(self):
         self.build_and_run()
 
         options = lldb.SBExpressionOptions()
         options.SetLanguage(lldb.eLanguageTypeC_plus_plus)
 
-        set_up_expressions = ["int $i = 9", "int $j = 3", "int $k = 5"]
+        set_up_expressions = ["int $i = 9", "int $j = 3", "int $k = 5",
+            "unsigned long long $ull = -1", "unsigned $u = -1"]
 
         expressions = ["$i + $j",
                        "$i - $j",
@@ -61,7 +57,8 @@ class IRInterpreterTestCase(TestBase):
                        "$i << $j",
                        "$i & $j",
                        "$i | $j",
-                       "$i ^ $j"]
+                       "$i ^ $j",
+                       "($ull & -1) == $u"]
 
         for expression in set_up_expressions:
             self.frame().EvaluateExpression(expression, options)

@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// XFAIL: *
+
+// UNSUPPORTED: c++03
 
 // <cuchar>
 

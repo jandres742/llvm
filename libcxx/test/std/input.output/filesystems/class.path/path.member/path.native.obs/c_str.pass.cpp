@@ -19,6 +19,7 @@
 #include <type_traits>
 #include <cassert>
 
+#include "assert_macros.h"
 #include "test_macros.h"
 #include "filesystem_test_helper.h"
 
@@ -28,6 +29,7 @@ int main(int, char**)
   using namespace fs;
   const char* const value = "hello world";
   const std::string str_value = value;
+  const fs::path::string_type pathstr_value(str_value.begin(), str_value.end());
   { // Check signature
     path p(value);
     ASSERT_SAME_TYPE(path::value_type const*, decltype(p.c_str()));
@@ -35,7 +37,7 @@ int main(int, char**)
   }
   {
     path p(value);
-    assert(p.c_str() == str_value);
+    assert(p.c_str() == pathstr_value);
     assert(p.native().c_str() == p.c_str());
   }
 

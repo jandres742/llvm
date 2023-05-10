@@ -16,9 +16,6 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Support/Debug.h"
-
-#include <vector>
 
 namespace llvm {
 
@@ -39,16 +36,15 @@ void ImplSymbolMap::trackImpls(SymbolAliasMap ImplMaps, JITDylib *SrcJD) {
 // Trigger Speculative Compiles.
 void Speculator::speculateForEntryPoint(Speculator *Ptr, uint64_t StubId) {
   assert(Ptr && " Null Address Received in orc_speculate_for ");
-  Ptr->speculateFor(StubId);
+  Ptr->speculateFor(ExecutorAddr(StubId));
 }
 
 Error Speculator::addSpeculationRuntime(JITDylib &JD,
                                         MangleAndInterner &Mangle) {
-  JITEvaluatedSymbol ThisPtr(pointerToJITTargetAddress(this),
-                             JITSymbolFlags::Exported);
-  JITEvaluatedSymbol SpeculateForEntryPtr(
-      pointerToJITTargetAddress(&speculateForEntryPoint),
-      JITSymbolFlags::Exported);
+  ExecutorSymbolDef ThisPtr(ExecutorAddr::fromPtr(this),
+                            JITSymbolFlags::Exported);
+  ExecutorSymbolDef SpeculateForEntryPtr(
+      ExecutorAddr::fromPtr(&speculateForEntryPoint), JITSymbolFlags::Exported);
   return JD.define(absoluteSymbols({
       {Mangle("__orc_speculator"), ThisPtr},                // Data Symbol
       {Mangle("__orc_speculate_for"), SpeculateForEntryPtr} // Callable Symbol
@@ -58,7 +54,7 @@ Error Speculator::addSpeculationRuntime(JITDylib &JD,
 // If two modules, share the same LLVMContext, different threads must
 // not access them concurrently without locking the associated LLVMContext
 // this implementation follows this contract.
-void IRSpeculationLayer::emit(MaterializationResponsibility R,
+void IRSpeculationLayer::emit(std::unique_ptr<MaterializationResponsibility> R,
                               ThreadSafeModule TSM) {
 
   assert(TSM && "Speculation Layer received Null Module ?");
@@ -88,7 +84,7 @@ void IRSpeculationLayer::emit(MaterializationResponsibility R,
 
         auto IRNames = QueryAnalysis(Fn);
         // Instrument and register if Query has result
-        if (IRNames.hasValue()) {
+        if (IRNames) {
 
           // Emit globals for each function.
           auto LoadValueTy = Type::getInt8Ty(MContext);
@@ -129,8 +125,8 @@ void IRSpeculationLayer::emit(MaterializationResponsibility R,
 
           assert(Mutator.GetInsertBlock()->getParent() == &Fn &&
                  "IR builder association mismatch?");
-          S.registerSymbols(internToJITSymbols(IRNames.getValue()),
-                            &R.getTargetJITDylib());
+          S.registerSymbols(internToJITSymbols(*IRNames),
+                            &R->getTargetJITDylib());
         }
       }
     }

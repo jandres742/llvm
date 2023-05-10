@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// UNSUPPORTED: libcpp-has-no-threads
+// UNSUPPORTED: no-threads
 // UNSUPPORTED: c++03, c++11
-// XFAIL: dylib-has-no-shared_mutex
+
+// XFAIL: availability-shared_mutex-missing
 
 // <shared_mutex>
 
@@ -18,6 +19,7 @@
 
 #include <shared_mutex>
 #include <cassert>
+#include <mutex>
 #include "nasty_containers.h"
 
 #include "test_macros.h"

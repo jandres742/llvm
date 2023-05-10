@@ -491,25 +491,55 @@
 #CHECK: bras	%r0, 1
 #CHECK: error: offset out of range
 #CHECK: bras	%r0, 0x10000
+#CHECK: error: offset out of range
+#CHECK: jas	%r0, -0x100002
+#CHECK: error: offset out of range
+#CHECK: jas	%r0, -1
+#CHECK: error: offset out of range
+#CHECK: jas	%r0, 1
+#CHECK: error: offset out of range
+#CHECK: jas	%r0, 0x10000
 
 	bras	%r0, -0x100002
 	bras	%r0, -1
 	bras	%r0, 1
 	bras	%r0, 0x10000
+	jas	%r0, -0x100002
+	jas	%r0, -1
+	jas	%r0, 1
+	jas	%r0, 0x10000
 
 #CHECK: error: offset out of range
 #CHECK: brasl	%r0, -0x1000000002
+#CHECK: error: offset out of range
+#CHECK: brasl	%r0, .-0x1000000002
 #CHECK: error: offset out of range
 #CHECK: brasl	%r0, -1
 #CHECK: error: offset out of range
 #CHECK: brasl	%r0, 1
 #CHECK: error: offset out of range
 #CHECK: brasl	%r0, 0x100000000
+#CHECK: error: offset out of range
+#CHECK: jasl	%r0, -0x1000000002
+#CHECK: error: offset out of range
+#CHECK: jasl	%r0, .-0x1000000002
+#CHECK: error: offset out of range
+#CHECK: jasl	%r0, -1
+#CHECK: error: offset out of range
+#CHECK: jasl	%r0, 1
+#CHECK: error: offset out of range
+#CHECK: jasl	%r0, 0x100000000
 
 	brasl	%r0, -0x1000000002
+	brasl	%r0, .-0x1000000002
 	brasl	%r0, -1
 	brasl	%r0, 1
 	brasl	%r0, 0x100000000
+	jasl	%r0, -0x1000000002
+	jasl	%r0, .-0x1000000002
+	jasl	%r0, -1
+	jasl	%r0, 1
+	jasl	%r0, 0x100000000
 
 #CHECK: error: offset out of range
 #CHECK: brc	0, -0x100002
@@ -519,11 +549,82 @@
 #CHECK: brc	0, 1
 #CHECK: error: offset out of range
 #CHECK: brc	0, 0x10000
+#CHECK: error: offset out of range
+#CHECK: jnop -0x100002
+#CHECK: error: offset out of range
+#CHECK: jnop    -1
+#CHECK: error: offset out of range
+#CHECK: jnop    1
+#CHECK: error: offset out of range
+#CHECK: jnop    0x10000
 
 	brc	0, -0x100002
 	brc	0, -1
 	brc	0, 1
 	brc	0, 0x10000
+	jnop	-0x100002
+	jnop	-1
+	jnop	1
+	jnop	0x10000
+
+#CHECK: error: invalid instruction
+#CHECK: jlu     label
+#CHECK: error: invalid instruction
+#CHECK: jlne    label
+#CHECK: error: invalid instruction
+#CHECK: jlnh    label
+#CHECK: error: invalid instruction
+#CHECK: jll     label
+#CHECK: error: invalid instruction
+#CHECK: jlnl    label
+#CHECK: error: invalid instruction
+#CHECK: jlhe    label
+#CHECK: error: invalid instruction
+#CHECK: jlnhe   label
+#CHECK: error: invalid instruction
+#CHECK: jlle    label
+#CHECK: error: invalid instruction
+#CHECK: jlnle   label
+#CHECK: error: invalid instruction
+#CHECK: jlz     label
+#CHECK: error: invalid instruction
+#CHECK: jlnz    label
+#CHECK: error: invalid instruction
+#CHECK: jlp     label
+#CHECK: error: invalid instruction
+#CHECK: jlnp    label
+#CHECK: error: invalid instruction
+#CHECK: jlm     label
+#CHECK: error: invalid instruction
+#CHECK: jlnm    label
+#CHECK: error: invalid instruction
+#CHECK: jllh    label
+#CHECK: error: invalid instruction
+#CHECK: jllnlh  label
+#CHECK: error: invalid instruction
+#CHECK: jlo     label
+#CHECK: error: invalid instruction
+#CHECK: jlno    label
+
+	jlu	label
+	jlne	label
+	jlnh	label
+	jll	label
+	jlnl	label
+	jlhe	label
+	jlnhe	label
+	jlle	label
+	jlnle	label
+	jlz	label
+	jlnz	label
+	jlp	label
+	jlnp	label
+	jlm	label
+	jlnm	label
+	jllh	label
+	jllnlh	label
+	jlo	label
+	jlno	label
 
 #CHECK: error: invalid operand
 #CHECK: brc	foo, bar
@@ -544,11 +645,28 @@
 #CHECK: brcl	0, 1
 #CHECK: error: offset out of range
 #CHECK: brcl	0, 0x100000000
+#CHECK: error: offset out of range
+#CHECK: jgnop	-0x1000000002
+#CHECK: error: offset out of range
+#CHECK: jgnop	-1
+#CHECK: error: offset out of range
+#CHECK: jgnop	1
+#CHECK: error: offset out of range
+#CHECK: jgnop	0x100000000
 
 	brcl	0, -0x1000000002
 	brcl	0, -1
 	brcl	0, 1
 	brcl	0, 0x100000000
+	jgnop	-0x1000000002
+	jgnop	-1
+	jgnop	1
+	jgnop	0x100000000
+
+
+#CHECK: error: invalid instruction
+#CHECK: jlnop	label
+	jlnop	label
 
 #CHECK: error: invalid operand
 #CHECK: brcl	foo, bar
@@ -602,11 +720,23 @@
 #CHECK: brxh	%r0, %r2, 1
 #CHECK: error: offset out of range
 #CHECK: brxh	%r0, %r2, 0x10000
+#CHECK: error: offset out of range
+#CHECK: jxh	%r0, %r2, -0x100002
+#CHECK: error: offset out of range
+#CHECK: jxh	%r0, %r2, -1
+#CHECK: error: offset out of range
+#CHECK: jxh	%r0, %r2, 1
+#CHECK: error: offset out of range
+#CHECK: jxh	%r0, %r2, 0x10000
 
 	brxh	%r0, %r2, -0x100002
 	brxh	%r0, %r2, -1
 	brxh	%r0, %r2, 1
 	brxh	%r0, %r2, 0x10000
+	jxh	%r0, %r2, -0x100002
+	jxh	%r0, %r2, -1
+	jxh	%r0, %r2, 1
+	jxh	%r0, %r2, 0x10000
 
 #CHECK: error: offset out of range
 #CHECK: brxhg	%r0, %r2, -0x100002
@@ -616,11 +746,23 @@
 #CHECK: brxhg	%r0, %r2, 1
 #CHECK: error: offset out of range
 #CHECK: brxhg	%r0, %r2, 0x10000
+#CHECK: error: offset out of range
+#CHECK: jxhg	%r0, %r2, -0x100002
+#CHECK: error: offset out of range
+#CHECK: jxhg	%r0, %r2, -1
+#CHECK: error: offset out of range
+#CHECK: jxhg	%r0, %r2, 1
+#CHECK: error: offset out of range
+#CHECK: jxhg	%r0, %r2, 0x10000
 
 	brxhg	%r0, %r2, -0x100002
 	brxhg	%r0, %r2, -1
 	brxhg	%r0, %r2, 1
 	brxhg	%r0, %r2, 0x10000
+	jxhg	%r0, %r2, -0x100002
+	jxhg	%r0, %r2, -1
+	jxhg	%r0, %r2, 1
+	jxhg	%r0, %r2, 0x10000
 
 #CHECK: error: offset out of range
 #CHECK: brxle	%r0, %r2, -0x100002
@@ -630,11 +772,23 @@
 #CHECK: brxle	%r0, %r2, 1
 #CHECK: error: offset out of range
 #CHECK: brxle	%r0, %r2, 0x10000
+#CHECK: error: offset out of range
+#CHECK: jxle	%r0, %r2, -0x100002
+#CHECK: error: offset out of range
+#CHECK: jxle	%r0, %r2, -1
+#CHECK: error: offset out of range
+#CHECK: jxle	%r0, %r2, 1
+#CHECK: error: offset out of range
+#CHECK: jxle	%r0, %r2, 0x10000
 
 	brxle	%r0, %r2, -0x100002
 	brxle	%r0, %r2, -1
 	brxle	%r0, %r2, 1
 	brxle	%r0, %r2, 0x10000
+	jxle	%r0, %r2, -0x100002
+	jxle	%r0, %r2, -1
+	jxle	%r0, %r2, 1
+	jxle	%r0, %r2, 0x10000
 
 #CHECK: error: offset out of range
 #CHECK: brxlg	%r0, %r2, -0x100002
@@ -644,11 +798,23 @@
 #CHECK: brxlg	%r0, %r2, 1
 #CHECK: error: offset out of range
 #CHECK: brxlg	%r0, %r2, 0x10000
+#CHECK: error: offset out of range
+#CHECK: jxleg	%r0, %r2, -0x100002
+#CHECK: error: offset out of range
+#CHECK: jxleg	%r0, %r2, -1
+#CHECK: error: offset out of range
+#CHECK: jxleg	%r0, %r2, 1
+#CHECK: error: offset out of range
+#CHECK: jxleg	%r0, %r2, 0x10000
 
 	brxlg	%r0, %r2, -0x100002
 	brxlg	%r0, %r2, -1
 	brxlg	%r0, %r2, 1
 	brxlg	%r0, %r2, 0x10000
+	jxleg	%r0, %r2, -0x100002
+	jxleg	%r0, %r2, -1
+	jxleg	%r0, %r2, 1
+	jxleg	%r0, %r2, 0x10000
 
 #CHECK: error: invalid operand
 #CHECK: bxh	%r0, %r0, 4096
@@ -1343,7 +1509,7 @@
 #CHECK: clc	0, 0
 #CHECK: error: missing length in address
 #CHECK: clc	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: clc	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: clc	0(0,%r1), 0(%r1)
@@ -2573,7 +2739,7 @@
 #CHECK: ed	0, 0
 #CHECK: error: missing length in address
 #CHECK: ed	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: ed	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: ed	0(0,%r1), 0(%r1)
@@ -2611,7 +2777,7 @@
 #CHECK: edmk	0, 0
 #CHECK: error: missing length in address
 #CHECK: edmk	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: edmk	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: edmk	0(0,%r1), 0(%r1)
@@ -4373,7 +4539,7 @@
 #CHECK: mvc	0, 0
 #CHECK: error: missing length in address
 #CHECK: mvc	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvc	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: mvc	0(0,%r1), 0(%r1)
@@ -4428,7 +4594,7 @@
 #CHECK: mvcin	0, 0
 #CHECK: error: missing length in address
 #CHECK: mvcin	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvcin	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: mvcin	0(0,%r1), 0(%r1)
@@ -4462,7 +4628,7 @@
 	mvcin	0(1,%r2), 0(%r1,%r2)
 	mvcin	0(-), 0
 
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvck	0(%r1,%r1), 0(2,%r1), %r3
 #CHECK: error: invalid operand
 #CHECK: mvck	-1(%r1,%r1), 0(%r1), %r3
@@ -4474,7 +4640,7 @@
 #CHECK: mvck	0(%r1,%r1), 4096(%r1), %r3
 #CHECK: error: invalid use of indexed addressing
 #CHECK: mvck	0(%r1,%r2), 0(%r1,%r2), %r3
-#CHECK: error: unknown token in expression
+#CHECK: error: unexpected token in address
 #CHECK: mvck	0(-), 0, %r3
 
 	mvck	0(%r1,%r1), 0(2,%r1), %r3
@@ -4538,7 +4704,7 @@
         mvcos	0(%r1), -1(%r15), %r2
         mvcos	0(%r1), 4096(%r15), %r2
 
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvcp	0(%r1,%r1), 0(2,%r1), %r3
 #CHECK: error: invalid operand
 #CHECK: mvcp	-1(%r1,%r1), 0(%r1), %r3
@@ -4550,7 +4716,7 @@
 #CHECK: mvcp	0(%r1,%r1), 4096(%r1), %r3
 #CHECK: error: invalid use of indexed addressing
 #CHECK: mvcp	0(%r1,%r2), 0(%r1,%r2), %r3
-#CHECK: error: unknown token in expression
+#CHECK: error: unexpected token in address
 #CHECK: mvcp	0(-), 0, %r3
 
 	mvcp	0(%r1,%r1), 0(2,%r1), %r3
@@ -4561,7 +4727,7 @@
 	mvcp	0(%r1,%r2), 0(%r1,%r2), %r3
 	mvcp	0(-), 0, %r3
 
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvcs	0(%r1,%r1), 0(2,%r1), %r3
 #CHECK: error: invalid operand
 #CHECK: mvcs	-1(%r1,%r1), 0(%r1), %r3
@@ -4573,7 +4739,7 @@
 #CHECK: mvcs	0(%r1,%r1), 4096(%r1), %r3
 #CHECK: error: invalid use of indexed addressing
 #CHECK: mvcs	0(%r1,%r2), 0(%r1,%r2), %r3
-#CHECK: error: unknown token in expression
+#CHECK: error: unexpected token in address
 #CHECK: mvcs	0(-), 0, %r3
 
 	mvcs	0(%r1,%r1), 0(2,%r1), %r3
@@ -4690,7 +4856,7 @@
 #CHECK: mvn	0, 0
 #CHECK: error: missing length in address
 #CHECK: mvn	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvn	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: mvn	0(0,%r1), 0(%r1)
@@ -4775,7 +4941,7 @@
 #CHECK: mvz	0, 0
 #CHECK: error: missing length in address
 #CHECK: mvz	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: mvz	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: mvz	0(0,%r1), 0(%r1)
@@ -4917,7 +5083,7 @@
 #CHECK: nc	0, 0
 #CHECK: error: missing length in address
 #CHECK: nc	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: nc	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: nc	0(0,%r1), 0(%r1)
@@ -5071,7 +5237,7 @@
 #CHECK: oc	0, 0
 #CHECK: error: missing length in address
 #CHECK: oc	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: oc	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: oc	0(0,%r1), 0(%r1)
@@ -5319,7 +5485,7 @@
 #CHECK: pka	0, 0
 #CHECK: error: missing length in address
 #CHECK: pka	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: pka	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: pka	0(%r1), 0(0,%r1)
@@ -5357,7 +5523,7 @@
 #CHECK: pku	0, 0
 #CHECK: error: missing length in address
 #CHECK: pku	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: pku	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: pku	0(%r1), 0(0,%r1)
@@ -5469,8 +5635,6 @@
 #CHECK: error: invalid operand
 #CHECK: risbg	%r0,%r0,0,0,-1
 #CHECK: error: invalid operand
-#CHECK: risbg	%r0,%r0,0,0,64
-#CHECK: error: invalid operand
 #CHECK: risbg	%r0,%r0,0,-1,0
 #CHECK: error: invalid operand
 #CHECK: risbg	%r0,%r0,0,256,0
@@ -5480,7 +5644,6 @@
 #CHECK: risbg	%r0,%r0,256,0,0
 
 	risbg	%r0,%r0,0,0,-1
-	risbg	%r0,%r0,0,0,64
 	risbg	%r0,%r0,0,-1,0
 	risbg	%r0,%r0,0,256,0
 	risbg	%r0,%r0,-1,0,0
@@ -5519,10 +5682,6 @@
 	rllg	%r0,%r0,0(%r1,%r2)
 
 #CHECK: error: invalid operand
-#CHECK: rnsbg	%r0,%r0,0,0,-1
-#CHECK: error: invalid operand
-#CHECK: rnsbg	%r0,%r0,0,0,64
-#CHECK: error: invalid operand
 #CHECK: rnsbg	%r0,%r0,0,-1,0
 #CHECK: error: invalid operand
 #CHECK: rnsbg	%r0,%r0,0,256,0
@@ -5531,17 +5690,11 @@
 #CHECK: error: invalid operand
 #CHECK: rnsbg	%r0,%r0,256,0,0
 
-	rnsbg	%r0,%r0,0,0,-1
-	rnsbg	%r0,%r0,0,0,64
 	rnsbg	%r0,%r0,0,-1,0
 	rnsbg	%r0,%r0,0,256,0
 	rnsbg	%r0,%r0,-1,0,0
 	rnsbg	%r0,%r0,256,0,0
 
-#CHECK: error: invalid operand
-#CHECK: rosbg	%r0,%r0,0,0,-1
-#CHECK: error: invalid operand
-#CHECK: rosbg	%r0,%r0,0,0,64
 #CHECK: error: invalid operand
 #CHECK: rosbg	%r0,%r0,0,-1,0
 #CHECK: error: invalid operand
@@ -5551,8 +5704,6 @@
 #CHECK: error: invalid operand
 #CHECK: rosbg	%r0,%r0,256,0,0
 
-	rosbg	%r0,%r0,0,0,-1
-	rosbg	%r0,%r0,0,0,64
 	rosbg	%r0,%r0,0,-1,0
 	rosbg	%r0,%r0,0,256,0
 	rosbg	%r0,%r0,-1,0,0
@@ -5600,10 +5751,6 @@
 	rrxtr	%f2, %f0, %f0, 0
 
 #CHECK: error: invalid operand
-#CHECK: rxsbg	%r0,%r0,0,0,-1
-#CHECK: error: invalid operand
-#CHECK: rxsbg	%r0,%r0,0,0,64
-#CHECK: error: invalid operand
 #CHECK: rxsbg	%r0,%r0,0,-1,0
 #CHECK: error: invalid operand
 #CHECK: rxsbg	%r0,%r0,0,256,0
@@ -5612,8 +5759,6 @@
 #CHECK: error: invalid operand
 #CHECK: rxsbg	%r0,%r0,256,0,0
 
-	rxsbg	%r0,%r0,0,0,-1
-	rxsbg	%r0,%r0,0,0,64
 	rxsbg	%r0,%r0,0,-1,0
 	rxsbg	%r0,%r0,0,256,0
 	rxsbg	%r0,%r0,-1,0,0
@@ -6232,7 +6377,7 @@
 #CHECK: srp	0, 0, 0
 #CHECK: error: missing length in address
 #CHECK: srp	0(%r1), 0(%r1), 0
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: srp	0(1,%r1), 0(2,%r1), 0
 #CHECK: error: invalid operand
 #CHECK: srp	0(0,%r1), 0(%r1), 0
@@ -7118,7 +7263,7 @@
 #CHECK: tr	0, 0
 #CHECK: error: missing length in address
 #CHECK: tr	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: tr	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: tr	0(0,%r1), 0(%r1)
@@ -7216,7 +7361,7 @@
 #CHECK: trt	0, 0
 #CHECK: error: missing length in address
 #CHECK: trt	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: trt	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: trt	0(0,%r1), 0(%r1)
@@ -7276,7 +7421,7 @@
 #CHECK: trtr	0, 0
 #CHECK: error: missing length in address
 #CHECK: trtr	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: trtr	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: trtr	0(0,%r1), 0(%r1)
@@ -7405,7 +7550,7 @@
 #CHECK: unpka	0, 0
 #CHECK: error: missing length in address
 #CHECK: unpka	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: unpka	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: unpka	0(0,%r1), 0(%r1)
@@ -7443,7 +7588,7 @@
 #CHECK: unpku	0, 0
 #CHECK: error: missing length in address
 #CHECK: unpku	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: unpku	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: unpku	0(0,%r1), 0(%r1)
@@ -7489,7 +7634,7 @@
 #CHECK: xc	0, 0
 #CHECK: error: missing length in address
 #CHECK: xc	0(%r1), 0(%r1)
-#CHECK: error: invalid use of length addressing
+#CHECK: error: invalid use of indexed addressing
 #CHECK: xc	0(1,%r1), 0(2,%r1)
 #CHECK: error: invalid operand
 #CHECK: xc	0(0,%r1), 0(%r1)

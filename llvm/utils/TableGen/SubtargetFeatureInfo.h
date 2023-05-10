@@ -9,17 +9,14 @@
 #ifndef LLVM_UTIL_TABLEGEN_SUBTARGETFEATUREINFO_H
 #define LLVM_UTIL_TABLEGEN_SUBTARGETFEATUREINFO_H
 
-#include "llvm/TableGen/Error.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/TableGen/Record.h"
-
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace llvm {
-class Record;
-class RecordKeeper;
-
 struct SubtargetFeatureInfo;
 using SubtargetFeatureInfoMap = std::map<Record *, SubtargetFeatureInfo, LessRecordByID>;
 

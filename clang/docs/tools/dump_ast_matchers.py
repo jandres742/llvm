@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # A tool to parse ASTMatchers.h and update the documentation in
 # ../LibASTMatchersReference.html automatically. Run from the
 # directory in which this file is located to update the docs.
@@ -9,6 +9,12 @@ try:
     from urllib.request import urlopen
 except ImportError:
     from urllib2 import urlopen
+
+CLASS_INDEX_PAGE_URL = 'https://clang.llvm.org/doxygen/classes.html'
+try:
+  CLASS_INDEX_PAGE = urlopen(CLASS_INDEX_PAGE_URL).read().decode('utf-8')
+except Exception as e:
+  raise Exception('Unable to get %s: %s' % (CLASS_INDEX_PAGE_URL, e))
 
 MATCHERS_FILE = '../../include/clang/ASTMatchers/ASTMatchers.h'
 
@@ -40,15 +46,18 @@ def esc(text):
   text = re.sub(r'<', '&lt;', text)
   text = re.sub(r'>', '&gt;', text)
   def link_if_exists(m):
+    """Wrap a likely AST node name in a link to its clang docs.
+
+       We want to do this only if the page exists, in which case it will be
+       referenced from the class index page.
+    """
     name = m.group(1)
     url = 'https://clang.llvm.org/doxygen/classclang_1_1%s.html' % name
     if url not in doxygen_probes:
-      try:
-        print('Probing %s...' % url)
-        urlopen(url)
-        doxygen_probes[url] = True
-      except:
-        doxygen_probes[url] = False
+      search_str = 'href="classclang_1_1%s.html"' % name
+      doxygen_probes[url] = search_str in CLASS_INDEX_PAGE
+      if not doxygen_probes[url]:
+        print('Did not find %s in class index page' % name)
     if doxygen_probes[url]:
       return r'Matcher&lt;<a href="%s">%s</a>&gt;' % (url, name)
     else:
@@ -119,8 +128,15 @@ def add_matcher(result_type, name, args, comment, is_dyncast=False):
   ids[name] += 1
   args = unify_arguments(args)
   result_type = unify_type(result_type)
+
+  docs_result_type = esc('Matcher<%s>' % result_type);
+
+  if name == 'mapAnyOf':
+    args = "nodeMatcherFunction..."
+    docs_result_type = "<em>unspecified</em>"
+
   matcher_html = TD_TEMPLATE % {
-    'result': esc('Matcher<%s>' % result_type),
+    'result': docs_result_type,
     'name': name,
     'args': esc(args),
     'comment': esc(strip_doxygen(comment)),
@@ -135,7 +151,7 @@ def add_matcher(result_type, name, args, comment, is_dyncast=False):
   # exclude known narrowing matchers that also take other matchers as
   # arguments.
   elif ('Matcher<' not in args or
-        name in ['allOf', 'anyOf', 'anything', 'unless']):
+        name in ['allOf', 'anyOf', 'anything', 'unless', 'mapAnyOf']):
     dict = narrowing_matchers
     lookup = result_type + name + esc(args)
   else:
@@ -230,6 +246,28 @@ def act_on_decl(declaration, comment, allowed_types):
         add_matcher(result_type, name, args, comment)
       return
 
+    m = re.match(r"""^\s*AST_POLYMORPHIC_MATCHER_REGEX(?:_OVERLOAD)?\(
+                          \s*([^\s,]+)\s*,
+                          \s*AST_POLYMORPHIC_SUPPORTED_TYPES\(([^)]*)\),
+                          \s*([^\s,]+)\s*
+                       (?:,\s*\d+\s*)?
+                      \)\s*{\s*$""", declaration, flags=re.X)
+
+    if m:
+      name, results, arg_name = m.groups()[0:3]
+      result_types = [r.strip() for r in results.split(',')]
+      if allowed_types and allowed_types != result_types:
+        raise Exception('Inconsistent documentation for: %s' % name)
+      arg = "StringRef %s, Regex::RegexFlags Flags = NoFlags" % arg_name
+      comment += """
+If the matcher is used in clang-query, RegexFlags parameter
+should be passed as a quoted string. e.g: "NoFlags".
+Flags can be combined with '|' example \"IgnoreCase | BasicRegex\"
+"""
+      for result_type in result_types:
+        add_matcher(result_type, name, arg, comment)
+      return
+
     m = re.match(r"""^\s*AST_MATCHER_FUNCTION(_P)?(.?)(?:_OVERLOAD)?\(
                        (?:\s*([^\s,]+)\s*,)?
                           \s*([^\s,]+)\s*
@@ -275,6 +313,31 @@ def act_on_decl(declaration, comment, allowed_types):
         add_matcher(result_type, name, args, comment)
       return
 
+    m = re.match(r"""^\s*AST_MATCHER_REGEX(?:_OVERLOAD)?\(
+                       \s*([^\s,]+)\s*,
+                       \s*([^\s,]+)\s*,
+                       \s*([^\s,]+)\s*
+                       (?:,\s*\d+\s*)?
+                      \)\s*{""", declaration, flags=re.X)
+    if m:
+      result, name, arg_name = m.groups()[0:3]
+      if not result:
+        if not allowed_types:
+          raise Exception('Did not find allowed result types for: %s' % name)
+        result_types = allowed_types
+      else:
+        result_types = [result]
+      arg = "StringRef %s, Regex::RegexFlags Flags = NoFlags" % arg_name
+      comment += """
+If the matcher is used in clang-query, RegexFlags parameter
+should be passed as a quoted string. e.g: "NoFlags".
+Flags can be combined with '|' example \"IgnoreCase | BasicRegex\"
+"""
+
+      for result_type in result_types:
+        add_matcher(result_type, name, arg, comment)
+      return
+
     # Parse ArgumentAdapting matchers.
     m = re.match(
         r"""^.*ArgumentAdaptingMatcherFunc<.*>\s*
@@ -297,13 +360,17 @@ def act_on_decl(declaration, comment, allowed_types):
 
     m = re.match(
         r"""^.*internal::VariadicFunction\s*<\s*
-              internal::PolymorphicMatcherWithParam1<[\S\s]+
-              AST_POLYMORPHIC_SUPPORTED_TYPES\(([^)]*)\)>,\s*([^,]+),
-              \s*[^>]+>\s*([a-zA-Z]*);$""", 
+              internal::PolymorphicMatcher<[\S\s]+
+              AST_POLYMORPHIC_SUPPORTED_TYPES\(([^)]*)\),\s*(.*);$""",
         declaration, flags=re.X)
 
     if m:
-      results, arg, name = m.groups()[:3]
+      results, trailing = m.groups()
+      trailing, name = trailing.rsplit(">", 1)
+      name = name.strip()
+      trailing, _ = trailing.rsplit(",", 1)
+      _, arg = trailing.rsplit(",", 1)
+      arg = arg.strip()
 
       result_types = [r.strip() for r in results.split(',')]
       for result_type in result_types:
@@ -325,6 +392,14 @@ def act_on_decl(declaration, comment, allowed_types):
         add_matcher('*', name, 'Matcher<*>, ..., Matcher<*>', comment)
         return
 
+    m = re.match(
+        r"""^.*MapAnyOfMatcher<.*>\s*
+              ([a-zA-Z]*);$""",
+        declaration, flags=re.X)
+    if m:
+      name = m.groups()[0]
+      add_matcher('*', name, 'Matcher<*>...Matcher<*>', comment)
+      return
 
     # Parse free standing matcher functions, like:
     #   Matcher<ResultType> Name(Matcher<ArgumentType> InnerMatcher) {
@@ -347,7 +422,7 @@ def act_on_decl(declaration, comment, allowed_types):
       m = re.match(r'(?:^|.*\s+)internal::(?:Bindable)?Matcher<([^>]+)>$', result)
       if m:
         result_types = [m.group(1)]
-        if template_name and len(result_types) is 1 and result_types[0] == template_name:
+        if template_name and len(result_types) == 1 and result_types[0] == template_name:
           result_types = ['*']
       else:
         result_types = extract_result_types(comment)
@@ -427,6 +502,6 @@ reference = re.sub(r'<!-- START_NARROWING_MATCHERS.*END_NARROWING_MATCHERS -->',
 reference = re.sub(r'<!-- START_TRAVERSAL_MATCHERS.*END_TRAVERSAL_MATCHERS -->',
                    traversal_matcher_table, reference, flags=re.S)
 
-with open('../LibASTMatchersReference.html', 'wb') as output:
+with open('../LibASTMatchersReference.html', 'w', newline='\n') as output:
   output.write(reference)
 

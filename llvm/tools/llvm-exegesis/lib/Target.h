@@ -22,16 +22,21 @@
 #include "LlvmState.h"
 #include "PerfHelper.h"
 #include "SnippetGenerator.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace llvm {
 namespace exegesis {
+
+extern cl::OptionCategory Options;
+extern cl::OptionCategory BenchmarkOptions;
+extern cl::OptionCategory AnalysisOptions;
 
 struct PfmCountersInfo {
   // An optional name of a performance counter that can be used to measure
@@ -54,6 +59,7 @@ struct PfmCountersInfo {
   unsigned NumIssueCounters;
 
   static const PfmCountersInfo Default;
+  static const PfmCountersInfo Dummy;
 };
 
 struct CpuAndPfmCounters {
@@ -142,15 +148,22 @@ public:
     return {&Instr};
   }
 
+  // Checks hardware and software support for current benchmark mode.
+  // Returns an error if the target host does not have support to run the
+  // benchmark.
+  virtual Error checkFeatureSupport() const { return Error::success(); }
+
   // Creates a snippet generator for the given mode.
   std::unique_ptr<SnippetGenerator>
-  createSnippetGenerator(InstructionBenchmark::ModeE Mode,
+  createSnippetGenerator(Benchmark::ModeE Mode,
                          const LLVMState &State,
                          const SnippetGenerator::Options &Opts) const;
   // Creates a benchmark runner for the given mode.
-  Expected<std::unique_ptr<BenchmarkRunner>>
-  createBenchmarkRunner(InstructionBenchmark::ModeE Mode,
-                        const LLVMState &State) const;
+  Expected<std::unique_ptr<BenchmarkRunner>> createBenchmarkRunner(
+      Benchmark::ModeE Mode, const LLVMState &State,
+      BenchmarkPhaseSelectorE BenchmarkPhaseSelector,
+      Benchmark::ResultAggregationModeE ResultAggMode =
+          Benchmark::Min) const;
 
   // Returns the ExegesisTarget for the given triple or nullptr if the target
   // does not exist.
@@ -166,6 +179,20 @@ public:
   // counters are defined for this CPU).
   const PfmCountersInfo &getPfmCounters(StringRef CpuName) const;
 
+  // Returns dummy Pfm counters which can be used to execute generated snippet
+  // without access to performance counters.
+  const PfmCountersInfo &getDummyPfmCounters() const;
+
+  // Saves the CPU state that needs to be preserved when running a benchmark,
+  // and returns and RAII object that restores the state on destruction.
+  // By default no state is preserved.
+  struct SavedState {
+    virtual ~SavedState();
+  };
+  virtual std::unique_ptr<SavedState> withSavedState() const {
+    return std::make_unique<SavedState>();
+  }
+
 private:
   virtual bool matchesArch(Triple::ArchType Arch) const = 0;
 
@@ -176,9 +203,12 @@ private:
   std::unique_ptr<SnippetGenerator> virtual createParallelSnippetGenerator(
       const LLVMState &State, const SnippetGenerator::Options &Opts) const;
   std::unique_ptr<BenchmarkRunner> virtual createLatencyBenchmarkRunner(
-      const LLVMState &State, InstructionBenchmark::ModeE Mode) const;
+      const LLVMState &State, Benchmark::ModeE Mode,
+      BenchmarkPhaseSelectorE BenchmarkPhaseSelector,
+      Benchmark::ResultAggregationModeE ResultAggMode) const;
   std::unique_ptr<BenchmarkRunner> virtual createUopsBenchmarkRunner(
-      const LLVMState &State) const;
+      const LLVMState &State, BenchmarkPhaseSelectorE BenchmarkPhaseSelector,
+      Benchmark::ResultAggregationModeE ResultAggMode) const;
 
   const ExegesisTarget *Next = nullptr;
   const ArrayRef<CpuAndPfmCounters> CpuPfmCounters;
