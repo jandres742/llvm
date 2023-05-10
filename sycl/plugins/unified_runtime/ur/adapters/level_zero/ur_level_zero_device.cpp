@@ -771,9 +771,9 @@ UR_APIEXPORT ur_result_t UR_APICALL urDeviceGetInfo(
     return ReturnValue(capabilities);
   }
   case UR_DEVICE_INFO_MEM_CHANNEL_SUPPORT:
-    return ReturnValue(pi_bool{false});
+    return ReturnValue(ur_bool_t{false});
   case UR_DEVICE_INFO_IMAGE_SRGB:
-    return ReturnValue(pi_bool{false});
+    return ReturnValue(ur_bool_t{false});
 
   case UR_DEVICE_INFO_QUEUE_ON_DEVICE_PROPERTIES:
   case UR_DEVICE_INFO_QUEUE_ON_HOST_PROPERTIES: {
