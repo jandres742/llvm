@@ -128,7 +128,7 @@ if (TARGET UnifiedRuntimeLoader)
   # TODO: this is piggy-backing on the existing target component level-zero-sycl-dev
   # When UR is moved to its separate repo perhaps we should introduce new component,
   # e.g. unified-runtime-sycl-dev.
-  install(TARGETS loader
+  install(TARGETS ur_loader
       ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT level-zero-sycl-dev
       RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT level-zero-sycl-dev
       LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT level-zero-sycl-dev
