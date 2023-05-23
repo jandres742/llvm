@@ -452,12 +452,19 @@ mapPIMetadataToUR(const pi_device_binary_property *pi_metadata,
 
 namespace pi2ur {
 
+
+inline pi_result piPluginInit() {
+  
+  HANDLE_ERRORS(urInit(0));
+  return PI_SUCCESS;
+}
+
 inline pi_result piTearDown(void *PluginParameter) {
   std::ignore = PluginParameter;
   // TODO: Dont check for errors in urTearDown, since
   // when using Level Zero plugin, the second urTearDown
   // will fail as ur_loader.so has already been unloaded,
-  urTearDown(nullptr);
+  HANDLE_ERRORS(urTearDown(nullptr));
   return PI_SUCCESS;
 }
 

@@ -1139,7 +1139,8 @@ __SYCL_EXPORT pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_API(piextPluginGetOpaqueData)
   _PI_API(piTearDown)
 
-  return PI_SUCCESS;
+  return pi2ur::piPluginInit();
+
 }
 
 } // extern "C
