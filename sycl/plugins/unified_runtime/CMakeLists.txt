@@ -3,8 +3,8 @@
 if (NOT DEFINED UNIFIED_RUNTIME_LIBRARY OR NOT DEFINED UNIFIED_RUNTIME_INCLUDE_DIR)
   include(FetchContent)
 
-  set(UNIFIED_RUNTIME_REPO "https://github.com/oneapi-src/unified-runtime.git")
-  set(UNIFIED_RUNTIME_TAG 620ddb1e8bb1f5ef6cc775edf79ba4674057fe2e)
+  set(UNIFIED_RUNTIME_REPO "https://github.com/jandres742/unified-runtime.git")
+  set(UNIFIED_RUNTIME_TAG c1f2739f4a7ab307528b8751d717818239e0a53a)
 
   message(STATUS "Will fetch Unified Runtime from ${UNIFIED_RUNTIME_REPO}")
   FetchContent_Declare(unified-runtime
