@@ -4,7 +4,7 @@ if (NOT DEFINED UNIFIED_RUNTIME_LIBRARY OR NOT DEFINED UNIFIED_RUNTIME_INCLUDE_D
   include(FetchContent)
 
   set(UNIFIED_RUNTIME_REPO "https://github.com/oneapi-src/unified-runtime.git")
-  set(UNIFIED_RUNTIME_TAG 3c6f02c7a76a0448a83932d93c2dbeff25af70aa)
+  set(UNIFIED_RUNTIME_TAG 9f95decae29d4b1e541231aaa1b605a8edd6ccda)
 
   message(STATUS "Will fetch Unified Runtime from ${UNIFIED_RUNTIME_REPO}")
   FetchContent_Declare(unified-runtime
@@ -38,6 +38,8 @@ if (NOT DEFINED UNIFIED_RUNTIME_LIBRARY OR NOT DEFINED UNIFIED_RUNTIME_INCLUDE_D
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS_BAK}")
 
   add_library(UnifiedRuntimeLoader ALIAS ur_loader)
+  add_library(UnifiedRuntimeCommon ALIAS ur_common)
+  add_library(UnifiedMallocFramework ALIAS unified_malloc_framework)
 
   set(UNIFIED_RUNTIME_SOURCE_DIR
     ${unified-runtime_SOURCE_DIR} CACHE PATH "Path to Unified Runtime Headers")
@@ -45,7 +47,7 @@ if (NOT DEFINED UNIFIED_RUNTIME_LIBRARY OR NOT DEFINED UNIFIED_RUNTIME_INCLUDE_D
 endif()
 
 
-add_library (UnifiedRuntime-Headers INTERFACE)
+add_library(UnifiedRuntime-Headers INTERFACE)
 
 target_include_directories(UnifiedRuntime-Headers
   INTERFACE
@@ -79,10 +81,6 @@ add_sycl_library("ur_adapter_level_zero" SHARED
   SOURCES
     "ur/ur.hpp"
     "ur/ur.cpp"
-    "ur/usm_allocator.hpp"
-    "ur/usm_allocator.cpp"
-    "ur/usm_allocator_config.cpp"
-    "ur/usm_allocator_config.hpp"
     "ur/adapters/level_zero/ur_level_zero.hpp"
     "ur/adapters/level_zero/ur_level_zero.cpp"
     "ur/adapters/level_zero/ur_interface_loader.cpp"
@@ -117,6 +115,8 @@ add_sycl_library("ur_adapter_level_zero" SHARED
     ${sycl_inc_dir}
   LIBRARIES
     UnifiedRuntime-Headers
+    UnifiedRuntimeCommon
+    UnifiedMallocFramework
     LevelZeroLoader-Headers
     LevelZeroLoader
     Threads::Threads
@@ -133,8 +133,6 @@ if ("cuda" IN_LIST SYCL_ENABLE_PLUGINS)
     SOURCES
       "ur/ur.hpp"
       "ur/ur.cpp"
-      "ur/usm_allocator.cpp"
-      "ur/usm_allocator.hpp"
       "ur/adapters/cuda/command_buffer.cpp"
       "ur/adapters/cuda/command_buffer.hpp"
       "ur/adapters/cuda/common.cpp"
@@ -180,7 +178,7 @@ endif()
 
 if ("hip" IN_LIST SYCL_ENABLE_PLUGINS)
   # Build HIP adapter
-  add_sycl_library("ur_adapter_hip" SHARED 
+  add_sycl_library("ur_adapter_hip" SHARED
     SOURCES
       "ur/ur.hpp"
       "ur/ur.cpp"
@@ -274,8 +272,8 @@ if("native_cpu" IN_LIST SYCL_ENABLE_PLUGINS)
       sycl
   )
 
-  set_target_properties("ur_adapter_native_cpu" PROPERTIES 
-    VERSION "0.0.0"                                                         
+  set_target_properties("ur_adapter_native_cpu" PROPERTIES
+    VERSION "0.0.0"
     SOVERSION "0"
   )
 endif()
