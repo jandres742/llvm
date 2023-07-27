@@ -469,6 +469,10 @@ inline pi_result ur2piDeviceInfoValue(ur_device_info_t ParamName,
           *pValuePI = pValueUR->value.affinity_domain;
           break;
         }
+        case UR_DEVICE_PARTITION_BY_CSLICE: {
+          *pValuePI = 0;
+          break;
+        }
         default:
           die("UR_DEVICE_INFO_PARTITION_TYPE query returned unsupported type");
         }
@@ -1246,6 +1250,11 @@ inline pi_result piDevicePartition(
   }
 
   std::vector<ur_device_partition_property_t> UrProperties{};
+  if (UrType == UR_DEVICE_PARTITION_BY_CSLICE) {
+    ur_device_partition_property_t UrProperty{};
+    UrProperty.type = UrType;
+    UrProperties.push_back(UrProperty);
+  }
   while (*(++Properties)) {
     ur_device_partition_property_t UrProperty;
     UrProperty.type = UrType;
