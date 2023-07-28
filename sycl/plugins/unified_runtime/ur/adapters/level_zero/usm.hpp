@@ -11,6 +11,8 @@
 
 #include <umf_helpers.hpp>
 
+#include "ur_level_zero.hpp"
+
 usm::DisjointPoolAllConfigs InitializeDisjointPoolConfig();
 
 struct ur_usm_pool_handle_t_ : _ur_object {
@@ -58,6 +60,8 @@ protected:
   virtual ur_result_t allocateImpl(void **ResultPtr, size_t Size,
                                    uint32_t Alignment) = 0;
 
+  virtual ur_result_t queryPageSize(ur_context_handle_t Context, ur_device_handle_t Dev, size_t *PageSize)  = 0;
+
 public:
   umf_result_t initialize(ur_context_handle_t Ctx, ur_device_handle_t Dev);
   umf_result_t alloc(size_t Size, size_t Align, void **Ptr);
@@ -82,6 +86,12 @@ class USMSharedMemoryProvider final : public USMMemoryProvider {
 protected:
   ur_result_t allocateImpl(void **ResultPtr, size_t Size,
                            uint32_t Alignment) override;
+
+  ur_result_t queryPageSize([[maybe_unused]]ur_context_handle_t Context, ur_device_handle_t Dev, size_t *PageSize) override {
+    UR_CALL(Dev->queryPageSizes());
+    *PageSize = Dev->SharedMinPageSize;
+    return UR_RESULT_SUCCESS;
+  }
 };
 
 // Allocation routines for shared memory type that is only modified from host.
@@ -89,6 +99,12 @@ class USMSharedReadOnlyMemoryProvider final : public USMMemoryProvider {
 protected:
   ur_result_t allocateImpl(void **ResultPtr, size_t Size,
                            uint32_t Alignment) override;
+
+  ur_result_t queryPageSize([[maybe_unused]]ur_context_handle_t Context, ur_device_handle_t Dev, size_t *PageSize) override {
+    UR_CALL(Dev->queryPageSizes());
+    *PageSize = Dev->SharedMinPageSize;
+    return UR_RESULT_SUCCESS;
+  }
 };
 
 // Allocation routines for device memory type
@@ -96,6 +112,12 @@ class USMDeviceMemoryProvider final : public USMMemoryProvider {
 protected:
   ur_result_t allocateImpl(void **ResultPtr, size_t Size,
                            uint32_t Alignment) override;
+
+  ur_result_t queryPageSize([[maybe_unused]]ur_context_handle_t Context, ur_device_handle_t Dev, size_t *PageSize) override {
+    UR_CALL(Dev->queryPageSizes());
+    *PageSize = Dev->DeviceMinPageSize;
+    return UR_RESULT_SUCCESS;
+  }
 };
 
 // Allocation routines for host memory type
@@ -103,6 +125,12 @@ class USMHostMemoryProvider final : public USMMemoryProvider {
 protected:
   ur_result_t allocateImpl(void **ResultPtr, size_t Size,
                            uint32_t Alignment) override;
+
+  ur_result_t queryPageSize(ur_context_handle_t Context, [[maybe_unused]]ur_device_handle_t Dev, size_t *PageSize) override {
+    UR_CALL(Context->queryPageSizes());
+    *PageSize = Context->HostMinPageSize;
+    return UR_RESULT_SUCCESS;
+  }
 };
 
 // If indirect access tracking is not enabled then this functions just performs

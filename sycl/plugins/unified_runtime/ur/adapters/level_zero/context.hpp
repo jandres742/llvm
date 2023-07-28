@@ -156,6 +156,11 @@ struct ur_context_handle_t_ : _ur_object {
   // Initialize the PI context.
   ur_result_t initialize();
 
+  // Minimum page size supported on the host
+  ssize_t HostMinPageSize = -1;
+
+  ur_result_t queryPageSizes();
+
   // If context contains one device then return this device.
   // If context contains sub-devices of the same device, then return this parent
   // device. Return nullptr if context consists of several devices which are not

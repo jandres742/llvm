@@ -139,6 +139,11 @@ struct ur_device_handle_t_ : _ur_object {
   // Returns whether immediate command lists are used on this device.
   ImmCmdlistMode ImmCommandListUsed{};
 
+  // Minimum page size supported on this device
+  ssize_t SharedMinPageSize = -1;
+  ssize_t DeviceMinPageSize = -1;
+  ur_result_t queryPageSizes();
+
   bool isSubDevice() { return RootDevice != nullptr; }
 
   // Is this a Data Center GPU Max series (aka PVC)?

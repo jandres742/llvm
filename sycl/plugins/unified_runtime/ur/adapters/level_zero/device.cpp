@@ -1033,6 +1033,45 @@ ur_result_t ur_device_handle_t_::initialize(int SubSubDeviceOrdinal,
   return UR_RESULT_SUCCESS;
 }
 
+ur_result_t ur_device_handle_t_::queryPageSizes() {
+
+  if (SharedMinPageSize != -1 && DeviceMinPageSize != -1) {
+    return UR_RESULT_SUCCESS;
+  }
+
+  // Query L0 for the minimal page sizes and cache them
+  // TODO: translate PI properties to Level Zero flags
+  ZeStruct<ze_host_mem_alloc_desc_t> ZeHostDesc;
+  ZeStruct<ze_device_mem_alloc_desc_t> ZeDevDesc;
+  size_t Size = 1;
+  size_t Alignment = 1;
+
+  ZeStruct<ze_context_desc_t> ZeContextDesc;
+  ze_context_handle_t ZeContext {};
+  ZE2UR_CALL(zeContextCreate, (Platform->ZeDriver, &ZeContextDesc, &ZeContext));
+
+  ZeStruct<ze_memory_allocation_properties_t> AllocProperties = {};
+  void *Ptr = nullptr;
+  ZE2UR_CALL(zeMemAllocShared, (ZeContext, &ZeDevDesc, &ZeHostDesc,
+                                Size, Alignment, ZeDevice, &Ptr));
+  ZE2UR_CALL(zeMemGetAllocProperties,
+             (ZeContext, Ptr, &AllocProperties, nullptr));
+  SharedMinPageSize = AllocProperties.pageSize;
+  ZE2UR_CALL(zeMemFree, (ZeContext, Ptr));
+
+  Ptr = nullptr;
+  ZE2UR_CALL(zeMemAllocDevice, (ZeContext, &ZeDevDesc,
+                                Size, Alignment, ZeDevice, &Ptr));
+  ZE2UR_CALL(zeMemGetAllocProperties,
+             (ZeContext, Ptr, &AllocProperties, nullptr));
+  DeviceMinPageSize = AllocProperties.pageSize;
+  ZE2UR_CALL(zeMemFree, (ZeContext, Ptr));
+
+  ZE2UR_CALL(zeContextDestroy, (ZeContext));
+
+  return UR_RESULT_SUCCESS;
+}
+
 ur_result_t urDeviceRetain(ur_device_handle_t Device) {
 
   // The root-device ref-count remains unchanged (always 1).

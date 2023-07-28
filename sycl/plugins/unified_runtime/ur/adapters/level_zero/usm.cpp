@@ -611,60 +611,18 @@ static ur_result_t USMFreeImpl(ur_context_handle_t Context, void *Ptr) {
   return UR_RESULT_SUCCESS;
 }
 
-static ur_result_t USMQueryPageSize(ur_context_handle_t Context, void *Ptr,
-                                    size_t *PageSize) {
-  ZeStruct<ze_memory_allocation_properties_t> AllocProperties = {};
-  ZE2UR_CALL(zeMemGetAllocProperties,
-             (Context->ZeContext, Ptr, &AllocProperties, nullptr));
-  *PageSize = AllocProperties.pageSize;
-
-  return UR_RESULT_SUCCESS;
-}
-
-static bool ShouldQueryPageSize() {
-  const char *QueryPageSizeVal =
-      std::getenv("UR_L0_USM_ALLOCATOR_QUERY_PAGE_SIZE");
-  bool QueryPageSize = true;
-  if (QueryPageSizeVal != nullptr) {
-    QueryPageSize = std::atoi(QueryPageSizeVal);
-  }
-  return QueryPageSize;
-}
-
-const bool QueryPageSize = ShouldQueryPageSize();
-
 umf_result_t USMMemoryProvider::initialize(ur_context_handle_t Ctx,
                                            ur_device_handle_t Dev) {
   Context = Ctx;
   Device = Dev;
 
-  if (!QueryPageSize) {
-    MinPageSize = 0;
-    return UMF_RESULT_SUCCESS;
-  }
-
   // Query L0 for the minimal page size and cache it in 'MinPageSize'
-  void *Ptr;
-  auto Res = allocateImpl(&Ptr, 1, 0);
+  auto Res = queryPageSize(Ctx, Dev, &MinPageSize);
   if (Res != UR_RESULT_SUCCESS) {
-    goto err_set_status;
+    return UMF_RESULT_ERROR_MEMORY_PROVIDER_SPECIFIC;
   }
-
-  Res = USMQueryPageSize(Context, Ptr, &MinPageSize);
-  if (Res != UR_RESULT_SUCCESS) {
-    goto err_set_status;
-  }
-
-  Res = USMFreeImpl(Context, Ptr);
-  if (Res != UR_RESULT_SUCCESS) {
-    goto err_set_status;
-  }
-
+  
   return UMF_RESULT_SUCCESS;
-
-err_set_status:
-  getLastStatusRef() = Res;
-  return UMF_RESULT_ERROR_MEMORY_PROVIDER_SPECIFIC;
 }
 
 enum umf_result_t USMMemoryProvider::alloc(size_t Size, size_t Align,

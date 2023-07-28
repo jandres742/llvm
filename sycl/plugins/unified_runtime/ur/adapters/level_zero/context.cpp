@@ -285,6 +285,36 @@ ur_result_t ur_context_handle_t_::initialize() {
   return UR_RESULT_SUCCESS;
 }
 
+ur_result_t ur_context_handle_t_::queryPageSizes() {
+
+  if (HostMinPageSize != -1) {
+    return UR_RESULT_SUCCESS;
+  }
+
+  // Query L0 for the minimal page sizes and cache them
+  // TODO: translate PI properties to Level Zero flags
+  ZeStruct<ze_host_mem_alloc_desc_t> ZeHostDesc;
+  size_t Size = 1;
+  size_t Alignment = 1;
+
+  ZeStruct<ze_context_desc_t> ZeContextDesc;
+  ze_context_handle_t ZeContext {};
+  ZE2UR_CALL(zeContextCreate, (getPlatform()->ZeDriver, &ZeContextDesc, &ZeContext));
+
+  ZeStruct<ze_memory_allocation_properties_t> AllocProperties = {};
+  void *Ptr = nullptr;
+  ZE2UR_CALL(zeMemAllocHost, (ZeContext, &ZeHostDesc,
+                                Size, Alignment, &Ptr));
+  ZE2UR_CALL(zeMemGetAllocProperties,
+             (ZeContext, Ptr, &AllocProperties, nullptr));
+  HostMinPageSize = AllocProperties.pageSize;
+  ZE2UR_CALL(zeMemFree, (ZeContext, Ptr));
+
+  ZE2UR_CALL(zeContextDestroy, (ZeContext));
+
+  return UR_RESULT_SUCCESS;
+}
+
 ur_device_handle_t ur_context_handle_t_::getRootDevice() const {
   assert(Devices.size() > 0);
 
