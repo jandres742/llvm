@@ -13,6 +13,31 @@
 #include <sycl/detail/pi.h>
 #include <ur/ur.hpp>
 
+#include <iomanip>
+#include <chrono>
+#include <iostream>
+#include <unordered_map>
+
+struct TimeStamp {
+  std::string name;
+  long int start = 0;
+  long int end = 0;
+  long int duration = 0;
+};
+
+std::mutex UrTimestampsMutex;
+static std::unordered_map<std::string, std::vector<TimeStamp>*> *UrTimestamps;
+static std::vector<TimeStamp> *UrTimestampsVector;
+
+static int UrPrintTrace = [] {
+  const char *UrRet = std::getenv("UR_PRINT_TRACE");
+  const char *Trace = UrRet ? UrRet : nullptr;
+  if (!Trace)
+      return 0;
+  return std::atoi(Trace);
+}();
+
+
 // Map of UR error codes to PI error codes
 static pi_result ur2piResult(ur_result_t urResult) {
   if (urResult == UR_RESULT_SUCCESS)
@@ -150,6 +175,48 @@ static pi_result ur2piResult(ur_result_t urResult) {
 #define PI_ASSERT(condition, error)                                            \
   if (!(condition))                                                            \
     return error;
+
+#define UR_START_PROFILER()                                                    \
+  auto start = std::chrono::steady_clock::now();
+
+#if 0
+#define UR_END_PROFILER(urCallStr)                                            \
+  auto end = std::chrono::steady_clock::now();                                \
+  TimeStamp timestamp {                                                       \
+                        std::chrono::duration_cast<std::chrono::microseconds>(start.time_since_epoch()).count(),  \
+                        std::chrono::duration_cast<std::chrono::microseconds>(end.time_since_epoch()).count(),    \
+                        std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()};              \
+  {                                                                                                               \
+    std::lock_guard<std::mutex> Lock(UrTimestampsMutex);                                                          \
+    std::string str = urCallStr;                                                                                     \
+    if (UrTimestamps->find(str) == UrTimestamps->end()) {                                                         \
+      UrTimestamps->emplace(std::make_pair(str, new std::vector<TimeStamp>));                                     \
+    }                                                                                                             \
+    (*UrTimestamps)[str]->push_back(timestamp);                                                                   \
+  }  
+#else
+#define UR_END_PROFILER(urCallStr)                                            \
+  auto end = std::chrono::steady_clock::now();                                \
+  TimeStamp timestamp { #urCallStr,                                           \
+                        std::chrono::duration_cast<std::chrono::microseconds>(start.time_since_epoch()).count(),  \
+                        std::chrono::duration_cast<std::chrono::microseconds>(end.time_since_epoch()).count(),    \
+                        std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()};              \
+  {                                                                                                               \
+    std::lock_guard<std::mutex> Lock(UrTimestampsMutex);                                                          \
+    UrTimestampsVector->push_back(timestamp);                                                                   \
+  }  
+#endif                                                                                                             \
+
+// Early exits on any error
+#define UR_HANDLE_ERRORS(urCall, urCallArgs)                                    \
+  {                                                                             \
+      UR_START_PROFILER();                                                      \
+    if (auto Result = urCall urCallArgs)                                        \
+      return ur2piResult(Result);                                               \
+    if(UrPrintTrace == 1) {                                                     \
+      UR_END_PROFILER(#urCall);                                                 \
+    }                                                                           \
+  }
 
 // Early exits on any error
 #define HANDLE_ERRORS(urCall)                                                  \
@@ -722,6 +789,30 @@ mapPIMetadataToUR(const pi_device_binary_property *pi_metadata,
 namespace pi2ur {
 
 inline pi_result piTearDown(void *PluginParameter) {
+
+#if 0
+  for (auto &timestampFunction: *UrTimestamps) {
+    for (auto &timestamp: *timestampFunction.second) {
+      std::cout << std::setw(30) << timestampFunction.first  << ": "
+                << std::setw(20) << timestamp.start << ": "
+                << std::setw(20) << timestamp.end   << ": "
+                << std::setw(20) << timestamp.duration << "\n";
+    }
+    delete timestampFunction.second;
+  }
+  delete UrTimestamps;
+#else
+  if (UrPrintTrace == 1) {
+    for (auto &timestamp: *UrTimestampsVector) {
+      std::cout << std::setw(30) << timestamp.name  << ": "
+                << std::setw(20) << timestamp.start << ": "
+                << std::setw(20) << timestamp.end   << ": "
+                << std::setw(20) << timestamp.duration << "\n";
+    }
+  }
+  delete UrTimestampsVector;
+#endif
+
   std::ignore = PluginParameter;
   // Fetch the single known adapter (the one which is statically linked) so we
   // can release it. Fetching it for a second time (after piPlatformsGet)
@@ -752,6 +843,19 @@ inline pi_result piPlatformsGet(pi_uint32 NumEntries, pi_platform *Platforms,
                                 pi_uint32 *NumPlatforms) {
 
   urInit(0, nullptr);
+
+  static std::once_flag UrTimestampsInitialized;
+  try {
+    std::call_once(UrTimestampsInitialized, []() {
+      UrTimestamps = new std::unordered_map<std::string, std::vector<TimeStamp>*>;
+      UrTimestampsVector = new std::vector<TimeStamp>;
+    });
+  } catch (const std::bad_alloc &) {
+    return PI_ERROR_OUT_OF_HOST_MEMORY;
+  } catch (...) {
+    return PI_ERROR_UNKNOWN;
+  }
+
   // We're not going through the UR loader so we're guaranteed to have exactly
   // one adapter (whichever is statically linked). The PI plugin for UR has its
   // own implementation of piPlatformsGet.
@@ -763,8 +867,8 @@ inline pi_result piPlatformsGet(pi_uint32 NumEntries, pi_platform *Platforms,
   HANDLE_ERRORS(Ret);
 
   auto phPlatforms = reinterpret_cast<ur_platform_handle_t *>(Platforms);
-  HANDLE_ERRORS(
-      urPlatformGet(&Adapter, 1, NumEntries, phPlatforms, NumPlatforms));
+  UR_HANDLE_ERRORS(
+      urPlatformGet, (&Adapter, 1, NumEntries, phPlatforms, NumPlatforms));
   return PI_SUCCESS;
 }
 
@@ -777,7 +881,7 @@ inline pi_result piextPlatformGetNativeHandle(pi_platform Platform,
   auto UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
 
   ur_native_handle_t UrNativeHandle{};
-  HANDLE_ERRORS(urPlatformGetNativeHandle(UrPlatform, &UrNativeHandle));
+  UR_HANDLE_ERRORS(urPlatformGetNativeHandle, (UrPlatform, &UrNativeHandle));
 
   *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeHandle);
 
@@ -841,7 +945,7 @@ inline pi_result piPlatformGetInfo(pi_platform Platform,
 
   size_t UrParamValueSizeRet;
   auto UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
-  HANDLE_ERRORS(urPlatformGetInfo(UrPlatform, UrParamName, ParamValueSize,
+  UR_HANDLE_ERRORS(urPlatformGetInfo, (UrPlatform, UrParamName, ParamValueSize,
                                   ParamValue, &UrParamValueSizeRet));
 
   if (ParamValueSizeRet) {
@@ -867,8 +971,8 @@ inline pi_result piPluginGetBackendOption(pi_platform Platform,
                                           const char **PlatformOption) {
 
   auto UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
-  HANDLE_ERRORS(
-      urPlatformGetBackendOption(UrPlatform, FrontendOption, PlatformOption));
+  UR_HANDLE_ERRORS(
+      urPlatformGetBackendOption, (UrPlatform, FrontendOption, PlatformOption));
 
   return PI_SUCCESS;
 }
@@ -903,8 +1007,8 @@ inline pi_result piDevicesGet(pi_platform Platform, pi_device_type DeviceType,
 
   auto UrPlatform = reinterpret_cast<ur_platform_handle_t>(Platform);
   auto UrDevices = reinterpret_cast<ur_device_handle_t *>(Devices);
-  HANDLE_ERRORS(
-      urDeviceGet(UrPlatform, Type, NumEntries, UrDevices, NumDevices));
+  UR_HANDLE_ERRORS(
+      urDeviceGet, (UrPlatform, Type, NumEntries, UrDevices, NumDevices));
 
   return PI_SUCCESS;
 }
@@ -913,7 +1017,7 @@ inline pi_result piDeviceRetain(pi_device Device) {
   PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
 
   auto UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceRetain(UrDevice));
+  UR_HANDLE_ERRORS(urDeviceRetain, (UrDevice));
   return PI_SUCCESS;
 }
 
@@ -921,7 +1025,7 @@ inline pi_result piDeviceRelease(pi_device Device) {
   PI_ASSERT(Device, PI_ERROR_INVALID_DEVICE);
 
   auto UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceRelease(UrDevice));
+  UR_HANDLE_ERRORS(urDeviceRelease, (UrDevice));
   return PI_SUCCESS;
 }
 
@@ -1215,7 +1319,7 @@ inline pi_result piDeviceGetInfo(pi_device Device, pi_device_info ParamName,
   size_t ParamValueSizeRetUR;
   auto DeviceUR = reinterpret_cast<ur_device_handle_t>(Device);
 
-  HANDLE_ERRORS(urDeviceGetInfo(DeviceUR, InfoType, ParamValueSize, ParamValue,
+  UR_HANDLE_ERRORS(urDeviceGetInfo, (DeviceUR, InfoType, ParamValueSize, ParamValue,
                                 &ParamValueSizeRetUR));
 
   ur2piDeviceInfoValue(InfoType, ParamValueSize, ParamValue,
@@ -1236,7 +1340,7 @@ inline pi_result piextDeviceGetNativeHandle(pi_device Device,
   auto UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
 
   ur_native_handle_t UrNativeHandle{};
-  HANDLE_ERRORS(urDeviceGetNativeHandle(UrDevice, &UrNativeHandle));
+  UR_HANDLE_ERRORS(urDeviceGetNativeHandle, (UrDevice, &UrNativeHandle));
   *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeHandle);
   return PI_SUCCESS;
 }
@@ -1254,7 +1358,7 @@ piextDeviceCreateWithNativeHandle(pi_native_handle NativeHandle,
       reinterpret_cast<ur_platform_handle_t>(Platform);
   auto UrDevice = reinterpret_cast<ur_device_handle_t *>(Device);
   ur_device_native_properties_t UrProperties{};
-  HANDLE_ERRORS(urDeviceCreateWithNativeHandle(UrNativeDevice, UrPlatform,
+  UR_HANDLE_ERRORS(urDeviceCreateWithNativeHandle, (UrNativeDevice, UrPlatform,
                                                &UrProperties, UrDevice));
 
   return PI_SUCCESS;
@@ -1331,7 +1435,7 @@ inline pi_result piDevicePartition(
 
   auto UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
   auto UrSubDevices = reinterpret_cast<ur_device_handle_t *>(SubDevices);
-  HANDLE_ERRORS(urDevicePartition(UrDevice, &UrPropertiesStruct, NumEntries,
+  UR_HANDLE_ERRORS(urDevicePartition, (UrDevice, &UrPropertiesStruct, NumEntries,
                                   UrSubDevices, NumSubDevices));
   return PI_SUCCESS;
 }
@@ -1339,7 +1443,7 @@ inline pi_result piDevicePartition(
 inline pi_result piGetDeviceAndHostTimer(pi_device Device, uint64_t *DeviceTime,
                                          uint64_t *HostTime) {
   auto UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
-  HANDLE_ERRORS(urDeviceGetGlobalTimestamps(UrDevice, DeviceTime, HostTime));
+  UR_HANDLE_ERRORS(urDeviceGetGlobalTimestamps, (UrDevice, DeviceTime, HostTime));
   return PI_SUCCESS;
 }
 
@@ -1389,7 +1493,7 @@ piextDeviceSelectBinary(pi_device Device, // TODO: does this need to be context?
           UR_DEVICE_BINARY_TARGET_UNKNOWN;
   }
 
-  HANDLE_ERRORS(urDeviceSelectBinary(UrDevice, UrBinaries.data(), NumBinaries,
+  UR_HANDLE_ERRORS(urDeviceSelectBinary, (UrDevice, UrBinaries.data(), NumBinaries,
                                      SelectedBinaryInd));
   return PI_SUCCESS;
 }
@@ -1414,8 +1518,8 @@ inline pi_result piContextCreate(const pi_context_properties *Properties,
       reinterpret_cast<ur_context_handle_t *>(RetContext);
   // TODO: Parse PI Context Properties into UR
   ur_context_properties_t UrProperties{};
-  HANDLE_ERRORS(
-      urContextCreate(NumDevices, UrDevices, &UrProperties, UrContext));
+  UR_HANDLE_ERRORS(
+      urContextCreate, (NumDevices, UrDevices, &UrProperties, UrContext));
   return PI_SUCCESS;
 }
 
@@ -1423,7 +1527,7 @@ inline pi_result piextContextSetExtendedDeleter(
     pi_context Context, pi_context_extended_deleter Function, void *UserData) {
   auto hContext = reinterpret_cast<ur_context_handle_t>(Context);
 
-  HANDLE_ERRORS(urContextSetExtendedDeleter(hContext, Function, UserData));
+  UR_HANDLE_ERRORS(urContextSetExtendedDeleter, (hContext, Function, UserData));
 
   return PI_SUCCESS;
 }
@@ -1434,7 +1538,7 @@ inline pi_result piextContextGetNativeHandle(pi_context Context,
   ur_context_handle_t UrContext =
       reinterpret_cast<ur_context_handle_t>(Context);
   ur_native_handle_t UrNativeHandle{};
-  HANDLE_ERRORS(urContextGetNativeHandle(UrContext, &UrNativeHandle));
+  UR_HANDLE_ERRORS(urContextGetNativeHandle, (UrContext, &UrNativeHandle));
   *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeHandle);
   return PI_SUCCESS;
 }
@@ -1456,7 +1560,7 @@ inline pi_result piextContextCreateWithNativeHandle(
 
   ur_context_native_properties_t Properties{};
   Properties.isNativeHandleOwned = OwnNativeHandle;
-  HANDLE_ERRORS(urContextCreateWithNativeHandle(
+  UR_HANDLE_ERRORS(urContextCreateWithNativeHandle, (
       NativeContext, NumDevices, UrDevices, &Properties, UrContext));
 
   return PI_SUCCESS;
@@ -1507,7 +1611,7 @@ inline pi_result piContextGetInfo(pi_context Context, pi_context_info ParamName,
   }
 
   size_t UrParamValueSizeRet;
-  HANDLE_ERRORS(urContextGetInfo(hContext, ContextInfoType, ParamValueSize,
+  UR_HANDLE_ERRORS(urContextGetInfo, (hContext, ContextInfoType, ParamValueSize,
                                  ParamValue, &UrParamValueSizeRet));
   if (ParamValueSizeRet) {
     *ParamValueSizeRet = UrParamValueSizeRet;
@@ -1520,7 +1624,7 @@ inline pi_result piContextGetInfo(pi_context Context, pi_context_info ParamName,
 inline pi_result piContextRetain(pi_context Context) {
   ur_context_handle_t hContext = reinterpret_cast<ur_context_handle_t>(Context);
 
-  HANDLE_ERRORS(urContextRetain(hContext));
+  UR_HANDLE_ERRORS(urContextRetain, (hContext));
 
   return PI_SUCCESS;
 }
@@ -1528,7 +1632,7 @@ inline pi_result piContextRetain(pi_context Context) {
 inline pi_result piContextRelease(pi_context Context) {
   ur_context_handle_t UrContext =
       reinterpret_cast<ur_context_handle_t>(Context);
-  HANDLE_ERRORS(urContextRelease(UrContext));
+  UR_HANDLE_ERRORS(urContextRelease, (UrContext));
   return PI_SUCCESS;
 }
 // Context
@@ -1602,7 +1706,7 @@ inline pi_result piextQueueCreate(pi_context Context, pi_device Device,
   auto UrDevice = reinterpret_cast<ur_device_handle_t>(Device);
 
   ur_queue_handle_t *UrQueue = reinterpret_cast<ur_queue_handle_t *>(Queue);
-  HANDLE_ERRORS(urQueueCreate(UrContext, UrDevice, &UrProperties, UrQueue));
+  UR_HANDLE_ERRORS(urQueueCreate, (UrContext, UrDevice, &UrProperties, UrQueue));
 
   return PI_SUCCESS;
 }
@@ -1654,7 +1758,7 @@ inline pi_result piextQueueCreateWithNativeHandle(
   UrProperties.pNext = &UrNativeDesc;
   UrNativeProperties.pNext = &UrProperties;
 
-  HANDLE_ERRORS(urQueueCreateWithNativeHandle(
+  UR_HANDLE_ERRORS(urQueueCreateWithNativeHandle, (
       UrNativeHandle, UrContext, UrDevice, &UrNativeProperties, UrQueue));
   return PI_SUCCESS;
 }
@@ -1672,7 +1776,7 @@ inline pi_result piextQueueGetNativeHandle(pi_queue Queue,
   ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
 
   ur_native_handle_t UrNativeQueue{};
-  HANDLE_ERRORS(urQueueGetNativeHandle(UrQueue, &UrNativeDesc, &UrNativeQueue));
+  UR_HANDLE_ERRORS(urQueueGetNativeHandle, (UrQueue, &UrNativeDesc, &UrNativeQueue));
 
   *NativeHandle = reinterpret_cast<pi_native_handle>(UrNativeQueue);
 
@@ -1684,7 +1788,7 @@ inline pi_result piQueueRelease(pi_queue Queue) {
 
   ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
 
-  HANDLE_ERRORS(urQueueRelease(UrQueue));
+  UR_HANDLE_ERRORS(urQueueRelease, (UrQueue));
 
   return PI_SUCCESS;
 }
@@ -1695,7 +1799,7 @@ inline pi_result piQueueFinish(pi_queue Queue) {
 
   ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
 
-  HANDLE_ERRORS(urQueueFinish(UrQueue));
+  UR_HANDLE_ERRORS(urQueueFinish, (UrQueue));
 
   return PI_SUCCESS;
 }
@@ -1744,7 +1848,7 @@ inline pi_result piQueueGetInfo(pi_queue Queue, pi_queue_info ParamName,
   }
   }
 
-  HANDLE_ERRORS(urQueueGetInfo(UrQueue, UrParamName, ParamValueSize, ParamValue,
+  UR_HANDLE_ERRORS(urQueueGetInfo, (UrQueue, UrParamName, ParamValueSize, ParamValue,
                                ParamValueSizeRet));
 
   return PI_SUCCESS;
@@ -1756,7 +1860,7 @@ inline pi_result piQueueRetain(pi_queue Queue) {
 
   ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
 
-  HANDLE_ERRORS(urQueueRetain(UrQueue));
+  UR_HANDLE_ERRORS(urQueueRetain, (UrQueue));
 
   return PI_SUCCESS;
 }
@@ -1767,7 +1871,7 @@ inline pi_result piQueueFlush(pi_queue Queue) {
 
   ur_queue_handle_t UrQueue = reinterpret_cast<ur_queue_handle_t>(Queue);
 
-  HANDLE_ERRORS(urQueueFlush(UrQueue));
+  UR_HANDLE_ERRORS(urQueueFlush, (UrQueue));
 
   return PI_SUCCESS;
 }
@@ -1791,7 +1895,7 @@ inline pi_result piProgramCreate(pi_context Context, const void *ILBytes,
   ur_program_properties_t UrProperties{};
   ur_program_handle_t *UrProgram =
       reinterpret_cast<ur_program_handle_t *>(Program);
-  HANDLE_ERRORS(urProgramCreateWithIL(UrContext, ILBytes, Length, &UrProperties,
+  UR_HANDLE_ERRORS(urProgramCreateWithIL, (UrContext, ILBytes, Length, &UrProperties,
                                       UrProgram));
 
   return PI_SUCCESS;
@@ -1839,7 +1943,7 @@ inline pi_result piProgramCreateWithBinary(
 
   ur_program_handle_t *UrProgram =
       reinterpret_cast<ur_program_handle_t *>(Program);
-  HANDLE_ERRORS(urProgramCreateWithBinary(UrContext, UrDevice, Lengths[0],
+  UR_HANDLE_ERRORS(urProgramCreateWithBinary, (UrContext, UrDevice, Lengths[0],
                                           Binaries[0], &Properties, UrProgram));
 
   if (BinaryStatus)
@@ -1901,7 +2005,7 @@ inline pi_result piProgramGetInfo(pi_program Program, pi_program_info ParamName,
   }
   }
 
-  HANDLE_ERRORS(urProgramGetInfo(UrProgram, PropName, ParamValueSize,
+  UR_HANDLE_ERRORS(urProgramGetInfo, (UrProgram, PropName, ParamValueSize,
                                  ParamValue, ParamValueSizeRet));
 
   return PI_SUCCESS;
@@ -1932,7 +2036,7 @@ piProgramLink(pi_context Context, pi_uint32 NumDevices,
   ur_program_handle_t *UrProgram =
       reinterpret_cast<ur_program_handle_t *>(RetProgram);
 
-  HANDLE_ERRORS(urProgramLink(UrContext, NumInputPrograms, UrInputPrograms,
+  UR_HANDLE_ERRORS(urProgramLink, (UrContext, NumInputPrograms, UrInputPrograms,
                               Options, UrProgram));
 
   return PI_SUCCESS;
@@ -1961,10 +2065,10 @@ inline pi_result piProgramCompile(
 
   ur_program_info_t PropName = UR_PROGRAM_INFO_CONTEXT;
   ur_context_handle_t UrContext{};
-  HANDLE_ERRORS(urProgramGetInfo(UrProgram, PropName, sizeof(&UrContext),
+  UR_HANDLE_ERRORS(urProgramGetInfo, (UrProgram, PropName, sizeof(&UrContext),
                                  &UrContext, nullptr));
 
-  HANDLE_ERRORS(urProgramCompile(UrContext, UrProgram, Options));
+  UR_HANDLE_ERRORS(urProgramCompile, (UrContext, UrProgram, Options));
 
   return PI_SUCCESS;
 }
@@ -1994,10 +2098,10 @@ piProgramBuild(pi_program Program, pi_uint32 NumDevices,
       reinterpret_cast<ur_program_handle_t>(Program);
   ur_program_info_t PropName = UR_PROGRAM_INFO_CONTEXT;
   ur_context_handle_t UrContext{};
-  HANDLE_ERRORS(urProgramGetInfo(UrProgram, PropName, sizeof(&UrContext),
+  UR_HANDLE_ERRORS(urProgramGetInfo, (UrProgram, PropName, sizeof(&UrContext),
                                  &UrContext, nullptr));
 
-  HANDLE_ERRORS(urProgramBuild(UrContext, UrProgram, Options));
+  UR_HANDLE_ERRORS(urProgramBuild, (UrContext, UrProgram, Options));
 
   return PI_SUCCESS;
 }
@@ -2013,8 +2117,8 @@ inline pi_result piextProgramSetSpecializationConstant(pi_program Program,
   SpecConstant.id = SpecID;
   SpecConstant.size = Size;
   SpecConstant.pValue = SpecValue;
-  HANDLE_ERRORS(
-      urProgramSetSpecializationConstants(UrProgram, Count, &SpecConstant));
+  UR_HANDLE_ERRORS(
+      urProgramSetSpecializationConstants, (UrProgram, Count, &SpecConstant));
 
   return PI_SUCCESS;
 }
@@ -2030,7 +2134,7 @@ inline pi_result piKernelCreate(pi_program Program, const char *KernelName,
   ur_kernel_handle_t *UrKernel =
       reinterpret_cast<ur_kernel_handle_t *>(RetKernel);
 
-  HANDLE_ERRORS(urKernelCreate(UrProgram, KernelName, UrKernel));
+  UR_HANDLE_ERRORS(urKernelCreate, (UrProgram, KernelName, UrKernel));
 
   return PI_SUCCESS;
 }
@@ -2069,7 +2173,7 @@ inline pi_result piextGetDeviceFunctionPointer(pi_device Device,
 
   void **FunctionPointer = reinterpret_cast<void **>(FunctionPointerRet);
 
-  HANDLE_ERRORS(urProgramGetFunctionPointer(UrDevice, UrProgram, FunctionName,
+  UR_HANDLE_ERRORS(urProgramGetFunctionPointer, (UrDevice, UrProgram, FunctionName,
                                             FunctionPointer));
   return PI_SUCCESS;
 }
@@ -2122,10 +2226,10 @@ piextKernelSetArgMemObj(pi_kernel Kernel, pi_uint32 ArgIndex,
     const ur_kernel_arg_mem_obj_properties_t *UrMemProperties =
         reinterpret_cast<const ur_kernel_arg_mem_obj_properties_t *>(
             ArgProperties);
-    HANDLE_ERRORS(
-        urKernelSetArgMemObj(UrKernel, ArgIndex, UrMemProperties, UrMemory));
+    UR_HANDLE_ERRORS(
+        urKernelSetArgMemObj, (UrKernel, ArgIndex, UrMemProperties, UrMemory));
   } else {
-    HANDLE_ERRORS(urKernelSetArgMemObj(UrKernel, ArgIndex, nullptr, UrMemory));
+    UR_HANDLE_ERRORS(urKernelSetArgMemObj, (UrKernel, ArgIndex, nullptr, UrMemory));
   }
 
   return PI_SUCCESS;
@@ -2138,8 +2242,8 @@ inline pi_result piKernelSetArg(pi_kernel Kernel, pi_uint32 ArgIndex,
 
   ur_kernel_handle_t UrKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
 
-  HANDLE_ERRORS(
-      urKernelSetArgValue(UrKernel, ArgIndex, ArgSize, nullptr, ArgValue));
+  UR_HANDLE_ERRORS(
+      urKernelSetArgValue, (UrKernel, ArgIndex, ArgSize, nullptr, ArgValue));
   return PI_SUCCESS;
 }
 
@@ -2147,7 +2251,7 @@ inline pi_result piKernelSetArgPointer(pi_kernel Kernel, pi_uint32 ArgIndex,
                                        size_t ArgSize, const void *ArgValue) {
   std::ignore = ArgSize;
   ur_kernel_handle_t UrKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
-  HANDLE_ERRORS(urKernelSetArgPointer(UrKernel, ArgIndex, nullptr, ArgValue));
+  UR_HANDLE_ERRORS(urKernelSetArgPointer, (UrKernel, ArgIndex, nullptr, ArgValue));
 
   return PI_SUCCESS;
 }
@@ -2170,7 +2274,7 @@ piextKernelCreateWithNativeHandle(pi_native_handle NativeHandle,
   ur_kernel_handle_t *UrKernel = reinterpret_cast<ur_kernel_handle_t *>(Kernel);
   ur_kernel_native_properties_t Properties{};
   Properties.isNativeHandleOwned = OwnNativeHandle;
-  HANDLE_ERRORS(urKernelCreateWithNativeHandle(
+  UR_HANDLE_ERRORS(urKernelCreateWithNativeHandle, (
       UrNativeKernel, UrContext, UrProgram, &Properties, UrKernel));
 
   return PI_SUCCESS;
@@ -2181,8 +2285,8 @@ inline pi_result piProgramRetain(pi_program Program) {
 
   ur_program_handle_t UrProgram =
       reinterpret_cast<ur_program_handle_t>(Program);
-  HANDLE_ERRORS(
-      urProgramRetain(reinterpret_cast<ur_program_handle_t>(UrProgram)));
+  UR_HANDLE_ERRORS(
+      urProgramRetain, (reinterpret_cast<ur_program_handle_t>(UrProgram)));
 
   return PI_SUCCESS;
 }
@@ -2226,7 +2330,7 @@ inline pi_result piKernelSetExecInfo(pi_kernel Kernel,
   default:
     die("piKernelSetExecInfo: unsupported ParamName\n");
   }
-  HANDLE_ERRORS(urKernelSetExecInfo(UrKernel, PropName, ParamValueSize, nullptr,
+  UR_HANDLE_ERRORS(urKernelSetExecInfo, (UrKernel, PropName, ParamValueSize, nullptr,
                                     &PropValue));
 
   return PI_SUCCESS;
@@ -2240,7 +2344,7 @@ inline pi_result piextProgramGetNativeHandle(pi_program Program,
   ur_program_handle_t UrProgram =
       reinterpret_cast<ur_program_handle_t>(Program);
   ur_native_handle_t NativeProgram{};
-  HANDLE_ERRORS(urProgramGetNativeHandle(UrProgram, &NativeProgram));
+  UR_HANDLE_ERRORS(urProgramGetNativeHandle, (UrProgram, &NativeProgram));
 
   *NativeHandle = reinterpret_cast<pi_native_handle>(NativeProgram);
 
@@ -2263,7 +2367,7 @@ piextProgramCreateWithNativeHandle(pi_native_handle NativeHandle,
       reinterpret_cast<ur_program_handle_t *>(Program);
   ur_program_native_properties_t UrProperties{};
   UrProperties.isNativeHandleOwned = OwnNativeHandle;
-  HANDLE_ERRORS(urProgramCreateWithNativeHandle(NativeProgram, UrContext,
+  UR_HANDLE_ERRORS(urProgramCreateWithNativeHandle, (NativeProgram, UrContext,
                                                 &UrProperties, UrProgram));
   return PI_SUCCESS;
 }
@@ -2304,7 +2408,7 @@ inline pi_result piKernelGetInfo(pi_kernel Kernel, pi_kernel_info ParamName,
     return PI_ERROR_INVALID_PROPERTY;
   }
 
-  HANDLE_ERRORS(urKernelGetInfo(UrKernel, UrParamName, ParamValueSize,
+  UR_HANDLE_ERRORS(urKernelGetInfo, (UrKernel, UrParamName, ParamValueSize,
                                 ParamValue, ParamValueSizeRet));
 
   return PI_SUCCESS;
@@ -2348,7 +2452,7 @@ inline pi_result piKernelGetGroupInfo(pi_kernel Kernel, pi_device Device,
   }
   // The number of registers used by the compiled kernel (device specific)
   case PI_KERNEL_GROUP_INFO_NUM_REGS: {
-    HANDLE_ERRORS(urKernelGetInfo(UrKernel, UR_KERNEL_INFO_NUM_REGS,
+    UR_HANDLE_ERRORS(urKernelGetInfo, (UrKernel, UR_KERNEL_INFO_NUM_REGS,
                                   ParamValueSize, ParamValue,
                                   ParamValueSizeRet));
     return PI_SUCCESS;
@@ -2359,7 +2463,7 @@ inline pi_result piKernelGetGroupInfo(pi_kernel Kernel, pi_device Device,
   }
   }
 
-  HANDLE_ERRORS(urKernelGetGroupInfo(UrKernel, UrDevice, UrParamName,
+  UR_HANDLE_ERRORS(urKernelGetGroupInfo, (UrKernel, UrDevice, UrParamName,
                                      ParamValueSize, ParamValue,
                                      ParamValueSizeRet));
 
@@ -2372,7 +2476,7 @@ inline pi_result piKernelRetain(pi_kernel Kernel) {
 
   ur_kernel_handle_t UrKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
 
-  HANDLE_ERRORS(urKernelRetain(UrKernel));
+  UR_HANDLE_ERRORS(urKernelRetain, (UrKernel));
 
   return PI_SUCCESS;
 }
@@ -2383,7 +2487,7 @@ inline pi_result piKernelRelease(pi_kernel Kernel) {
 
   ur_kernel_handle_t UrKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
 
-  HANDLE_ERRORS(urKernelRelease(UrKernel));
+  UR_HANDLE_ERRORS(urKernelRelease, (UrKernel));
 
   return PI_SUCCESS;
 }
@@ -2395,7 +2499,7 @@ inline pi_result piProgramRelease(pi_program Program) {
   ur_program_handle_t UrProgram =
       reinterpret_cast<ur_program_handle_t>(Program);
 
-  HANDLE_ERRORS(urProgramRelease(UrProgram));
+  UR_HANDLE_ERRORS(urProgramRelease, (UrProgram));
 
   return PI_SUCCESS;
 }
@@ -2404,7 +2508,7 @@ inline pi_result piextKernelSetArgPointer(pi_kernel Kernel, pi_uint32 ArgIndex,
                                           size_t, const void *ArgValue) {
   ur_kernel_handle_t UrKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
 
-  HANDLE_ERRORS(urKernelSetArgPointer(UrKernel, ArgIndex, nullptr, ArgValue));
+  UR_HANDLE_ERRORS(urKernelSetArgPointer, (UrKernel, ArgIndex, nullptr, ArgValue));
 
   return PI_SUCCESS;
 }
@@ -2439,7 +2543,7 @@ inline pi_result piKernelGetSubGroupInfo(
     break;
   }
   }
-  HANDLE_ERRORS(urKernelGetSubGroupInfo(UrKernel, UrDevice, PropName,
+  UR_HANDLE_ERRORS(urKernelGetSubGroupInfo, (UrKernel, UrDevice, PropName,
                                         ParamValueSize, ParamValue,
                                         ParamValueSizeRet));
 
@@ -2477,7 +2581,7 @@ inline pi_result piProgramGetBuildInfo(pi_program Program, pi_device Device,
     die("piProgramGetBuildInfo: not implemented");
   }
   }
-  HANDLE_ERRORS(urProgramGetBuildInfo(UrProgram, UrDevice, PropName,
+  UR_HANDLE_ERRORS(urProgramGetBuildInfo, (UrProgram, UrDevice, PropName,
                                       ParamValueSize, ParamValue,
                                       ParamValueSizeRet));
 
@@ -2491,7 +2595,7 @@ inline pi_result piextKernelGetNativeHandle(pi_kernel Kernel,
 
   ur_kernel_handle_t UrKernel = reinterpret_cast<ur_kernel_handle_t>(Kernel);
   ur_native_handle_t NativeKernel{};
-  HANDLE_ERRORS(urKernelGetNativeHandle(UrKernel, &NativeKernel));
+  UR_HANDLE_ERRORS(urKernelGetNativeHandle, (UrKernel, &NativeKernel));
 
   *NativeHandle = reinterpret_cast<pi_native_handle>(NativeKernel);
 
@@ -2523,7 +2627,7 @@ inline pi_result piextEnqueueDeviceGlobalVariableWrite(
   const ur_event_handle_t *UrEventsWaitList =
       reinterpret_cast<const ur_event_handle_t *>(EventsWaitList);
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
-  HANDLE_ERRORS(urEnqueueDeviceGlobalVariableWrite(
+  UR_HANDLE_ERRORS(urEnqueueDeviceGlobalVariableWrite, (
       UrQueue, UrProgram, Name, BlockingWrite, Count, Offset, Src,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -2558,7 +2662,7 @@ inline pi_result piextEnqueueDeviceGlobalVariableRead(
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueDeviceGlobalVariableRead(
+  UR_HANDLE_ERRORS(urEnqueueDeviceGlobalVariableRead, (
       UrQueue, UrProgram, Name, BlockingRead, Count, Offset, Dst,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -2605,8 +2709,8 @@ inline pi_result piMemBufferCreate(pi_context Context, pi_mem_flags Flags,
   UrProps.stype = UR_STRUCTURE_TYPE_BUFFER_PROPERTIES;
   UrProps.pHost = HostPtr;
   ur_mem_handle_t *UrBuffer = reinterpret_cast<ur_mem_handle_t *>(RetMem);
-  HANDLE_ERRORS(
-      urMemBufferCreate(UrContext, UrBufferFlags, Size, &UrProps, UrBuffer));
+  UR_HANDLE_ERRORS(
+      urMemBufferCreate, (UrContext, UrBufferFlags, Size, &UrProps, UrBuffer));
 
   return PI_SUCCESS;
 }
@@ -2621,7 +2725,7 @@ inline pi_result piextUSMHostAlloc(void **ResultPtr, pi_context Context,
   ur_usm_desc_t USMDesc{};
   USMDesc.align = Alignment;
   ur_usm_pool_handle_t Pool{};
-  HANDLE_ERRORS(urUSMHostAlloc(UrContext, &USMDesc, Pool, Size, ResultPtr));
+  UR_HANDLE_ERRORS(urUSMHostAlloc, (UrContext, &USMDesc, Pool, Size, ResultPtr));
   return PI_SUCCESS;
 }
 
@@ -2646,7 +2750,7 @@ inline pi_result piMemGetInfo(pi_mem Mem, pi_mem_info ParamName,
     die("piMemGetInfo: unsuppported ParamName.");
   }
   }
-  HANDLE_ERRORS(urMemGetInfo(UrMemory, MemInfoType, ParamValueSize, ParamValue,
+  UR_HANDLE_ERRORS(urMemGetInfo, (UrMemory, MemInfoType, ParamValueSize, ParamValue,
                              ParamValueSizeRet));
   return PI_SUCCESS;
 }
@@ -2896,8 +3000,8 @@ inline pi_result piMemImageCreate(pi_context Context, pi_mem_flags Flags,
   // TODO: UrDesc doesn't have something for ImageDesc->buffer
 
   ur_mem_handle_t *UrMem = reinterpret_cast<ur_mem_handle_t *>(RetImage);
-  HANDLE_ERRORS(
-      urMemImageCreate(UrContext, UrFlags, &UrFormat, &UrDesc, HostPtr, UrMem));
+  UR_HANDLE_ERRORS(
+      urMemImageCreate, (UrContext, UrFlags, &UrFormat, &UrDesc, HostPtr, UrMem));
 
   return PI_SUCCESS;
 }
@@ -2925,7 +3029,7 @@ inline pi_result piextMemImageCreateWithNativeHandle(
   ur_image_desc_t UrDesc{};
   pi2urImageDesc(ImageFormat, ImageDesc, &UrFormat, &UrDesc);
 
-  HANDLE_ERRORS(urMemImageCreateWithNativeHandle(
+  UR_HANDLE_ERRORS(urMemImageCreateWithNativeHandle, (
       UrNativeMem, UrContext, &UrFormat, &UrDesc, &Properties, UrMem));
 
   return PI_SUCCESS;
@@ -2972,7 +3076,7 @@ inline pi_result piMemBufferPartition(pi_mem Buffer, pi_mem_flags Flags,
   UrBufferCreateInfo.origin = Region->origin;
   UrBufferCreateInfo.size = Region->size;
   ur_mem_handle_t *UrMem = reinterpret_cast<ur_mem_handle_t *>(RetMem);
-  HANDLE_ERRORS(urMemBufferPartition(UrBuffer, UrFlags, UrBufferCreateType,
+  UR_HANDLE_ERRORS(urMemBufferPartition, (UrBuffer, UrFlags, UrBufferCreateType,
                                      &UrBufferCreateInfo, UrMem));
 
   return PI_SUCCESS;
@@ -2984,7 +3088,7 @@ inline pi_result piextMemGetNativeHandle(pi_mem Mem,
 
   ur_mem_handle_t UrMem = reinterpret_cast<ur_mem_handle_t>(Mem);
   ur_native_handle_t NativeMem{};
-  HANDLE_ERRORS(urMemGetNativeHandle(UrMem, &NativeMem));
+  UR_HANDLE_ERRORS(urMemGetNativeHandle, (UrMem, &NativeMem));
 
   *NativeHandle = reinterpret_cast<pi_native_handle>(NativeMem);
 
@@ -3016,7 +3120,7 @@ piEnqueueMemImageCopy(pi_queue Queue, pi_mem SrcImage, pi_mem DstImage,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemImageCopy(
+  UR_HANDLE_ERRORS(urEnqueueMemImageCopy, (
       UrQueue, UrImageSrc, UrImageDst, UrSrcOrigin, UrDstOrigin, UrRegion,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -3038,7 +3142,7 @@ inline pi_result piextMemCreateWithNativeHandle(pi_native_handle NativeHandle,
   ur_mem_handle_t *UrMem = reinterpret_cast<ur_mem_handle_t *>(Mem);
   ur_mem_native_properties_t Properties{};
   Properties.isNativeHandleOwned = OwnNativeHandle;
-  HANDLE_ERRORS(urMemBufferCreateWithNativeHandle(UrNativeMem, UrContext,
+  UR_HANDLE_ERRORS(urMemBufferCreateWithNativeHandle, (UrNativeMem, UrContext,
                                                   &Properties, UrMem));
 
   return PI_SUCCESS;
@@ -3057,8 +3161,8 @@ inline pi_result piextUSMDeviceAlloc(void **ResultPtr, pi_context Context,
   ur_usm_desc_t USMDesc{};
   USMDesc.align = Alignment;
   ur_usm_pool_handle_t Pool{};
-  HANDLE_ERRORS(
-      urUSMDeviceAlloc(UrContext, UrDevice, &USMDesc, Pool, Size, ResultPtr));
+  UR_HANDLE_ERRORS(
+      urUSMDeviceAlloc, (UrContext, UrDevice, &USMDesc, Pool, Size, ResultPtr));
 
   return PI_SUCCESS;
 }
@@ -3077,7 +3181,7 @@ inline pi_result piextUSMPitchedAlloc(void **ResultPtr, size_t *ResultPitch,
   ur_usm_desc_t USMDesc{};
   ur_usm_pool_handle_t Pool{};
 
-  HANDLE_ERRORS(urUSMPitchedAllocExp(UrContext, UrDevice, &USMDesc, Pool,
+  UR_HANDLE_ERRORS(urUSMPitchedAllocExp, (UrContext, UrDevice, &USMDesc, Pool,
                                      WidthInBytes, Height, ElementSizeBytes,
                                      ResultPtr, ResultPitch));
 
@@ -3126,8 +3230,8 @@ inline pi_result piextUSMSharedAlloc(void **ResultPtr, pi_context Context,
   USMDesc.align = Alignment;
 
   ur_usm_pool_handle_t Pool{};
-  HANDLE_ERRORS(
-      urUSMSharedAlloc(UrContext, UrDevice, &USMDesc, Pool, Size, ResultPtr));
+  UR_HANDLE_ERRORS(
+      urUSMSharedAlloc, (UrContext, UrDevice, &USMDesc, Pool, Size, ResultPtr));
 
   return PI_SUCCESS;
 }
@@ -3135,7 +3239,7 @@ inline pi_result piextUSMSharedAlloc(void **ResultPtr, pi_context Context,
 inline pi_result piextUSMFree(pi_context Context, void *Ptr) {
   ur_context_handle_t UrContext =
       reinterpret_cast<ur_context_handle_t>(Context);
-  HANDLE_ERRORS(urUSMFree(UrContext, Ptr));
+  UR_HANDLE_ERRORS(urUSMFree, (UrContext, Ptr));
   return PI_SUCCESS;
 }
 
@@ -3144,7 +3248,7 @@ inline pi_result piMemRetain(pi_mem Mem) {
 
   ur_mem_handle_t UrMem = reinterpret_cast<ur_mem_handle_t>(Mem);
 
-  HANDLE_ERRORS(urMemRetain(UrMem));
+  UR_HANDLE_ERRORS(urMemRetain, (UrMem));
 
   return PI_SUCCESS;
 }
@@ -3154,7 +3258,7 @@ inline pi_result piMemRelease(pi_mem Mem) {
 
   ur_mem_handle_t UrMem = reinterpret_cast<ur_mem_handle_t>(Mem);
 
-  HANDLE_ERRORS(urMemRelease(UrMem));
+  UR_HANDLE_ERRORS(urMemRelease, (UrMem));
 
   return PI_SUCCESS;
 }
@@ -3190,7 +3294,7 @@ inline pi_result piextUSMEnqueuePrefetch(pi_queue Queue, const void *Ptr,
   // ur_usm_migration_flags_t
   // once we have those defined
   ur_usm_migration_flags_t UrFlags{};
-  HANDLE_ERRORS(urEnqueueUSMPrefetch(UrQueue, Ptr, Size, UrFlags,
+  UR_HANDLE_ERRORS(urEnqueueUSMPrefetch, (UrQueue, Ptr, Size, UrFlags,
                                      NumEventsInWaitList, UrEventsWaitList,
                                      UREvent));
 
@@ -3232,7 +3336,7 @@ inline pi_result piextUSMEnqueueMemAdvise(pi_queue Queue, const void *Ptr,
     UrAdvice |= UR_USM_ADVICE_FLAG_DEFAULT;
   }
 
-  HANDLE_ERRORS(urEnqueueUSMAdvise(UrQueue, Ptr, Length, UrAdvice, UREvent));
+  UR_HANDLE_ERRORS(urEnqueueUSMAdvise, (UrQueue, Ptr, Length, UrAdvice, UREvent));
 
   return PI_SUCCESS;
 }
@@ -3261,7 +3365,7 @@ inline pi_result piextUSMEnqueueFill2D(pi_queue Queue, void *Ptr, size_t Pitch,
       reinterpret_cast<const ur_event_handle_t *>(EventsWaitList);
   auto phEvent = reinterpret_cast<ur_event_handle_t *>(Event);
 
-  HANDLE_ERRORS(urEnqueueUSMFill2D(hQueue, Ptr, Pitch, PatternSize, Pattern,
+  UR_HANDLE_ERRORS(urEnqueueUSMFill2D, (hQueue, Ptr, Pitch, PatternSize, Pattern,
                                    Width, Height, NumEventsWaitList,
                                    phEventWaitList, phEvent));
 
@@ -3322,7 +3426,7 @@ inline pi_result piextUSMGetMemAllocInfo(pi_context Context, const void *Ptr,
   }
 
   size_t SizeInOut = ParamValueSize;
-  HANDLE_ERRORS(urUSMGetMemAllocInfo(UrContext, Ptr, UrParamName,
+  UR_HANDLE_ERRORS(urUSMGetMemAllocInfo, (UrContext, Ptr, UrParamName,
                                      ParamValueSize, ParamValue,
                                      ParamValueSizeRet))
   ur2piUSMAllocInfoValue(UrParamName, ParamValueSize, &SizeInOut, ParamValue);
@@ -3337,7 +3441,7 @@ inline pi_result piextUSMImport(const void *HostPtr, size_t Size,
   ur_context_handle_t UrContext =
       reinterpret_cast<ur_context_handle_t>(Context);
 
-  HANDLE_ERRORS(urUSMImportExp(UrContext, const_cast<void *>(HostPtr), Size));
+  UR_HANDLE_ERRORS(urUSMImportExp, (UrContext, const_cast<void *>(HostPtr), Size));
   return PI_SUCCESS;
 }
 
@@ -3348,7 +3452,7 @@ inline pi_result piextUSMRelease(const void *HostPtr, pi_context Context) {
   ur_context_handle_t UrContext =
       reinterpret_cast<ur_context_handle_t>(Context);
 
-  HANDLE_ERRORS(urUSMReleaseExp(UrContext, const_cast<void *>(HostPtr)));
+  UR_HANDLE_ERRORS(urUSMReleaseExp, (UrContext, const_cast<void *>(HostPtr)));
   return PI_SUCCESS;
 }
 
@@ -3392,7 +3496,7 @@ inline pi_result piMemImageGetInfo(pi_mem Image, pi_image_info ParamName,
     return PI_ERROR_UNKNOWN;
   }
 
-  HANDLE_ERRORS(urMemImageGetInfo(hMem, UrParamName, ParamValueSize, ParamValue,
+  UR_HANDLE_ERRORS(urMemImageGetInfo, (hMem, UrParamName, ParamValueSize, ParamValue,
                                   ParamValueSizeRet));
   return PI_SUCCESS;
 }
@@ -3430,7 +3534,7 @@ inline pi_result piextUSMEnqueueMemcpy2D(pi_queue Queue, pi_bool Blocking,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueUSMMemcpy2D(
+  UR_HANDLE_ERRORS(urEnqueueUSMMemcpy2D, (
       UrQueue, Blocking, DstPtr, DstPitch, SrcPtr, SrcPitch, Width, Height,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -3461,9 +3565,13 @@ piEnqueueKernelLaunch(pi_queue Queue, pi_kernel Kernel, pi_uint32 WorkDim,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueKernelLaunch(
+  UR_START_PROFILER();
+
+  UR_HANDLE_ERRORS(urEnqueueKernelLaunch, (
       UrQueue, UrKernel, WorkDim, GlobalWorkOffset, GlobalWorkSize,
       LocalWorkSize, NumEventsInWaitList, UrEventsWaitList, UREvent));
+
+  UR_END_PROFILER("urEnqueueKernelLaunch");
 
   return PI_SUCCESS;
 }
@@ -3489,7 +3597,7 @@ piEnqueueMemImageWrite(pi_queue Queue, pi_mem Image, pi_bool BlockingWrite,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemImageWrite(
+  UR_HANDLE_ERRORS(urEnqueueMemImageWrite, (
       UrQueue, UrImage, BlockingWrite, UrOrigin, UrRegion, InputRowPitch,
       InputSlicePitch, const_cast<void *>(Ptr), NumEventsInWaitList,
       UrEventsWaitList, UREvent));
@@ -3517,7 +3625,7 @@ piEnqueueMemImageRead(pi_queue Queue, pi_mem Image, pi_bool BlockingRead,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemImageRead(
+  UR_HANDLE_ERRORS(urEnqueueMemImageRead, (
       UrQueue, UrImage, BlockingRead, UrOrigin, UrRegion, RowPitch, SlicePitch,
       Ptr, NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -3550,7 +3658,7 @@ inline pi_result piEnqueueMemBufferMap(
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferMap(UrQueue, UrMem, BlockingMap, UrMapFlags,
+  UR_HANDLE_ERRORS(urEnqueueMemBufferMap, (UrQueue, UrMem, BlockingMap, UrMapFlags,
                                       Offset, Size, NumEventsInWaitList,
                                       UrEventsWaitList, UREvent, RetMap));
 
@@ -3572,7 +3680,7 @@ inline pi_result piEnqueueMemUnmap(pi_queue Queue, pi_mem Mem, void *MappedPtr,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemUnmap(UrQueue, UrMem, MappedPtr,
+  UR_HANDLE_ERRORS(urEnqueueMemUnmap, (UrQueue, UrMem, MappedPtr,
                                   NumEventsInWaitList, UrEventsWaitList,
                                   UREvent));
 
@@ -3595,7 +3703,7 @@ inline pi_result piEnqueueMemBufferFill(pi_queue Queue, pi_mem Buffer,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferFill(UrQueue, UrBuffer, Pattern, PatternSize,
+  UR_HANDLE_ERRORS(urEnqueueMemBufferFill, (UrQueue, UrBuffer, Pattern, PatternSize,
                                        Offset, Size, NumEventsInWaitList,
                                        UrEventsWaitList, UREvent));
   return PI_SUCCESS;
@@ -3618,7 +3726,7 @@ inline pi_result piextUSMEnqueueMemset(pi_queue Queue, void *Ptr,
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
   size_t PatternSize = 1;
-  HANDLE_ERRORS(urEnqueueUSMFill(UrQueue, Ptr, PatternSize, &Value, Count,
+  UR_HANDLE_ERRORS(urEnqueueUSMFill, (UrQueue, Ptr, PatternSize, &Value, Count,
                                  NumEventsInWaitList, UrEventsWaitList,
                                  UREvent));
 
@@ -3651,7 +3759,7 @@ inline pi_result piEnqueueMemBufferCopyRect(
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferCopyRect(
+  UR_HANDLE_ERRORS(urEnqueueMemBufferCopyRect, (
       UrQueue, UrBufferSrc, UrBufferDst, UrSrcOrigin, UrDstOrigin, UrRegion,
       SrcRowPitch, SrcSlicePitch, DstRowPitch, DstSlicePitch,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
@@ -3677,7 +3785,7 @@ inline pi_result piEnqueueMemBufferCopy(pi_queue Queue, pi_mem SrcMem,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferCopy(
+  UR_HANDLE_ERRORS(urEnqueueMemBufferCopy, (
       UrQueue, UrBufferSrc, UrBufferDst, SrcOffset, DstOffset, Size,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -3697,7 +3805,7 @@ inline pi_result piextUSMEnqueueMemcpy(pi_queue Queue, pi_bool Blocking,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueUSMMemcpy(UrQueue, Blocking, DstPtr, SrcPtr, Size,
+  UR_HANDLE_ERRORS(urEnqueueUSMMemcpy, (UrQueue, Blocking, DstPtr, SrcPtr, Size,
                                    NumEventsInWaitList, UrEventsWaitList,
                                    UREvent));
 
@@ -3730,7 +3838,7 @@ inline pi_result piEnqueueMemBufferWriteRect(
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferWriteRect(
+  UR_HANDLE_ERRORS(urEnqueueMemBufferWriteRect, (
       UrQueue, UrBuffer, BlockingWrite, UrBufferOffset, UrHostOffset, UrRegion,
       BufferRowPitch, BufferSlicePitch, HostRowPitch, HostSlicePitch,
       const_cast<void *>(Ptr), NumEventsInWaitList, UrEventsWaitList, UREvent));
@@ -3755,7 +3863,7 @@ inline pi_result piEnqueueMemBufferWrite(pi_queue Queue, pi_mem Buffer,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferWrite(
+  UR_HANDLE_ERRORS(urEnqueueMemBufferWrite, (
       UrQueue, UrBuffer, BlockingWrite, Offset, Size, const_cast<void *>(Ptr),
       NumEventsInWaitList, UrEventsWaitList, UREvent));
 
@@ -3789,7 +3897,7 @@ inline pi_result piEnqueueMemBufferReadRect(
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferReadRect(
+  UR_HANDLE_ERRORS(urEnqueueMemBufferReadRect, (
       UrQueue, UrBuffer, BlockingRead, UrBufferOffset, UrHostOffset, UrRegion,
       BufferRowPitch, BufferSlicePitch, HostRowPitch, HostSlicePitch, Ptr,
       NumEventsInWaitList, UrEventsWaitList, UREvent));
@@ -3813,7 +3921,7 @@ inline pi_result piEnqueueMemBufferRead(pi_queue Queue, pi_mem Src,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueMemBufferRead(UrQueue, UrBuffer, BlockingRead, Offset,
+  UR_HANDLE_ERRORS(urEnqueueMemBufferRead, (UrQueue, UrBuffer, BlockingRead, Offset,
                                        Size, Dst, NumEventsInWaitList,
                                        UrEventsWaitList, UREvent));
 
@@ -3833,7 +3941,7 @@ inline pi_result piEnqueueEventsWaitWithBarrier(pi_queue Queue,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueEventsWaitWithBarrier(UrQueue, NumEventsInWaitList,
+  UR_HANDLE_ERRORS(urEnqueueEventsWaitWithBarrier, (UrQueue, NumEventsInWaitList,
                                                UrEventsWaitList, UREvent));
 
   return PI_SUCCESS;
@@ -3855,7 +3963,7 @@ inline pi_result piEnqueueEventsWait(pi_queue Queue,
 
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(OutEvent);
 
-  HANDLE_ERRORS(urEnqueueEventsWait(UrQueue, NumEventsInWaitList,
+  UR_HANDLE_ERRORS(urEnqueueEventsWait, (UrQueue, NumEventsInWaitList,
                                     UrEventsWaitList, UREvent));
 
   return PI_SUCCESS;
@@ -3872,7 +3980,7 @@ piextEnqueueReadHostPipe(pi_queue queue, pi_program program,
       reinterpret_cast<const ur_event_handle_t *>(events_waitlist);
   auto phEvent = reinterpret_cast<ur_event_handle_t *>(event);
 
-  HANDLE_ERRORS(urEnqueueReadHostPipe(hQueue, hProgram, pipe_symbol, blocking,
+  UR_HANDLE_ERRORS(urEnqueueReadHostPipe, (hQueue, hProgram, pipe_symbol, blocking,
                                       ptr, size, num_events_in_waitlist,
                                       phEventWaitList, phEvent));
 
@@ -3890,7 +3998,7 @@ piextEnqueueWriteHostPipe(pi_queue queue, pi_program program,
       reinterpret_cast<const ur_event_handle_t *>(events_waitlist);
   auto phEvent = reinterpret_cast<ur_event_handle_t *>(event);
 
-  HANDLE_ERRORS(urEnqueueWriteHostPipe(hQueue, hProgram, pipe_symbol, blocking,
+  UR_HANDLE_ERRORS(urEnqueueWriteHostPipe, (hQueue, hProgram, pipe_symbol, blocking,
                                        ptr, size, num_events_in_waitlist,
                                        phEventWaitList, phEvent));
 
@@ -3910,7 +4018,7 @@ inline pi_result piEventsWait(pi_uint32 NumEvents,
   const ur_event_handle_t *UrEventsWaitList =
       reinterpret_cast<const ur_event_handle_t *>(EventsWaitList);
 
-  HANDLE_ERRORS(urEventWait(NumEvents, UrEventsWaitList));
+  UR_HANDLE_ERRORS(urEventWait, (NumEvents, UrEventsWaitList));
 
   return PI_SUCCESS;
 }
@@ -3938,7 +4046,7 @@ inline pi_result piEventGetInfo(pi_event Event, pi_event_info ParamName,
     return PI_ERROR_INVALID_VALUE;
   }
 
-  HANDLE_ERRORS(urEventGetInfo(UREvent, PropName, ParamValueSize, ParamValue,
+  UR_HANDLE_ERRORS(urEventGetInfo, (UREvent, PropName, ParamValueSize, ParamValue,
                                ParamValueSizeRet));
 
   return PI_SUCCESS;
@@ -3954,7 +4062,7 @@ inline pi_result piextEventGetNativeHandle(pi_event Event,
 
   ur_native_handle_t *UrNativeEvent =
       reinterpret_cast<ur_native_handle_t *>(NativeHandle);
-  HANDLE_ERRORS(urEventGetNativeHandle(UREvent, UrNativeEvent));
+  UR_HANDLE_ERRORS(urEventGetNativeHandle, (UREvent, UrNativeEvent));
 
   return PI_SUCCESS;
 }
@@ -3991,7 +4099,7 @@ inline pi_result piEventGetProfilingInfo(pi_event Event,
     return PI_ERROR_INVALID_PROPERTY;
   }
 
-  HANDLE_ERRORS(urEventGetProfilingInfo(UREvent, PropName, ParamValueSize,
+  UR_HANDLE_ERRORS(urEventGetProfilingInfo, (UREvent, PropName, ParamValueSize,
                                         ParamValue, ParamValueSizeRet));
 
   return PI_SUCCESS;
@@ -4006,8 +4114,8 @@ inline pi_result piEventCreate(pi_context Context, pi_event *RetEvent) {
   // pass null for the hNativeHandle to use urEventCreateWithNativeHandle
   // as urEventCreate
   ur_event_native_properties_t Properties{};
-  HANDLE_ERRORS(
-      urEventCreateWithNativeHandle(nullptr, UrContext, &Properties, UREvent));
+  UR_HANDLE_ERRORS(
+      urEventCreateWithNativeHandle, (nullptr, UrContext, &Properties, UREvent));
 
   return PI_SUCCESS;
 }
@@ -4030,7 +4138,7 @@ inline pi_result piextEventCreateWithNativeHandle(pi_native_handle NativeHandle,
   ur_event_handle_t *UREvent = reinterpret_cast<ur_event_handle_t *>(Event);
   ur_event_native_properties_t Properties{};
   Properties.isNativeHandleOwned = OwnNativeHandle;
-  HANDLE_ERRORS(urEventCreateWithNativeHandle(UrNativeKernel, UrContext,
+  UR_HANDLE_ERRORS(urEventCreateWithNativeHandle, (UrNativeKernel, UrContext,
                                               &Properties, UREvent));
 
   return PI_SUCCESS;
@@ -4060,7 +4168,7 @@ inline pi_result piEventRetain(pi_event Event) {
   PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
 
   ur_event_handle_t UREvent = reinterpret_cast<ur_event_handle_t>(Event);
-  HANDLE_ERRORS(urEventRetain(UREvent));
+  UR_HANDLE_ERRORS(urEventRetain, (UREvent));
 
   return PI_SUCCESS;
 }
@@ -4069,7 +4177,7 @@ inline pi_result piEventRelease(pi_event Event) {
   PI_ASSERT(Event, PI_ERROR_INVALID_EVENT);
 
   ur_event_handle_t UREvent = reinterpret_cast<ur_event_handle_t>(Event);
-  HANDLE_ERRORS(urEventRelease(UREvent));
+  UR_HANDLE_ERRORS(urEventRelease, (UREvent));
 
   return PI_SUCCESS;
 }
@@ -4135,7 +4243,7 @@ inline pi_result piSamplerCreate(pi_context Context,
   ur_sampler_handle_t *UrSampler =
       reinterpret_cast<ur_sampler_handle_t *>(RetSampler);
 
-  HANDLE_ERRORS(urSamplerCreate(UrContext, &UrProps, UrSampler));
+  UR_HANDLE_ERRORS(urSamplerCreate, (UrContext, &UrProps, UrSampler));
 
   return PI_SUCCESS;
 }
@@ -4166,7 +4274,7 @@ inline pi_result piSamplerGetInfo(pi_sampler Sampler, pi_sampler_info ParamName,
 
   size_t UrParamValueSizeRet;
   auto hSampler = reinterpret_cast<ur_sampler_handle_t>(Sampler);
-  HANDLE_ERRORS(urSamplerGetInfo(hSampler, InfoType, ParamValueSize, ParamValue,
+  UR_HANDLE_ERRORS(urSamplerGetInfo, (hSampler, InfoType, ParamValueSize, ParamValue,
                                  &UrParamValueSizeRet));
   if (ParamValueSizeRet) {
     *ParamValueSizeRet = UrParamValueSizeRet;
@@ -4184,7 +4292,7 @@ inline pi_result piextKernelSetArgSampler(pi_kernel Kernel, pi_uint32 ArgIndex,
   ur_sampler_handle_t UrSampler =
       reinterpret_cast<ur_sampler_handle_t>(*ArgValue);
 
-  HANDLE_ERRORS(urKernelSetArgSampler(UrKernel, ArgIndex, nullptr, UrSampler));
+  UR_HANDLE_ERRORS(urKernelSetArgSampler, (UrKernel, ArgIndex, nullptr, UrSampler));
 
   return PI_SUCCESS;
 }
@@ -4195,7 +4303,7 @@ inline pi_result piSamplerRetain(pi_sampler Sampler) {
   ur_sampler_handle_t UrSampler =
       reinterpret_cast<ur_sampler_handle_t>(Sampler);
 
-  HANDLE_ERRORS(urSamplerRetain(UrSampler));
+  UR_HANDLE_ERRORS(urSamplerRetain, (UrSampler));
 
   return PI_SUCCESS;
 }
@@ -4206,7 +4314,7 @@ inline pi_result piSamplerRelease(pi_sampler Sampler) {
   ur_sampler_handle_t UrSampler =
       reinterpret_cast<ur_sampler_handle_t>(Sampler);
 
-  HANDLE_ERRORS(urSamplerRelease(UrSampler));
+  UR_HANDLE_ERRORS(urSamplerRelease, (UrSampler));
 
   return PI_SUCCESS;
 }
